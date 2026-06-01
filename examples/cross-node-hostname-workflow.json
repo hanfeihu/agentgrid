@@ -1,0 +1,45 @@
+{
+  "name": "跨节点主机名巡检",
+  "summary": "依次检查 jia-node 和 huarui-node 的 hostname，然后发送 AgentMessage 完成通知。",
+  "created_by": "architect-agent",
+  "nodes": [
+    {
+      "id": "jia_hostname",
+      "title": "查询 jia-node 主机名",
+      "payload": {
+        "type": "command",
+        "program": "hostname",
+        "args": [],
+        "timeout_seconds": 30
+      },
+      "labels": ["compute", "command", "node:jia-node"]
+    },
+    {
+      "id": "huarui_hostname",
+      "title": "查询 huarui-node 主机名",
+      "depends_on": ["jia_hostname"],
+      "payload": {
+        "type": "command",
+        "program": "hostname",
+        "args": [],
+        "timeout_seconds": 30
+      },
+      "labels": ["compute", "command", "node:huarui-node"]
+    },
+    {
+      "id": "notify",
+      "title": "发送巡检完成通知",
+      "depends_on": ["huarui_hostname"],
+      "payload": {
+        "type": "agent_message",
+        "from": "workflow-engine",
+        "to": ["architect-agent"],
+        "message_type": "workflow.hostcheck.completed",
+        "subject": "跨节点主机名巡检完成",
+        "summary": "jia-node 与 huarui-node 已完成 hostname 检查。",
+        "payload": {}
+      },
+      "labels": ["compute", "agentmessage"]
+    }
+  ]
+}

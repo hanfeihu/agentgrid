@@ -1,0 +1,32 @@
+[package]
+name = "agentgrid-hub"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "agentgrid-hub"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum = { workspace = true, features = ["ws"] }
+base64 = "0.22"
+chrono.workspace = true
+clap.workspace = true
+futures-util = "0.3"
+hmac = "0.12"
+http-body-util = "0.1"
+tokio-stream = "0.1"
+mime_guess = "2"
+reqwest.workspace = true
+rusqlite.workspace = true
+regex = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tokio.workspace = true
+uuid.workspace = true
+agentgrid-protocol = { path = "../../crates/agentgrid-protocol" }
+agentgrid-scheduler = { path = "../../crates/agentgrid-scheduler" }

@@ -1,0 +1,31 @@
+{
+  "name": "Workflow v2 optional continue acceptance",
+  "summary": "The first node fails by design, but optional/on_failure continue should release the downstream node.",
+  "nodes": [
+    {
+      "id": "optional_fail",
+      "title": "optional failing command",
+      "payload": {
+        "type": "command",
+        "program": "sh",
+        "args": ["-lc", "exit 2"],
+        "timeout_seconds": 30
+      },
+      "labels": ["compute", "command", "node:chenqi-center"],
+      "optional": true,
+      "on_failure": "continue"
+    },
+    {
+      "id": "after_skip",
+      "title": "runs after optional failure",
+      "depends_on": ["optional_fail"],
+      "payload": {
+        "type": "command",
+        "program": "hostname",
+        "args": [],
+        "timeout_seconds": 30
+      },
+      "labels": ["compute", "command", "node:chenqi-center"]
+    }
+  ]
+}

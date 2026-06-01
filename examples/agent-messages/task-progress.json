@@ -1,0 +1,14 @@
+{
+  "project_id": "agentgrid",
+  "from": "worker-agent",
+  "to": ["architect-agent", "qa-agent"],
+  "type": "task.progress",
+  "subject": "Worker polling loop draft",
+  "summary": "Worker registration and polling loop are drafted. Next step is connecting lease renewal.",
+  "priority": "normal",
+  "requires_ack": false,
+  "payload": {
+    "task_id": "task_worker_001",
+    "progress": 60
+  }
+}

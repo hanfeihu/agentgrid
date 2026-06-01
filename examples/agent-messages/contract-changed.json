@@ -1,0 +1,15 @@
+{
+  "project_id": "agentgrid",
+  "from": "protocol-agent",
+  "to": ["worker-agent", "qa-agent"],
+  "type": "contract.changed",
+  "subject": "JobSpec requirements update",
+  "summary": "Added requirements.capabilities to the JobSpec contract. Worker and QA agents should adjust validation.",
+  "priority": "normal",
+  "requires_ack": true,
+  "payload": {
+    "api_version": "agentmessage.io/v1",
+    "files": ["schemas/v1/job.schema.json"],
+    "breaking": false
+  }
+}

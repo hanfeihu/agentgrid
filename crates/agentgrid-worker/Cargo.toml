@@ -1,0 +1,12 @@
+[package]
+name = "agentgrid-worker"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentgrid-executor = { path = "../agentgrid-executor" }
+agentgrid-protocol = { path = "../agentgrid-protocol" }
+thiserror.workspace = true
+

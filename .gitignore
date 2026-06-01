@@ -1,0 +1,33 @@
+.DS_Store
+
+# Rust build output
+/target/
+
+# Node frontend dependencies and build cache
+/apps/agentgrid-web/node_modules/
+/apps/agentgrid-web/dist/
+/apps/agentgrid-hub/web/
+
+# Local runtime state
+/*.db
+/*.db-shm
+/*.db-wal
+/**/*.log
+/data/
+/logs/
+
+# Local browser/debug artifacts
+/.playwright-cli/
+
+# Mobile SDK local build products
+/sdk/mobile/ios/agentgrid-mobile-sdk-swift/.build/
+/sdk/mobile/android/.gradle/
+/sdk/mobile/android/build/
+
+# Editor and local environment files
+.idea/
+.vscode/
+*.swp
+*.tmp
+.env
+.env.*

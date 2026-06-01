@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+python3 -c '
+import json
+import sys
+
+request = json.load(sys.stdin)
+name = request.get("input", {}).get("name", "AgentGrid")
+print(json.dumps({
+    "ok": True,
+    "message": f"hello {name}",
+    "plugin_id": request.get("plugin_id"),
+    "action": request.get("action")
+}))
+' "$@"

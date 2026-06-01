@@ -1,0 +1,38 @@
+{
+  "name": "工作流结果传递验证",
+  "summary": "先在 jia-node 执行 hostname，再把 stdout 注入到 AgentMessage 通知里。",
+  "created_by": "architect-agent",
+  "nodes": [
+    {
+      "id": "read_hostname",
+      "title": "读取 jia-node 主机名",
+      "payload": {
+        "type": "command",
+        "program": "hostname",
+        "args": [],
+        "timeout_seconds": 30
+      },
+      "labels": ["compute", "command", "node:jia-node"]
+    },
+    {
+      "id": "notify_hostname",
+      "title": "通知主机名 ${steps.read_hostname.result.stdout}",
+      "summary": "上一步 stdout 会被注入到本步骤 payload。",
+      "depends_on": ["read_hostname"],
+      "payload": {
+        "type": "agent_message",
+        "from": "workflow-engine",
+        "to": ["architect-agent"],
+        "message_type": "workflow.context.demo",
+        "subject": "工作流结果传递验证",
+        "summary": "jia-node hostname 是：${steps.read_hostname.result.stdout}",
+        "payload": {
+          "source_task_id": "${steps.read_hostname.task_id}",
+          "hostname": "${steps.read_hostname.result.stdout}",
+          "executed_by": "${steps.read_hostname.leased_by_node_id}"
+        }
+      },
+      "labels": ["compute", "agentmessage"]
+    }
+  ]
+}

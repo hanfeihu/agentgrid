@@ -1,0 +1,427 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #f6f8fb;
+}
+
+.pro-brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 64px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.brand-mark {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brand-name {
+  color: #111827;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.brand-sub {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.content {
+  padding: 0;
+}
+
+.page-container {
+  min-height: calc(100vh - 56px);
+}
+
+.page-container .ant-page-header {
+  padding-block: 18px 14px;
+}
+
+.page-container .ant-pro-page-container-children-container {
+  padding-block-start: 12px;
+}
+
+.menu-link {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.full {
+  width: 100%;
+}
+
+.metric {
+  border-radius: 6px;
+}
+
+.header-time {
+  display: inline-block;
+  min-width: 160px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ant-pro-sider .ant-layout-sider-children {
+  overflow-x: hidden;
+}
+
+.ant-pro-sider .ant-menu-item {
+  margin-block: 3px;
+}
+
+.ant-pro-sider .ant-menu-title-content {
+  font-size: 14px;
+}
+
+.nodes-table .ant-table {
+  border-radius: 8px;
+}
+
+.nodes-table .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+
+.nodes-table .ant-table-cell {
+  vertical-align: middle;
+}
+
+.node-identity {
+  max-width: 150px;
+}
+
+.node-identity .ant-typography {
+  margin: 0;
+}
+
+.mono-cell {
+  display: inline-block;
+  max-width: 200px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.resource-cell {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.resource-cell-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.resource-cell-head .ant-typography-secondary {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.capability-list .ant-tag {
+  margin-inline-end: 0;
+}
+
+.result-json {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e5e7eb;
+  font-size: 12px;
+}
+
+.artifact-preview {
+  display: grid;
+  place-items: center;
+  max-height: calc(100vh - 220px);
+  overflow: auto;
+  border: 1px solid #edf0f5;
+  border-radius: 6px;
+  background: #0f172a;
+}
+
+.artifact-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.live-log {
+  min-height: 180px;
+}
+
+.execution-record-json {
+  max-height: calc(100vh - 360px);
+}
+
+.desktop-timeline-table .ant-table-cell {
+  vertical-align: middle;
+}
+
+.desktop-timeline-table .ant-table-expanded-row pre {
+  max-height: 220px;
+}
+
+.terminal-card .ant-pro-card-body {
+  display: grid;
+  gap: 12px;
+}
+
+.terminal-screen {
+  min-height: 460px;
+  max-height: calc(100vh - 360px);
+  margin: 0;
+  overflow: auto;
+  padding: 16px;
+  border-radius: 6px;
+  background: #0b1220;
+  color: #d1fae5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.terminal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.doc-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.doc-summary {
+  display: grid;
+  gap: 10px;
+  max-width: 920px;
+}
+
+.doc-tags {
+  margin-top: 4px;
+}
+
+.doc-markdown {
+  min-height: 560px;
+  max-height: calc(100vh - 260px);
+  margin: 0;
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1f2937;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.template-card {
+  cursor: pointer;
+  border-color: #e5e7eb;
+}
+
+.template-card.active {
+  border-color: #1677ff;
+  background: #f0f7ff;
+}
+
+.template-card:hover {
+  border-color: #1677ff;
+}
+
+.template-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.template-meta .ant-tag {
+  margin-inline-end: 0;
+}
+
+.param-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(110px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.param-row:last-child {
+  border-bottom: 0;
+}
+
+.section-card {
+  margin-bottom: 16px;
+}
+
+.json-editor {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.resource-meter {
+  min-width: 0;
+}
+
+.node-resource-card .ant-card-body {
+  padding: 14px 16px;
+}
+
+.node-resource-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.35fr) repeat(3, minmax(150px, 1fr));
+  gap: 20px;
+  align-items: center;
+}
+
+.node-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.node-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.resource-meter-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.desc-list {
+  display: grid;
+  gap: 10px;
+}
+
+.desc-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.desc-row .ant-typography:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agents-card .ant-pro-card-body {
+  padding-top: 10px;
+}
+
+.agents-table .ant-table {
+  border-radius: 8px;
+}
+
+.agents-table .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+
+.agents-table .ant-table-cell {
+  vertical-align: middle;
+}
+
+.agent-identity {
+  min-width: 0;
+}
+
+.agent-identity .ant-typography {
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-responsibility {
+  display: -webkit-box;
+  max-width: 340px;
+  overflow: hidden;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 64px;
+  white-space: nowrap;
+}
+
+.agents-table .ant-tag {
+  margin-inline-end: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 1180px) {
+  .node-resource-grid {
+    grid-template-columns: 1fr;
+  }
+}

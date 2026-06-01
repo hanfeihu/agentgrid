@@ -1,0 +1,18 @@
+[package]
+name = "agentgrid-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "agentgrid"
+path = "src/main.rs"
+
+[dependencies]
+agentgrid-protocol = { path = "../../crates/agentgrid-protocol" }
+anyhow.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+

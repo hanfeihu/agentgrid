@@ -1,0 +1,22 @@
+{
+  "name": "agentgrid-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@ant-design/icons": "6.2.5",
+    "@ant-design/pro-components": "2.8.10",
+    "antd": "5.29.3",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "8.0.14",
+    "typescript": "latest"
+  }
+}

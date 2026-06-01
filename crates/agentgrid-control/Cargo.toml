@@ -1,0 +1,15 @@
+[package]
+name = "agentgrid-control"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentgrid-core = { path = "../agentgrid-core" }
+agentgrid-protocol = { path = "../agentgrid-protocol" }
+agentgrid-scheduler = { path = "../agentgrid-scheduler" }
+agentgrid-store = { path = "../agentgrid-store" }
+chrono.workspace = true
+thiserror.workspace = true
+

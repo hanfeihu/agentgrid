@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentmessage.io/schemas/v1/agent-task.schema.json",
+  "title": "AgentTask",
+  "description": "AgentGrid Hub task object for assigning work to AI employees and tracking lifecycle state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec", "status"],
+  "properties": {
+    "api_version": {
+      "const": "agentmessage.io/v1"
+    },
+    "kind": {
+      "const": "AgentTask"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "project_id", "created_by", "assigned_to", "created_at", "updated_at"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^task_[A-Za-z0-9_\\-]+$"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_by": {
+          "$ref": "#/$defs/agent_id"
+        },
+        "assigned_to": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/agent_id"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "created_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "summary", "owner", "priority", "inputs", "outputs", "acceptance_criteria"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "$ref": "#/$defs/agent_id"
+        },
+        "priority": {
+          "enum": ["p0", "p1", "p2", "p3", "normal", "low"]
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact_ref"
+          },
+          "default": []
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact_ref"
+          },
+          "default": []
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^task_[A-Za-z0-9_\\-]+$"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "due_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/date_time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "progress"],
+      "properties": {
+        "state": {
+          "enum": ["todo", "assigned", "in_progress", "blocked", "review", "testing", "done", "cancelled"]
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/date_time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/date_time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "blocked_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "last_message_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^msg_[A-Za-z0-9_\\-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    }
+  },
+  "$defs": {
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "artifact_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "date_time": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
