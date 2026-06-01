@@ -1,0 +1,10 @@
+AgentGrid
+Copyright 2026 AgentGrid Contributors
+
+AgentGrid is an open-source runtime and scheduling layer for AI-operated
+machines, tools, desktops, jobs, artifacts, and worker capabilities.
+
+This product includes third-party open-source software. See dependency
+manifests such as Cargo.toml, Cargo.lock, package.json, and package-lock.json
+for dependency names and versions. Third-party components remain under their
+respective licenses.

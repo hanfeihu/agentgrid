@@ -21,8 +21,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
-authors = ["AI Task Scheduler Contributors"]
+license = "Apache-2.0"
+authors = ["AgentGrid Contributors"]
 
 [workspace.dependencies]
 anyhow = "1"

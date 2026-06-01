@@ -2874,11 +2874,11 @@ function SystemSettings({ settings, auth, onDone }) {
     form.setFieldsValue({
       hub_public_url: settings.hub_public_url || 'http://chenqi.tminos.com:20080/agentgrid',
       registration_enabled: settings.registration_enabled !== false,
-      smtp_host: settings.smtp?.host || 'smtp.qq.com',
+      smtp_host: settings.smtp?.host || 'smtp.example.com',
       smtp_port: settings.smtp?.port || 465,
-      smtp_username: settings.smtp?.username || '1668217900@qq.com',
+      smtp_username: settings.smtp?.username || 'agentgrid@example.com',
       smtp_password: '',
-      smtp_from: settings.smtp?.from || '1668217900@qq.com',
+      smtp_from: settings.smtp?.from || 'agentgrid@example.com',
     });
   }, [settings, form]);
   const submit = async (values) => {

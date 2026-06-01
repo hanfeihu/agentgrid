@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    convert::Infallible,
     fmt::Write as _,
     fs,
     net::SocketAddr,
@@ -19,13 +18,10 @@ use agentgrid_scheduler::{choose_node, score_node};
 use axum::{
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Path, Query, State,
+        Query, State,
     },
-    http::{header, HeaderMap, HeaderName, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        Html, IntoResponse, Response,
-    },
+    http::{header, HeaderMap, StatusCode},
+    response::{Html, IntoResponse, Response},
     Json,
 };
 use base64::Engine as _;
@@ -39,17 +35,24 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, Mutex};
-use tokio_stream::wrappers::IntervalStream;
 use uuid::Uuid;
 
+use crate::{jobs::JobQuery, messages::EventQuery, tasks::TaskQuery, workflows::WorkflowQuery};
+
+mod agents;
 mod artifacts;
 mod auth;
+mod diagnostics;
 mod jobs;
+mod messages;
 mod nodes;
 mod routes;
 mod runtime_standard;
 mod settings;
 mod tasks;
+mod tools;
+mod webhooks;
+mod workflows;
 
 const API_VERSION: &str = "agentmessage.io/v1";
 const AGENTGRID_BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -194,991 +197,6 @@ async fn health() -> Json<Value> {
         "version": AGENTGRID_BUILD_VERSION,
         "time": now()
     }))
-}
-
-async fn get_bootstrap_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.bootstrap_status()?))
-}
-
-async fn create_super_admin(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.create_super_admin(input)?))
-}
-
-async fn auth_me(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.auth_state(
-        bearer_token_from_headers(&headers).as_deref(),
-    )?))
-}
-
-async fn login_user(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.login_user(input)?))
-}
-
-async fn request_register_code(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.request_register_code(input)?))
-}
-
-async fn register_user(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.register_user(input)?))
-}
-
-async fn change_password(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.change_password(input)?))
-}
-
-async fn get_system_settings(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.system_settings()?))
-}
-
-async fn update_system_settings(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.update_system_settings(input)?))
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateManifestQuery {
-    os: Option<String>,
-    arch: Option<String>,
-    current_sha256: Option<String>,
-    glibc_version: Option<String>,
-    worker_target: Option<String>,
-    node_id: Option<String>,
-    channel: Option<String>,
-}
-
-async fn worker_update_manifest(
-    State(state): State<AppState>,
-    Query(query): Query<UpdateManifestQuery>,
-) -> Result<Json<Value>, ApiError> {
-    let target = query
-        .worker_target
-        .as_deref()
-        .map(sanitize_worker_target)
-        .transpose()?
-        .unwrap_or_else(|| worker_target_from_query(query.os.as_deref(), query.arch.as_deref()));
-    let path = worker_binary_path(&state, &target);
-    let bytes = tokio::fs::read(&path).await.map_err(|error| {
-        ApiError::not_found(&format!(
-            "Worker binary not published for target {target}: {error}"
-        ))
-    })?;
-    let sha256 = sha256_hex(&bytes);
-    let compatibility = worker_update_compatibility(&target, query.glibc_version.as_deref());
-    let current_matches = query.current_sha256.as_deref() == Some(sha256.as_str());
-    let update_available =
-        !current_matches && compatibility.get("compatible").and_then(Value::as_bool) == Some(true);
-    let _ = Store::open(state.db_path.as_ref()).and_then(|store| {
-        store.audit(
-            "worker.update.checked",
-            query.node_id.as_deref().unwrap_or("worker"),
-            query.node_id.as_deref(),
-            if update_available {
-                "Worker 有可用更新"
-            } else {
-                "Worker 更新检查完成"
-            },
-            json!({
-                "node_id": query.node_id,
-                "channel": query.channel.as_deref().unwrap_or("stable"),
-                "target": target,
-                "current_sha256": query.current_sha256,
-                "published_sha256": sha256,
-                "compatible": compatibility.get("compatible").and_then(Value::as_bool).unwrap_or(true),
-                "update_available": update_available,
-                "compatibility": compatibility
-            }),
-        )
-    });
-    Ok(Json(json!({
-        "ok": true,
-        "service": "agentgrid-worker-update",
-        "version": AGENTGRID_BUILD_VERSION,
-        "target": target,
-        "sha256": sha256,
-        "size_bytes": bytes.len(),
-        "download_url": format!("/api/worker/download/{target}"),
-        "update_available": update_available,
-        "compatible": compatibility.get("compatible").and_then(Value::as_bool).unwrap_or(true),
-        "compatibility": compatibility,
-        "published_at": now()
-    })))
-}
-
-async fn download_worker_binary(
-    State(state): State<AppState>,
-    Path(target): Path<String>,
-) -> Result<Response, ApiError> {
-    let target = sanitize_worker_target(&target)?;
-    let path = worker_binary_path(&state, &target);
-    let bytes = tokio::fs::read(&path).await.map_err(|error| {
-        ApiError::not_found(&format!(
-            "Worker binary not published for target {target}: {error}"
-        ))
-    })?;
-    let filename = if target.contains("windows") {
-        format!("agentgrid-worker-{target}.exe")
-    } else {
-        format!("agentgrid-worker-{target}")
-    };
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-            (
-                HeaderName::from_static("x-agentgrid-sha256"),
-                sha256_hex(&bytes),
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
-}
-
-async fn list_agents(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({ "items": store(&state)?.list_agents()? })))
-}
-
-async fn upsert_agent(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.upsert_agent(input)?;
-    Ok((StatusCode::CREATED, Json(item)))
-}
-
-async fn list_nodes(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(
-        json!({ "ok": true, "items": store(&state)?.list_nodes()? }),
-    ))
-}
-
-async fn upsert_node(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.upsert_node(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "item": item })),
-    ))
-}
-
-async fn delete_node(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    store(&state)?.delete_node(&id)?;
-    Ok(Json(json!({ "ok": true, "deleted": id })))
-}
-
-async fn update_node_config(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.update_node_config(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn approve_node_join(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let actor = input
-        .get("actor")
-        .and_then(Value::as_str)
-        .unwrap_or("super-admin");
-    let item = store(&state)?.approve_node_join(&id, actor)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn register_node_tools(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.register_node_tools(&id, input)?;
-    Ok(Json(json!({ "ok": true, "items": items })))
-}
-
-async fn list_node_tools(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.list_node_tools(Some(&id))?;
-    Ok(Json(json!({ "ok": true, "node_id": id, "items": items })))
-}
-
-async fn list_node_tools_catalog(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.list_node_tool_catalog()?;
-    Ok(Json(json!({
-        "ok": true,
-        "api_version": "agentgrid.runtime/v1",
-        "kind": "NodeToolCatalog",
-        "items": items
-    })))
-}
-
-async fn get_node_tool_catalog(
-    State(state): State<AppState>,
-    Path(tool_id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?
-        .get_node_tool_catalog(&tool_id)?
-        .ok_or_else(|| ApiError::not_found("Node tool not found"))?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn probe_node_tools(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.create_node_tool_probe_tasks(None, None, "manual")?;
-    Ok(Json(json!({ "ok": true, "items": items })))
-}
-
-async fn probe_node_tool(
-    State(state): State<AppState>,
-    Path(tool_id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.create_node_tool_probe_tasks(Some(&tool_id), None, "manual")?;
-    Ok(Json(json!({ "ok": true, "items": items })))
-}
-
-async fn probe_node_tool_node(
-    State(state): State<AppState>,
-    Path((tool_id, node_id)): Path<(String, String)>,
-) -> Result<Json<Value>, ApiError> {
-    let items =
-        store(&state)?.create_node_tool_probe_tasks(Some(&tool_id), Some(&node_id), "manual")?;
-    Ok(Json(json!({ "ok": true, "items": items })))
-}
-
-#[derive(Debug, Deserialize)]
-struct MessageQuery {
-    limit: Option<u16>,
-}
-
-async fn list_messages(
-    State(state): State<AppState>,
-    Query(query): Query<MessageQuery>,
-) -> Result<Json<Value>, ApiError> {
-    let limit = query.limit.unwrap_or(100).min(500);
-    Ok(Json(
-        json!({ "items": store(&state)?.list_messages(limit)? }),
-    ))
-}
-
-async fn create_message(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.create_message(input)?;
-    Ok((StatusCode::CREATED, Json(item)))
-}
-
-async fn list_audit_events(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_audit_events(200)?
-    })))
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct EventQuery {
-    limit: Option<u16>,
-    event_type: Option<String>,
-    #[serde(rename = "type")]
-    type_alias: Option<String>,
-    subject_id: Option<String>,
-}
-
-async fn list_events(
-    State(state): State<AppState>,
-    Query(query): Query<EventQuery>,
-) -> Result<Json<Value>, ApiError> {
-    let limit = query.limit.unwrap_or(200).min(1000);
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_events(query, limit)?,
-        "next_cursor": null
-    })))
-}
-
-async fn event_stream(
-    State(state): State<AppState>,
-    Query(query): Query<EventQuery>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let limit = query.limit.unwrap_or(100).min(500);
-    let stream =
-        IntervalStream::new(tokio::time::interval(Duration::from_secs(1))).map(move |_| {
-            let event = match Store::open(state.db_path.as_ref())
-                .and_then(|store| store.list_events(query.clone(), limit))
-            {
-                Ok(items) => Event::default().event("events.snapshot").json_data(json!({
-                    "ok": true,
-                    "time": now(),
-                    "items": items
-                })),
-                Err(error) => Event::default().event("events.error").json_data(json!({
-                    "ok": false,
-                    "error": { "message": error.to_string() },
-                    "time": now()
-                })),
-            }
-            .unwrap_or_else(|_| {
-                Event::default()
-                    .event("events.error")
-                    .data("snapshot serialize failed")
-            });
-            Ok(event)
-        });
-    Sse::new(stream).keep_alive(KeepAlive::default())
-}
-
-async fn list_node_provisioning_plans(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_node_provisioning_plans(100)?
-    })))
-}
-
-async fn list_tools(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    let nodes = store.list_nodes()?;
-    let items = store
-        .tool_registry_with_dynamic()?
-        .into_iter()
-        .map(|tool| store.enrich_tool_with_nodes(tool, &nodes))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(Json(json!({
-        "ok": true,
-        "kind": "ToolRegistry",
-        "api_version": API_VERSION,
-        "items": items
-    })))
-}
-
-async fn capabilities_manifest(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(store.capabilities_manifest()?))
-}
-
-async fn agent_runtime_manifest(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    let nodes = store.list_nodes()?;
-    let tools = store
-        .tool_registry_with_dynamic()?
-        .into_iter()
-        .map(|tool| store.enrich_tool_with_nodes(tool, &nodes))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(Json(json!({
-        "ok": true,
-        "api_version": API_VERSION,
-        "kind": "AgentRuntimeManifest",
-        "runtime": {
-            "name": "AgentGrid",
-            "version": AGENTGRID_BUILD_VERSION,
-            "hub_url": "http://chenqi.tminos.com:20080/agentgrid",
-            "project_id": PROJECT_ID,
-            "protocols": ["AgentMessage", "AgentTask", "ToolContract", "WorkflowDAG"],
-            "event_transport": "sse"
-        },
-        "capabilities": {
-            "submit_task": true,
-            "watch_task": true,
-            "list_tools": true,
-            "result_verification": true,
-            "resource_aware_scheduling": true,
-            "trust_aware_scheduling": true,
-            "workflow_dag": true,
-            "artifacts": true,
-            "audit": true
-        },
-        "task_submit_endpoint": "/api/agent-runtime/tasks",
-        "task_status_endpoint": "/api/agent-runtime/tasks/{task_id}",
-        "task_events_endpoint": "/api/agent-runtime/tasks/{task_id}/events",
-        "tools": tools,
-        "submit_schema": agent_runtime_submit_schema(),
-        "result_schema": agent_runtime_result_schema(),
-        "examples": agent_runtime_examples()
-    })))
-}
-
-async fn agent_runtime_submit_task(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let output = store(&state)?.create_agent_runtime_task(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "ok": true,
-            "api_version": API_VERSION,
-            "kind": "AgentRuntimeTaskSubmission",
-            "task_id": output.item.pointer("/metadata/id").and_then(Value::as_str),
-            "message_id": output.message_id,
-            "item": output.item,
-            "links": {
-                "status": output.item.pointer("/metadata/id").and_then(Value::as_str).map(|id| format!("/api/agent-runtime/tasks/{id}")),
-                "events": output.item.pointer("/metadata/id").and_then(Value::as_str).map(|id| format!("/api/agent-runtime/tasks/{id}/events")),
-                "task": output.item.pointer("/metadata/id").and_then(Value::as_str).map(|id| format!("/api/tasks/{id}"))
-            }
-        })),
-    ))
-}
-
-async fn agent_runtime_get_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let snapshot = store(&state)?.task_event_snapshot(&id)?;
-    Ok(Json(json!({
-        "ok": true,
-        "api_version": API_VERSION,
-        "kind": "AgentRuntimeTaskSnapshot",
-        "item": snapshot
-    })))
-}
-
-async fn list_task_templates(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "kind": "TaskTemplateStore",
-        "api_version": API_VERSION,
-        "items": store(&state)?.list_task_templates(200)?
-    })))
-}
-
-async fn get_task_template(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?
-        .get_task_template(&id)?
-        .ok_or_else(|| ApiError::not_found("Task template not found"))?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn start_task_template(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let output = store(&state)?.start_task_template(&id, input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "ok": true,
-            "item": output.item,
-            "message_id": output.message_id
-        })),
-    ))
-}
-
-async fn list_webhooks(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_webhooks(200)?
-    })))
-}
-
-async fn create_webhook(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.create_webhook(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "item": item })),
-    ))
-}
-
-async fn delete_webhook(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    store(&state)?.delete_webhook(&id)?;
-    Ok(Json(json!({ "ok": true })))
-}
-
-async fn list_webhook_deliveries(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_webhook_deliveries(200)?
-    })))
-}
-
-async fn get_tool(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    let nodes = store.list_nodes()?;
-    let tool = store
-        .tool_registry_with_dynamic()?
-        .into_iter()
-        .find(|tool| tool.get("id").and_then(Value::as_str) == Some(id.as_str()))
-        .ok_or_else(|| ApiError::not_found("Tool not found"))?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": store.enrich_tool_with_nodes(tool, &nodes)?
-    })))
-}
-
-async fn list_tool_nodes(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    let nodes = store.list_nodes()?;
-    let tool = store
-        .tool_registry_with_dynamic()?
-        .into_iter()
-        .find(|tool| tool.get("id").and_then(Value::as_str) == Some(id.as_str()))
-        .ok_or_else(|| ApiError::not_found("Tool not found"))?;
-    Ok(Json(json!({
-        "ok": true,
-        "tool_id": id,
-        "items": store.nodes_for_tool_with_probe(&tool, &nodes)?
-    })))
-}
-
-async fn list_tool_probes(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_tool_probes(500)?
-    })))
-}
-
-async fn probe_all_tools(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.create_tool_probe_tasks(None, None)?;
-    Ok(Json(json!({ "ok": true, "items": items })))
-}
-
-async fn probe_tool(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.create_tool_probe_tasks(Some(&id), None)?;
-    Ok(Json(json!({ "ok": true, "items": items })))
-}
-
-async fn probe_tool_node(
-    State(state): State<AppState>,
-    Path((id, node_id)): Path<(String, String)>,
-) -> Result<Json<Value>, ApiError> {
-    let items = store(&state)?.create_tool_probe_tasks(Some(&id), Some(&node_id))?;
-    Ok(Json(json!({ "ok": true, "items": items })))
-}
-
-async fn create_node_provisioning_plan(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.create_node_provisioning_plan(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "item": item })),
-    ))
-}
-async fn list_workflow_templates(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_workflow_templates(100)?
-    })))
-}
-
-async fn create_workflow_template(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.create_workflow_template(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "item": item })),
-    ))
-}
-
-async fn start_workflow_template(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.start_workflow_template(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn task_schedule_preview(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.task_schedule_preview(&id)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn get_policy(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "policy": store(&state)?.security_policy()?
-    })))
-}
-
-async fn runtime_standard(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": runtime_standard_document(&store)?
-    })))
-}
-
-async fn runtime_standard_tool_contracts(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    let nodes = store.list_nodes()?;
-    let items = store
-        .tool_registry_with_dynamic()?
-        .into_iter()
-        .map(|tool| store.enrich_tool_with_nodes(tool, &nodes))
-        .collect::<anyhow::Result<Vec<_>>>()?
-        .into_iter()
-        .map(|tool| tool.get("tool_contract").cloned().unwrap_or(tool))
-        .collect::<Vec<_>>();
-    Ok(Json(json!({
-        "ok": true,
-        "api_version": "agentgrid.runtime/v1",
-        "kind": "ToolContractStandard",
-        "items": items
-    })))
-}
-
-async fn runtime_standard_capabilities(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": capability_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_state_machine() -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "item": task_state_machine_standard()
-    })))
-}
-
-async fn runtime_standard_workflow_template(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": workflow_template_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_result_report(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": result_report_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_workbench(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": workbench_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_devices(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": device_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_evidence(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": evidence_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_runbook(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": runbook_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_mobile_sdk() -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "item": mobile_sdk_standard()
-    })))
-}
-
-async fn runtime_standard_plugin_runtime(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": plugin_runtime_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_capability_graph(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": capability_graph_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_execution_contract(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": execution_contract_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_evidence_pipeline(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": evidence_pipeline_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_probe_engine(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": probe_engine_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_placement_engine(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": placement_engine_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_task_intent() -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "item": task_intent_standard()
-    })))
-}
-
-async fn runtime_standard_artifact_store(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": artifact_store_standard(&store)?
-    })))
-}
-
-async fn runtime_standard_event_timeline(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    Ok(Json(json!({
-        "ok": true,
-        "item": event_timeline_standard(&store)?
-    })))
-}
-
-async fn get_scheduler_config(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "config": store(&state)?.scheduler_config()?
-    })))
-}
-
-async fn update_scheduler_config(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let config = store(&state)?.update_scheduler_config(input)?;
-    Ok(Json(json!({ "ok": true, "config": config })))
-}
-
-async fn get_diagnostics(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "diagnostics": store(&state)?.diagnostics()?
-    })))
-}
-
-async fn task_execution_record(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.task_execution_record(&id)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn workflow_execution_record(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.workflow_execution_record(&id)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn list_artifacts(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_artifacts(300)?
-    })))
-}
-
-async fn download_artifact(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Response, ApiError> {
-    let artifact = store(&state)?
-        .get_artifact(&id)?
-        .ok_or_else(|| ApiError::not_found("Artifact not found"))?;
-    let content = artifact
-        .pointer("/spec/content_base64")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(content)
-        .map_err(|error| {
-            ApiError::bad_request(&format!("artifact content decode failed: {error}"))
-        })?;
-    let filename = artifact
-        .pointer("/spec/name")
-        .and_then(Value::as_str)
-        .unwrap_or("artifact.bin")
-        .replace('"', "");
-    let content_type = artifact
-        .pointer("/spec/content_type")
-        .and_then(Value::as_str)
-        .unwrap_or("application/octet-stream")
-        .to_string();
-    Ok((
-        [
-            (header::CONTENT_TYPE, content_type),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkflowQuery {
-    limit: Option<u16>,
-    state: Option<String>,
-}
-
-async fn list_workflows(
-    State(state): State<AppState>,
-    Query(query): Query<WorkflowQuery>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_workflows(query)?,
-        "next_cursor": null
-    })))
-}
-
-async fn create_workflow(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.create_workflow(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "item": item })),
-    ))
-}
-
-async fn get_workflow(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?
-        .get_workflow_detail(&id)?
-        .ok_or_else(|| ApiError::not_found("Workflow not found"))?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn start_workflow(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.start_workflow(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn cancel_workflow(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.cancel_workflow(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1357,276 +375,6 @@ async fn handle_terminal_worker(socket: WebSocket, state: AppState, node_id: Str
     });
 }
 
-#[derive(Debug, Deserialize)]
-struct TaskQuery {
-    limit: Option<u16>,
-    owner: Option<String>,
-    state: Option<String>,
-}
-
-async fn list_tasks(
-    State(state): State<AppState>,
-    Query(query): Query<TaskQuery>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_tasks(query)?,
-        "next_cursor": null
-    })))
-}
-
-async fn get_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?
-        .get_task(&id)?
-        .ok_or_else(|| ApiError::not_found("Task not found"))?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn task_snapshot(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.task_event_snapshot(&id)?))
-}
-
-async fn task_events(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let stream =
-        IntervalStream::new(tokio::time::interval(Duration::from_secs(1))).map(move |_| {
-            let event = match Store::open(state.db_path.as_ref())
-                .and_then(|store| store.task_event_snapshot(&id))
-            {
-                Ok(snapshot) => Event::default().event("task.snapshot").json_data(snapshot),
-                Err(error) => Event::default().event("task.error").json_data(json!({
-                    "ok": false,
-                    "task_id": id,
-                    "error": { "message": error.to_string() },
-                    "time": now()
-                })),
-            }
-            .unwrap_or_else(|_| {
-                Event::default()
-                    .event("task.error")
-                    .data("snapshot serialize failed")
-            });
-            Ok(event)
-        });
-    Sse::new(stream).keep_alive(KeepAlive::default())
-}
-
-async fn create_task(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let output = store(&state)?.create_task(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "item": output.item, "message_id": output.message_id })),
-    ))
-}
-
-async fn update_task(
-    State(state): State<AppState>,
-    Path((id, action)): Path<(String, String)>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let output = store(&state)?.update_task(&id, &action, input)?;
-    Ok(Json(
-        json!({ "ok": true, "item": output.item, "message_id": output.message_id }),
-    ))
-}
-
-async fn control_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.control_task(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn lease_tasks(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.lease_tasks(input)?))
-}
-
-async fn worker_reconcile(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.worker_reconcile(input)?))
-}
-
-async fn worker_task_control(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.worker_task_control(&id)?))
-}
-
-async fn renew_worker_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.renew_worker_task(&id, input)?))
-}
-
-async fn worker_task_log(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    store(&state)?.append_task_log(&id, input)?;
-    Ok(Json(json!({ "ok": true })))
-}
-
-async fn complete_worker_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.complete_worker_task(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn fail_worker_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.fail_worker_task(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-#[derive(Debug, Deserialize)]
-struct JobQuery {
-    limit: Option<u16>,
-    state: Option<String>,
-}
-
-async fn list_jobs(
-    State(state): State<AppState>,
-    Query(query): Query<JobQuery>,
-) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "items": store(&state)?.list_jobs(query)?,
-        "next_cursor": null
-    })))
-}
-
-async fn create_job(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.create_job(input)?;
-    let reused = item
-        .pointer("/status/idempotency_reused")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    Ok((
-        if reused {
-            StatusCode::OK
-        } else {
-            StatusCode::CREATED
-        },
-        Json(json!({ "ok": true, "reused": reused, "item": item })),
-    ))
-}
-
-async fn plan_job(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.plan_job(input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn job_reliability(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.job_reliability_status()?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn job_recovery_scan(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.job_recovery_scan("manual")?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn get_job(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?
-        .get_job_detail(&id)?
-        .ok_or_else(|| ApiError::not_found("Job not found"))?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn create_job_checkpoint(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?.create_job_checkpoint(&id, input)?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn job_execution(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let item = store(&state)?
-        .job_execution_view(&id)?
-        .ok_or_else(|| ApiError::not_found("Job not found"))?;
-    Ok(Json(json!({ "ok": true, "item": item })))
-}
-
-async fn job_events(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let stream =
-        IntervalStream::new(tokio::time::interval(Duration::from_secs(1))).map(move |_| {
-            let event = match Store::open(state.db_path.as_ref())
-                .and_then(|store| store.job_event_snapshot(&id))
-            {
-                Ok(snapshot) => Event::default().event("job.snapshot").json_data(snapshot),
-                Err(error) => Event::default().event("job.error").json_data(json!({
-                    "ok": false,
-                    "job_id": id,
-                    "error": { "message": error.to_string() },
-                    "time": now()
-                })),
-            }
-            .unwrap_or_else(|_| {
-                Event::default()
-                    .event("job.error")
-                    .data("snapshot serialize failed")
-            });
-            Ok(event)
-        });
-    Sse::new(stream).keep_alive(KeepAlive::default())
-}
-
-async fn create_ingress_event(
-    State(state): State<AppState>,
-    Json(input): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let item = store(&state)?.create_ingress_event(input)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "ok": true, "item": item })),
-    ))
-}
-
 async fn static_asset(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
@@ -1753,6 +501,10 @@ fn generate_session_token() -> String {
     format!("ags_{}", Uuid::new_v4().simple())
 }
 
+fn generate_node_join_token() -> String {
+    format!("agj_{}", Uuid::new_v4().simple())
+}
+
 fn generate_email_code() -> String {
     let value = Uuid::new_v4().as_u128() % 1_000_000;
     format!("{value:06}")
@@ -1760,12 +512,16 @@ fn generate_email_code() -> String {
 
 fn default_smtp_setting() -> Value {
     json!({
-        "host": "smtp.qq.com",
-        "port": 465,
-        "username": "1668217900@qq.com",
-        "password": "oebnbqxrirmybacd",
-        "from": "1668217900@qq.com",
-        "enabled": true
+        "host": std::env::var("AGENTGRID_SMTP_HOST").unwrap_or_else(|_| "smtp.example.com".to_string()),
+        "port": std::env::var("AGENTGRID_SMTP_PORT").ok().and_then(|value| value.parse::<u16>().ok()).unwrap_or(465),
+        "username": std::env::var("AGENTGRID_SMTP_USERNAME").unwrap_or_default(),
+        "password": std::env::var("AGENTGRID_SMTP_PASSWORD").unwrap_or_default(),
+        "from": std::env::var("AGENTGRID_SMTP_FROM")
+            .or_else(|_| std::env::var("AGENTGRID_SMTP_USERNAME"))
+            .unwrap_or_default(),
+        "enabled": std::env::var("AGENTGRID_SMTP_ENABLED")
+            .map(|value| value != "0" && value.to_lowercase() != "false")
+            .unwrap_or(false)
     })
 }
 
@@ -3195,27 +1951,36 @@ impl Store {
         let value = self
             .setting_value("smtp")?
             .unwrap_or_else(default_smtp_setting);
+        let fallback = default_smtp_setting();
         Ok(SmtpConfig {
             host: value
                 .get("host")
                 .and_then(Value::as_str)
-                .unwrap_or("smtp.qq.com")
+                .or_else(|| fallback.get("host").and_then(Value::as_str))
+                .unwrap_or("smtp.example.com")
                 .to_string(),
-            port: value.get("port").and_then(Value::as_u64).unwrap_or(465) as u16,
+            port: value
+                .get("port")
+                .and_then(Value::as_u64)
+                .or_else(|| fallback.get("port").and_then(Value::as_u64))
+                .unwrap_or(465) as u16,
             username: value
                 .get("username")
                 .and_then(Value::as_str)
-                .unwrap_or("1668217900@qq.com")
+                .or_else(|| fallback.get("username").and_then(Value::as_str))
+                .unwrap_or("")
                 .to_string(),
             password: value
                 .get("password")
                 .and_then(Value::as_str)
-                .unwrap_or("oebnbqxrirmybacd")
+                .or_else(|| fallback.get("password").and_then(Value::as_str))
+                .unwrap_or("")
                 .to_string(),
             from: value
                 .get("from")
                 .and_then(Value::as_str)
-                .unwrap_or("1668217900@qq.com")
+                .or_else(|| fallback.get("from").and_then(Value::as_str))
+                .unwrap_or("")
                 .to_string(),
         })
     }
@@ -4711,14 +3476,26 @@ impl Store {
         );
         let notes = string_or(&data, "notes", "凭据不进入 AgentGrid 数据库和文档。");
         let created_by = string_or(&data, "created_by", "architect-agent");
-        let steps = node_provisioning_steps(&node_id, &node_name, &ssh_host, &ssh_user, &hub_url);
+        let join_token = optional_string(&data, "join_token")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(generate_node_join_token);
+        let join_token_hash = node_join_token_hash(&node_id, &join_token);
+        let steps = node_provisioning_steps(
+            &node_id,
+            &node_name,
+            &ssh_host,
+            &ssh_user,
+            &hub_url,
+            &join_token,
+        );
         let now = now();
         self.conn.execute(
             "
             INSERT INTO node_provisioning_plans (
                 id, project_id, node_id, node_name, ssh_host, ssh_user, os, arch,
-                hub_url, status, steps_json, notes, created_by, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'planned', ?10, ?11, ?12, ?13, ?13)
+                hub_url, status, steps_json, notes, join_token_hash, join_token_hint,
+                created_by, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'planned', ?10, ?11, ?12, ?13, ?14, ?15, ?15)
             ON CONFLICT(id) DO UPDATE SET
                 node_id = excluded.node_id,
                 node_name = excluded.node_name,
@@ -4729,6 +3506,8 @@ impl Store {
                 hub_url = excluded.hub_url,
                 steps_json = excluded.steps_json,
                 notes = excluded.notes,
+                join_token_hash = excluded.join_token_hash,
+                join_token_hint = excluded.join_token_hint,
                 updated_at = excluded.updated_at
             ",
             params![
@@ -4743,6 +3522,8 @@ impl Store {
                 hub_url,
                 serde_json::to_string(&steps)?,
                 notes,
+                join_token_hash,
+                token_hint(&join_token),
                 created_by,
                 now,
             ],
@@ -4757,7 +3538,17 @@ impl Store {
                 .unwrap_or("architect-agent"),
             Some(&id),
             "节点纳管计划已生成",
-            json!({ "plan": item.clone() }),
+            json!({
+                "plan": item.clone(),
+                "authorization": {
+                    "standard": "AgentGrid Node Join Standard v1",
+                    "mode": "admin_approved_join_token",
+                    "node_id": node_id,
+                    "join_token_hint": token_hint(&join_token),
+                    "requires_browser_on_node": false,
+                    "approval_actor": "super_admin"
+                }
+            }),
         )?;
         Ok(item)
     }
@@ -15918,13 +14709,15 @@ fn node_provisioning_steps(
     ssh_host: &str,
     ssh_user: &str,
     hub_url: &str,
+    join_token: &str,
 ) -> Value {
     let install_command = format!(
         "curl -fsSL {hub_url}/worker/download/linux-x86_64 -o /opt/agentgrid-worker/agentgrid-worker && chmod +x /opt/agentgrid-worker/agentgrid-worker"
     );
     let service = format!(
-        "[Unit]\nDescription=AgentGrid Worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/opt/agentgrid-worker/agentgrid-worker --hub {hub_url} --id {node_id} --name \"{node_name}\" --max-concurrent-jobs 4\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=AgentGrid Worker\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=AGENTGRID_JOIN_TOKEN={join_token}\nExecStart=/opt/agentgrid-worker/agentgrid-worker --hub {hub_url} --id {node_id} --name \"{node_name}\" --max-concurrent-jobs 4\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=multi-user.target\n"
     );
+    let approve_url = format!("{hub_url}/nodes?auth_status=pending");
     json!([
         {
             "name": "连接服务器",
@@ -15944,12 +14737,17 @@ fn node_provisioning_steps(
         {
             "name": "写入 systemd 服务",
             "content": service,
-            "description": "保存为 /etc/systemd/system/agentgrid-worker.service。"
+            "description": "保存为 /etc/systemd/system/agentgrid-worker.service。服务里带一次性入网 token，Worker 不需要浏览器。"
         },
         {
             "name": "启动服务",
             "command": "sudo systemctl daemon-reload && sudo systemctl enable --now agentgrid-worker && sudo systemctl status agentgrid-worker --no-pager",
-            "description": "启动后节点会主动向 Hub 心跳，不需要开放子节点入口。"
+            "description": "启动后节点会主动向 Hub 心跳，不需要开放子节点入口。新节点会先进入 pending，不会接任务。"
+        },
+        {
+            "name": "Hub 审批节点",
+            "command": approve_url,
+            "description": "管理员在自己的浏览器登录 Hub，确认节点 ID、机器指纹、token hint 后点击授权。Linux 服务器本身不需要打开浏览器。"
         }
     ])
 }

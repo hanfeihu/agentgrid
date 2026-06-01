@@ -1,12 +1,12 @@
 use axum::{
+    extract::State,
+    http::HeaderMap,
     routing::{get, post},
-    Router,
+    Json, Router,
 };
+use serde_json::Value;
 
-use crate::{
-    auth_me, change_password, create_super_admin, get_bootstrap_status, login_user, register_user,
-    request_register_code, AppState,
-};
+use crate::{bearer_token_from_headers, store, ApiError, AppState};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -20,4 +20,52 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/api/auth/register", post(register_user))
         .route("/api/auth/change-password", post(change_password))
+}
+
+async fn get_bootstrap_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.bootstrap_status()?))
+}
+
+async fn create_super_admin(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.create_super_admin(input)?))
+}
+
+async fn auth_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.auth_state(
+        bearer_token_from_headers(&headers).as_deref(),
+    )?))
+}
+
+async fn login_user(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.login_user(input)?))
+}
+
+async fn request_register_code(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.request_register_code(input)?))
+}
+
+async fn register_user(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.register_user(input)?))
+}
+
+async fn change_password(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.change_password(input)?))
 }

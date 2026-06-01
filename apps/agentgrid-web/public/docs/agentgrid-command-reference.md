@@ -1488,6 +1488,11 @@ Settings include:
 
 Node join authorization:
 
+AgentGrid uses **AgentGrid Node Join Standard v1** for all Worker onboarding.
+The design follows the same idea as the OAuth 2.0 Device Authorization Grant:
+the machine can connect to the Hub, but the human approval happens on another
+browser-capable device.
+
 Workers should start with a stable node id, machine fingerprint, and join token.
 The Hub records first contact as `pending`. Pending nodes may heartbeat, but they
 cannot lease tasks. A super admin must approve the node once in the Web console.
@@ -1496,6 +1501,23 @@ After approval, the Hub binds:
 - `node_id`
 - `machine_fingerprint`
 - `join_token_hash`
+
+Why Linux does not need a browser:
+
+- The installer prints the node id, token hint, and Hub approval URL.
+- The Linux Worker only sends structured heartbeat and join data.
+- The operator opens Hub on their own computer, logs in, checks the machine
+  fingerprint, and approves the node.
+- After approval the same Worker process can lease tasks without re-login.
+
+Recommended headless Linux flow:
+
+1. Admin creates a node provisioning plan in Hub.
+2. Hub generates a one-time `agj_...` join token and systemd service template.
+3. Operator runs the install commands on Linux.
+4. Worker reports `auth_status = pending`.
+5. Admin approves in Hub.
+6. Hub stores only `join_token_hash`, token hint, and machine fingerprint.
 
 Worker flags:
 
@@ -1531,6 +1553,26 @@ Scheduling rule:
 - `auth_status = pending`: can heartbeat, cannot receive tasks.
 - `auth_status = bound`: can receive tasks when online and eligible.
 - `auth_status = legacy`: existing pre-auth nodes remain compatible until re-enrolled.
+
+Node Join Contract:
+
+```json
+{
+  "api_version": "agentgrid.node-join/v1",
+  "kind": "NodeJoinRequest",
+  "node_id": "huarui-node",
+  "node_name": "huarui 子节点",
+  "machine_fingerprint": "sha256:stable-machine-id",
+  "join_token": "agj_xxx",
+  "capabilities": ["command", "file", "git"],
+  "system": {
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_cores": 4,
+    "memory_mb": 8192
+  }
+}
+```
 
 ## 23. Workflow Templates
 

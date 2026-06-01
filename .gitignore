@@ -31,3 +31,9 @@
 *.tmp
 .env
 .env.*
+
+# Private deployment and credential inventories
+/docs/private/
+/private/
+server-assets.private.md
+*.private.md
