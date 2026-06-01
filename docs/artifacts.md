@@ -77,7 +77,7 @@ Recommended targets:
 Before publishing a GitHub release:
 
 ```bash
-cargo build --release -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+cargo build --release -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
 npm --prefix apps/agentgrid-web run build
 node scripts/validate-agentgrid-schemas.js
 ```
@@ -100,4 +100,3 @@ Do not include:
 - SMTP secrets
 - SSH credentials
 - screenshots with private data
-

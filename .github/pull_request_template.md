@@ -12,7 +12,7 @@
 
 ## Verification
 
-- [ ] `cargo check -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp`
+- [ ] `cargo check -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp`
 - [ ] `npm --prefix apps/agentgrid-web run build`
 - [ ] `node scripts/validate-agentgrid-schemas.js`
 
@@ -20,4 +20,3 @@
 
 - [ ] No secrets, tokens, passwords, private hosts, or private screenshots are committed.
 - [ ] New execution capability has a structured contract and evidence shape.
-

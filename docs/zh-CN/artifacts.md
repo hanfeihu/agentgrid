@@ -77,7 +77,7 @@ web/downloads/windows-x86_64/agentgrid-worker.exe
 发布 GitHub Release 前：
 
 ```bash
-cargo build --release -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+cargo build --release -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
 npm --prefix apps/agentgrid-web run build
 node scripts/validate-agentgrid-schemas.js
 ```
@@ -100,4 +100,3 @@ node scripts/validate-agentgrid-schemas.js
 - SMTP 密钥
 - SSH 凭据
 - 带私有信息的截图
-

@@ -16,7 +16,7 @@ Run these before opening a pull request:
 
 ```bash
 cargo fmt
-cargo check -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli
+cargo check -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli
 npm --prefix apps/agentgrid-web run build
 ```
 

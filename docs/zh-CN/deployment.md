@@ -20,7 +20,7 @@ Worker 主动连接 Hub，子节点不需要暴露业务入口。
 ## 构建发布版本
 
 ```bash
-cargo build --release -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+cargo build --release -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
 npm --prefix apps/agentgrid-web install
 npm --prefix apps/agentgrid-web run build
 ```
@@ -141,4 +141,3 @@ web/downloads/windows-x86_64/agentgrid-worker.exe
 - 定期查看审计日志和事件时间线。
 - 明确发布 Worker 更新包。
 - 不要把无限制命令执行暴露给不可信用户。
-
