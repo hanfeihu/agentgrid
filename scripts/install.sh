@@ -41,6 +41,11 @@ if [ "$PLATFORM_OS" = "linux" ] && [ "$PLATFORM_ARCH" != "x86_64" ]; then
   exit 1
 fi
 
+if [ "$PLATFORM_OS" = "macos" ] && [ "$PLATFORM_ARCH" != "arm64" ]; then
+  echo "No official macOS ${PLATFORM_ARCH} release is published yet. Build from source on Intel Macs." >&2
+  exit 1
+fi
+
 if [ "$VERSION" = "latest" ]; then
   VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
   if [ -z "$VERSION" ]; then
