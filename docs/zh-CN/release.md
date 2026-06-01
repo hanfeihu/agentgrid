@@ -38,15 +38,16 @@ Release workflow 会构建：
 
 ## 发布产物
 
-GitHub Release 会包含：
+Alpha workflow 会上传：
 
 ```text
 agentgrid-<version>-linux-x86_64.tar.gz
-agentgrid-<version>-macos-x86_64.tar.gz
 agentgrid-<version>-macos-arm64.tar.gz
 agentgrid-<version>-windows-x86_64.zip
 *.sha256
 ```
+
+首个 alpha 暂不发布 macOS Intel 包，因为 GitHub 托管的 Intel macOS runner 排队时间可能很长。Intel Mac 用户可以先从源码构建，后续再补独立发布任务。
 
 ## 冒烟测试
 
