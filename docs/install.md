@@ -12,11 +12,42 @@ This guide installs AgentGrid for local development and for worker nodes.
 ## Build From Source
 
 ```bash
-git clone https://github.com/<your-org>/agentgrid.git
+git clone https://github.com/hanfeihu/agentgrid.git
 cd agentgrid
-cargo check -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+cargo check -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
 npm --prefix apps/agentgrid-web install
 npm --prefix apps/agentgrid-web run build
+```
+
+## Install From Release
+
+Linux and macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.sh | bash
+```
+
+Windows PowerShell, run as Administrator:
+
+```powershell
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" | iex
+```
+
+Install and start a Worker service on Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.sh | \
+  AGENTGRID_INSTALL_WORKER_SERVICE=1 \
+  AGENTGRID_HUB_URL=https://hub.example.com/agentgrid \
+  AGENTGRID_JOIN_TOKEN=agj_replace_me \
+  bash
+```
+
+Install and start a Windows Worker scheduled task:
+
+```powershell
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" -OutFile "$env:TEMP\agentgrid-install.ps1"
+& "$env:TEMP\agentgrid-install.ps1" -HubUrl "https://hub.example.com/agentgrid" -JoinToken "agj_replace_me" -InstallWorker
 ```
 
 ## Run Hub Locally
@@ -40,7 +71,7 @@ When no super administrator exists, the console shows the bootstrap page.
 ## Run Worker Locally
 
 ```bash
-cargo run -p agentgrid-worker -- \
+cargo run -p agentgrid-worker-app -- \
   --hub http://127.0.0.1:20181 \
   --id local-worker \
   --name "Local Worker" \
@@ -56,7 +87,7 @@ cargo run -p agentgrid-worker -- \
 Build the Worker first:
 
 ```bash
-cargo build --release -p agentgrid-worker
+cargo build --release -p agentgrid-worker-app
 ```
 
 Install:
@@ -72,7 +103,7 @@ AGENTGRID_JOIN_TOKEN=agj_replace_me \
 ## Install macOS Worker With launchd
 
 ```bash
-cargo build --release -p agentgrid-worker
+cargo build --release -p agentgrid-worker-app
 
 AGENTGRID_HUB_URL=https://hub.example.com/agentgrid \
 AGENTGRID_NODE_ID=mac-worker-01 \
@@ -87,15 +118,15 @@ Run an elevated PowerShell session:
 
 ```powershell
 $env:AGENTGRID_JOIN_TOKEN="agj_replace_me"
-irm "https://hub.example.com/agentgrid/install/windows.ps1" | iex
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" -OutFile "$env:TEMP\agentgrid-install.ps1"
+& "$env:TEMP\agentgrid-install.ps1" -HubUrl "https://hub.example.com/agentgrid" -JoinToken "agj_replace_me" -InstallWorker
 ```
 
 For interactive desktop automation, install the Desktop Helper while the target desktop user is logged in:
 
 ```powershell
-$env:AG_DESKTOP_HELPER="1"
-$env:AGENTGRID_JOIN_TOKEN="agj_replace_me"
-irm "https://hub.example.com/agentgrid/install/windows.ps1" | iex
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" -OutFile "$env:TEMP\agentgrid-install.ps1"
+& "$env:TEMP\agentgrid-install.ps1" -HubUrl "https://hub.example.com/agentgrid" -JoinToken "agj_replace_me" -InstallWorker -DesktopHelper
 ```
 
 ## Node Authorization
@@ -113,4 +144,3 @@ The standard flow is:
 7. The node becomes `bound` and can receive tasks.
 
 See [Node Join Standard](node-join-standard.md).
-

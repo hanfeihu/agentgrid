@@ -20,7 +20,7 @@ Workers connect outward to the Hub. Worker nodes do not need inbound public port
 ## Build Release Binaries
 
 ```bash
-cargo build --release -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+cargo build --release -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
 npm --prefix apps/agentgrid-web install
 npm --prefix apps/agentgrid-web run build
 ```
@@ -138,4 +138,3 @@ Known targets:
 - Review audit logs and event timeline.
 - Publish Worker update packages intentionally.
 - Do not expose unrestricted command execution to untrusted users.
-

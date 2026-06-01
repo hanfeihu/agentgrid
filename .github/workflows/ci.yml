@@ -18,11 +18,10 @@ jobs:
           cache: npm
           cache-dependency-path: apps/agentgrid-web/package-lock.json
       - name: Rust check
-        run: cargo check -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+        run: cargo check -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
       - name: Web dependencies
         run: npm --prefix apps/agentgrid-web ci
       - name: Web build
         run: npm --prefix apps/agentgrid-web run build
       - name: Schema check
         run: node scripts/validate-agentgrid-schemas.js
-

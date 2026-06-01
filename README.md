@@ -1,6 +1,6 @@
 # AgentGrid
 
-[中文文档](README.zh-CN.md) | [Vision](docs/vision.md) | [Install](docs/install.md) | [Deploy](docs/deployment.md) | [CLI](docs/cli.md) | [Artifacts](docs/artifacts.md)
+[中文文档](README.zh-CN.md) | [Vision](docs/vision.md) | [5-Minute Quick Start](docs/quickstart.md) | [Install](docs/install.md) | [Deploy](docs/deployment.md) | [CLI](docs/cli.md) | [Release](docs/release.md)
 
 AgentGrid is an open-source scheduling layer for AI agents that need to operate real machines, desktops, tools, devices, jobs, and evidence.
 
@@ -60,7 +60,29 @@ Projects such as [Open Design](https://open-design.ai/zh/) can fit naturally abo
 
 ## Quick Start
 
-Requirements:
+Install the latest release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.sh | bash
+```
+
+Windows PowerShell, run as Administrator:
+
+```powershell
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" | iex
+```
+
+Then run one local Hub, one local Worker, and one command task:
+
+```bash
+agentgrid-hub --host 127.0.0.1 --port 20181 --db /opt/agentgrid/agentgrid-hub.db --web-dir /opt/agentgrid/web
+agentgrid-worker --hub http://127.0.0.1:20181 --id local-worker --name "Local Worker" --capability command --capability file --capability http
+agentgrid submit-command --program hostname --wait
+```
+
+For a step-by-step path, see [5-Minute Quick Start](docs/quickstart.md).
+
+Build from source:
 
 - Rust stable toolchain
 - Node.js 20+ for the web console
@@ -68,7 +90,7 @@ Requirements:
 Build and check:
 
 ```bash
-cargo check -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+cargo check -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
 npm --prefix apps/agentgrid-web install
 npm --prefix apps/agentgrid-web run build
 ```
@@ -86,7 +108,7 @@ cargo run -p agentgrid-hub -- \
 Run a Worker:
 
 ```bash
-cargo run -p agentgrid-worker -- \
+cargo run -p agentgrid-worker-app -- \
   --hub http://127.0.0.1:20181 \
   --id local-worker \
   --name "Local Worker" \
@@ -113,6 +135,7 @@ cargo run -p agentgrid-cli -- submit-command \
 
 | Topic | English | Chinese |
 | --- | --- | --- |
+| 5-minute quick start | [docs/quickstart.md](docs/quickstart.md) | [docs/zh-CN/quickstart.md](docs/zh-CN/quickstart.md) |
 | Vision and ecosystem | [docs/vision.md](docs/vision.md) | [docs/zh-CN/vision.md](docs/zh-CN/vision.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) | [docs/zh-CN/architecture.md](docs/zh-CN/architecture.md) |
 | Install | [docs/install.md](docs/install.md) | [docs/zh-CN/install.md](docs/zh-CN/install.md) |
@@ -120,6 +143,7 @@ cargo run -p agentgrid-cli -- submit-command \
 | CLI | [docs/cli.md](docs/cli.md) | [docs/zh-CN/cli.md](docs/zh-CN/cli.md) |
 | Node join | [docs/node-join-standard.md](docs/node-join-standard.md) | [docs/zh-CN/node-join.md](docs/zh-CN/node-join.md) |
 | Artifacts and releases | [docs/artifacts.md](docs/artifacts.md) | [docs/zh-CN/artifacts.md](docs/zh-CN/artifacts.md) |
+| Release process | [docs/release.md](docs/release.md) | [docs/zh-CN/release.md](docs/zh-CN/release.md) |
 | OpenAPI | [docs/openapi/agentgrid-openapi.yaml](docs/openapi/agentgrid-openapi.yaml) | Same |
 | Command reference | [docs/agentgrid-command-reference.md](docs/agentgrid-command-reference.md) | Same |
 
@@ -153,4 +177,3 @@ AgentGrid can execute commands and operate desktops on machines you own or admin
 ## License
 
 AgentGrid is released under the Apache License, Version 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [OPEN_SOURCE.md](OPEN_SOURCE.md).
-

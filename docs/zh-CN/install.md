@@ -12,11 +12,42 @@
 ## 从源码构建
 
 ```bash
-git clone https://github.com/<your-org>/agentgrid.git
+git clone https://github.com/hanfeihu/agentgrid.git
 cd agentgrid
-cargo check -p agentgrid-hub -p agentgrid-worker -p agentgrid-cli -p agentgrid-mcp
+cargo check -p agentgrid-hub -p agentgrid-worker-app -p agentgrid-cli -p agentgrid-mcp
 npm --prefix apps/agentgrid-web install
 npm --prefix apps/agentgrid-web run build
+```
+
+## 从 Release 安装
+
+Linux 和 macOS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.sh | bash
+```
+
+Windows PowerShell，用管理员权限运行：
+
+```powershell
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" | iex
+```
+
+Linux 或 macOS 安装并启动 Worker 服务：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.sh | \
+  AGENTGRID_INSTALL_WORKER_SERVICE=1 \
+  AGENTGRID_HUB_URL=https://hub.example.com/agentgrid \
+  AGENTGRID_JOIN_TOKEN=agj_replace_me \
+  bash
+```
+
+Windows 安装并启动 Worker 计划任务：
+
+```powershell
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" -OutFile "$env:TEMP\agentgrid-install.ps1"
+& "$env:TEMP\agentgrid-install.ps1" -HubUrl "https://hub.example.com/agentgrid" -JoinToken "agj_replace_me" -InstallWorker
 ```
 
 ## 本地启动 Hub
@@ -40,7 +71,7 @@ http://127.0.0.1:20181
 ## 本地启动 Worker
 
 ```bash
-cargo run -p agentgrid-worker -- \
+cargo run -p agentgrid-worker-app -- \
   --hub http://127.0.0.1:20181 \
   --id local-worker \
   --name "Local Worker" \
@@ -56,7 +87,7 @@ cargo run -p agentgrid-worker -- \
 先构建 Worker：
 
 ```bash
-cargo build --release -p agentgrid-worker
+cargo build --release -p agentgrid-worker-app
 ```
 
 安装：
@@ -72,7 +103,7 @@ AGENTGRID_JOIN_TOKEN=agj_replace_me \
 ## macOS launchd 安装 Worker
 
 ```bash
-cargo build --release -p agentgrid-worker
+cargo build --release -p agentgrid-worker-app
 
 AGENTGRID_HUB_URL=https://hub.example.com/agentgrid \
 AGENTGRID_NODE_ID=mac-worker-01 \
@@ -86,16 +117,15 @@ AGENTGRID_JOIN_TOKEN=agj_replace_me \
 用管理员权限打开 PowerShell：
 
 ```powershell
-$env:AGENTGRID_JOIN_TOKEN="agj_replace_me"
-irm "https://hub.example.com/agentgrid/install/windows.ps1" | iex
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" -OutFile "$env:TEMP\agentgrid-install.ps1"
+& "$env:TEMP\agentgrid-install.ps1" -HubUrl "https://hub.example.com/agentgrid" -JoinToken "agj_replace_me" -InstallWorker
 ```
 
 如果要安装交互式桌面助手，需要在目标桌面用户已登录时执行：
 
 ```powershell
-$env:AG_DESKTOP_HELPER="1"
-$env:AGENTGRID_JOIN_TOKEN="agj_replace_me"
-irm "https://hub.example.com/agentgrid/install/windows.ps1" | iex
+irm "https://raw.githubusercontent.com/hanfeihu/agentgrid/main/scripts/install.ps1" -OutFile "$env:TEMP\agentgrid-install.ps1"
+& "$env:TEMP\agentgrid-install.ps1" -HubUrl "https://hub.example.com/agentgrid" -JoinToken "agj_replace_me" -InstallWorker -DesktopHelper
 ```
 
 ## 节点授权
@@ -113,4 +143,3 @@ Worker 不登录总控台。
 7. 节点变成 `bound`，可以接任务。
 
 见 [节点入网标准](node-join.md)。
-
