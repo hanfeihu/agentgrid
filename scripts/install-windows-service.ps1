@@ -1,5 +1,5 @@
 param(
-  [string]$HubUrl = "http://chenqi.tminos.com:20080/agentgrid",
+  [string]$HubUrl = "https://hub.example.com/agentgrid",
   [string]$NodeId = "$env:COMPUTERNAME-windows",
   [string]$NodeName = "$env:COMPUTERNAME",
   [string]$WorkerExe = ".\agentgrid-worker.exe",

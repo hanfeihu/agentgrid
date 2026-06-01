@@ -1,16 +1,15 @@
 [Unit]
-Description=AgentGrid Hub MVP
-After=network.target
+Description=AgentGrid Hub
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/agentgrid-hub
-Environment=AGENTGRID_HUB_HOST=127.0.0.1
-Environment=AGENTGRID_HUB_PORT=20080
-Environment=AGENTGRID_HUB_DB=/opt/agentgrid-hub/data/agentgrid-hub.db
-ExecStart=/usr/bin/python3 /opt/agentgrid-hub/server.py
+ExecStart=/opt/agentgrid-hub/bin/agentgrid-hub --host 127.0.0.1 --port 20181 --db /opt/agentgrid-hub/data/agentgrid-hub.db --web-dir /opt/agentgrid-hub/web
 Restart=always
 RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
+

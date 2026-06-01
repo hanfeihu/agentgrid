@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentgrid.dev/schemas/agent-task.schema.json",
+  "title": "AgentTask",
+  "description": "AgentGrid task object for AI-facing task APIs and worker-executable compute tasks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec", "status"],
+  "properties": {
+    "api_version": {
+      "type": "string",
+      "enum": ["agentmessage.io/v1", "agentgrid.task/v1"]
+    },
+    "kind": {
+      "const": "AgentTask"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "project_id", "created_by", "created_at", "updated_at"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_by": {
+          "$ref": "#/$defs/actor_id"
+        },
+        "assigned_to": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/actor_id"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "created_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "correlation_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "job_id": {
+          "type": ["string", "null"],
+          "pattern": "^job_[A-Za-z0-9_\\-]+$",
+          "default": null
+        },
+        "attempt_id": {
+          "type": ["string", "null"],
+          "pattern": "^attempt_[A-Za-z0-9_\\-]+$",
+          "default": null
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "summary", "priority", "inputs", "outputs", "acceptance_criteria"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "priority": {
+          "enum": ["p0", "p1", "p2", "p3", "normal", "low"]
+        },
+        "tool_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$",
+          "default": null
+        },
+        "payload": {
+          "type": ["object", "array", "string", "number", "boolean", "null"],
+          "description": "Structured tool payload for executable compute tasks.",
+          "default": null
+        },
+        "placement": {
+          "$ref": "#/$defs/placement_ref"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact_ref"
+          },
+          "default": []
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact_ref"
+          },
+          "default": []
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/task_id"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "due_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null
+        },
+        "timeout_seconds": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "default": null
+        },
+        "retry_policy": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        },
+        "verify": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "progress"],
+      "properties": {
+        "state": {
+          "enum": ["todo", "assigned", "queued", "leased", "in_progress", "blocked", "review", "testing", "done", "failed", "cancelled"]
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "node_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "lease_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "lease_expires_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null
+        },
+        "started_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null
+        },
+        "completed_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null
+        },
+        "blocked_reason": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "error": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        },
+        "result": {
+          "type": ["object", "array", "string", "number", "boolean", "null"],
+          "default": null
+        },
+        "last_message_id": {
+          "type": ["string", "null"],
+          "pattern": "^msg_[A-Za-z0-9_\\-]+$",
+          "default": null
+        }
+      }
+    }
+  },
+  "$defs": {
+    "actor_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@:\\-]*$"
+    },
+    "artifact_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "date_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task_[A-Za-z0-9_\\-]+$"
+    },
+    "placement_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "default": null,
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os": {
+          "enum": ["linux", "mac", "macos", "windows", "ios", "android"]
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "required_tools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "api_version": "agentmessage.io/v1",
+      "kind": "AgentTask",
+      "metadata": {
+        "id": "task_api_standard_001",
+        "project_id": "agentgrid",
+        "created_by": "architect-agent",
+        "assigned_to": ["protocol-agent"],
+        "created_at": "2026-06-01T00:00:00Z",
+        "updated_at": "2026-06-01T00:00:00Z",
+        "correlation_id": null
+      },
+      "spec": {
+        "title": "Define API standard",
+        "summary": "Create machine-readable AgentGrid API standard files.",
+        "owner": "protocol-agent",
+        "priority": "p0",
+        "tool_id": null,
+        "payload": null,
+        "placement": null,
+        "inputs": ["docs/agentgrid-standards.md"],
+        "outputs": ["docs/api-standard.md"],
+        "acceptance_criteria": ["OpenAPI and JSON Schema files parse"],
+        "labels": ["api", "schema"],
+        "depends_on": [],
+        "due_at": null
+      },
+      "status": {
+        "state": "in_progress",
+        "progress": 50,
+        "started_at": "2026-06-01T00:00:00Z",
+        "completed_at": null,
+        "blocked_reason": null,
+        "last_message_id": null
+      }
+    }
+  ]
+}

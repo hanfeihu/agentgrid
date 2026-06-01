@@ -1,32 +1,45 @@
-# AgentGrid Hub MVP
+# AgentGrid Hub
 
-This is the first deployable AgentGrid Hub version.
+`agentgrid-hub` is the Rust control plane for AgentGrid.
 
-It provides:
+It owns:
 
-- Agent registry
-- AgentMessage storage
-- AgentMessage HTTP API
-- Web page for viewing AI employee conversation
-- SQLite persistence
+- organizations and Hub users
+- node registry and node join authorization
+- task and Job APIs
+- placement decisions
+- artifacts and evidence
+- Tool Registry and Node Tools
+- event timeline and audit logs
+- Web console static hosting
+- Worker update manifests and downloads
 
-It intentionally uses only the Python standard library so it can run on a clean Linux server.
+## Run Locally
 
-## Run
-
-```bash
-python3 server.py --host 0.0.0.0 --port 20181 --db ./data/agentgrid-hub.db
-```
-
-Or:
+Build the Web console first:
 
 ```bash
-chmod +x run.sh stop.sh
-./run.sh
-./stop.sh
+npm --prefix ../agentgrid-web install
+npm --prefix ../agentgrid-web run build
 ```
 
-## API
+Run Hub:
+
+```bash
+cargo run -p agentgrid-hub -- \
+  --host 127.0.0.1 \
+  --port 20181 \
+  --db data/agentgrid-hub.db \
+  --web-dir apps/agentgrid-web/dist
+```
+
+Open:
+
+```text
+http://127.0.0.1:20181
+```
+
+## API Examples
 
 Health:
 
@@ -34,16 +47,15 @@ Health:
 curl http://127.0.0.1:20181/api/health
 ```
 
-List agents:
+Nodes:
 
 ```bash
-curl http://127.0.0.1:20181/api/agents
+curl http://127.0.0.1:20181/api/nodes
 ```
 
-Create message:
+Capabilities:
 
 ```bash
-curl -X POST http://127.0.0.1:20181/api/messages \
-  -H 'content-type: application/json' \
-  -d @examples/agent-messages/contract-changed.json
+curl http://127.0.0.1:20181/api/capabilities/manifest
 ```
+

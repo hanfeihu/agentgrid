@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentmessage.io/schemas/plugin-manifest.schema.json",
+  "title": "PluginManifest",
+  "description": "AgentGrid Worker Plugin Runtime v2 manifest for node-local plugin tools.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "plugin_id", "name", "version", "runtime", "platforms", "tools", "probe", "risk"],
+  "properties": {
+    "api_version": {
+      "const": "agentgrid.plugin-manifest/v2"
+    },
+    "kind": {
+      "const": "PluginManifest"
+    },
+    "plugin_id": {
+      "$ref": "#/$defs/plugin_id"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entrypoint", "protocol", "timeout_seconds"],
+      "properties": {
+        "entrypoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protocol": {
+          "enum": ["stdio-json", "http-local", "grpc-local"]
+        },
+        "working_directory": {
+          "enum": ["plugin", "task", "system_temp"]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "environment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "source"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Z_][A-Z0-9_]*$"
+              },
+              "source": {
+                "enum": ["literal", "secret_ref", "worker", "task_context"]
+              },
+              "value": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          },
+          "default": []
+        }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/platform"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/tool"
+      },
+      "minItems": 1
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/dependency"
+      },
+      "default": []
+    },
+    "probe": {
+      "$ref": "#/$defs/probe"
+    },
+    "risk": {
+      "$ref": "#/$defs/risk"
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "$defs": {
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "required"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "enum": ["binary", "library", "python_package", "node_package", "system_package", "service", "device", "environment_variable"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "evidence_type": {
+      "enum": ["screenshot", "stdout_log", "stderr_log", "serial_log", "file_artifact", "test_report", "operation_timeline", "structured_result", "metric_series", "external_reference"]
+    },
+    "json_schema": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": {
+          "enum": ["linux", "macos", "windows"]
+        },
+        "arch": {
+          "enum": ["x86_64", "arm64", "aarch64"]
+        },
+        "min_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "plugin_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$"
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_id", "input", "success_condition", "interval_seconds"],
+      "properties": {
+        "tool_id": {
+          "$ref": "#/$defs/tool_id"
+        },
+        "input": true,
+        "success_condition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "enum": ["exit_code_zero", "json_path_exists", "json_path_equals", "output_schema_valid"]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "value": true
+          }
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 2592000
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "summary"],
+      "properties": {
+        "level": {
+          "enum": ["low", "medium", "high"]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reads_files": {
+          "type": "boolean",
+          "default": false
+        },
+        "writes_files": {
+          "type": "boolean",
+          "default": false
+        },
+        "uses_network": {
+          "type": "boolean",
+          "default": false
+        },
+        "accesses_devices": {
+          "type": "boolean",
+          "default": false
+        },
+        "executes_child_processes": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_id", "title", "description", "capabilities", "input_schema", "output_schema", "risk", "default_timeout_seconds", "expected_evidence"],
+      "properties": {
+        "tool_id": {
+          "$ref": "#/$defs/tool_id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "input_schema": {
+          "$ref": "#/$defs/json_schema"
+        },
+        "output_schema": {
+          "$ref": "#/$defs/json_schema"
+        },
+        "risk": {
+          "enum": ["low", "medium", "high"]
+        },
+        "default_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "expected_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_type"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "input"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input": true,
+              "output": true
+            }
+          },
+          "default": []
+        }
+      }
+    },
+    "tool_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    },
+    "capability": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    }
+  }
+}

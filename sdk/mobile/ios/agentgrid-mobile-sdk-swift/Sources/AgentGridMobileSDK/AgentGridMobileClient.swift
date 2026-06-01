@@ -25,8 +25,8 @@ public enum AgentGridMobileError: Error, LocalizedError {
 public struct AgentGridMobileClient {
     /// The public AgentGrid hub currently serves HTTP on port 20080.
     /// iOS apps that use this default must add a scoped App Transport Security
-    /// exception for `chenqi.tminos.com` in the app target's Info.plist.
-    public static let defaultHubURL = URL(string: "http://chenqi.tminos.com:20080/agentgrid")!
+    /// exception for `hub.example.com` in the app target's Info.plist.
+    public static let defaultHubURL = URL(string: "https://hub.example.com/agentgrid")!
 
     private let hubURL: URL
     private let bearerToken: String?

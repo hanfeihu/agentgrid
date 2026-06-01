@@ -23,7 +23,7 @@ eligible Worker node.
 Default Hub URL:
 
 ```text
-http://chenqi.tminos.com:20080/agentgrid
+https://hub.example.com/agentgrid
 ```
 
 The default Hub URL is plain HTTP. On iOS, App Transport Security blocks that
@@ -35,7 +35,7 @@ this to the app target's `Info.plist` when using the default URL:
 <dict>
     <key>NSExceptionDomains</key>
     <dict>
-        <key>chenqi.tminos.com</key>
+        <key>hub.example.com</key>
         <dict>
             <key>NSExceptionAllowsInsecureHTTPLoads</key>
             <true/>

@@ -136,7 +136,7 @@ Workers ask for a lease:
 
 ```json
 {
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "max_tasks": 8,
   "lease_seconds": 120,
   "capabilities": ["http", "command"]

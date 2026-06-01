@@ -2,7 +2,7 @@
 
 Version: v0.1
 Audience: humans, AI agents, automation clients
-Hub URL: http://chenqi.tminos.com:20080/agentgrid
+Hub URL: https://hub.example.com/agentgrid
 
 ## 1. Purpose
 
@@ -19,7 +19,7 @@ AI clients should call AgentGrid with structured JSON only. Do not send natural 
 Default Hub:
 
 ```text
-http://chenqi.tminos.com:20080/agentgrid
+https://hub.example.com/agentgrid
 ```
 
 Default CLI:
@@ -67,7 +67,7 @@ Response shape:
   "kind": "CapabilityManifest",
   "metadata": {
     "project_id": "agentgrid",
-    "hub_url": "http://chenqi.tminos.com:20080/agentgrid",
+    "hub_url": "https://hub.example.com/agentgrid",
     "generated_at": "2026-06-01T00:00:00Z"
   },
   "workflow": [
@@ -289,8 +289,8 @@ Node heartbeat rules:
 
 Current node IDs:
 
-- chenqi-center: center server node
-- jia-node: Linux child node
+- hub-node: center server node
+- linux-worker-01: Linux child node
 - local-mac: local macOS child node
 
 ## 3. Scheduler Rules
@@ -302,7 +302,7 @@ AgentGrid scheduling is a two-stage contract:
 1. Eligibility Gate: decide whether a node is allowed to run the task.
 2. Optimization Score: choose the best node only from eligible nodes.
 
-Hard constraints must never be overridden by scoring. If a task explicitly targets `node:ZZH0610-windows`, Linux nodes such as `jia-node` are rejected before CPU, memory, weight, success rate, or trust multiplier are considered.
+Hard constraints must never be overridden by scoring. If a task explicitly targets `node:ZZH0610-windows`, Linux nodes such as `linux-worker-01` are rejected before CPU, memory, weight, success rate, or trust multiplier are considered.
 
 Eligibility hard constraints:
 
@@ -365,7 +365,7 @@ Optional routing labels:
 Examples:
 
 ```json
-["compute", "command", "node:jia-node"]
+["compute", "command", "node:linux-worker-01"]
 ```
 
 ```json
@@ -627,7 +627,7 @@ Expected result:
 Base URL:
 
 ```text
-http://chenqi.tminos.com:20080/agentgrid/api
+https://hub.example.com/agentgrid/api
 ```
 
 Health:
@@ -705,13 +705,13 @@ Topology:
 Browser WebSocket:
 
 ```text
-ws://chenqi.tminos.com:20080/agentgrid/api/terminal/ws?node_id=<node_id>
+wss://hub.example.com/agentgrid/api/terminal/ws?node_id=<node_id>
 ```
 
 Worker WebSocket:
 
 ```text
-ws://chenqi.tminos.com:20080/agentgrid/api/worker/terminal/ws?node_id=<node_id>
+wss://hub.example.com/agentgrid/api/worker/terminal/ws?node_id=<node_id>
 ```
 
 Open message sent by Hub to Worker:
@@ -720,7 +720,7 @@ Open message sent by Hub to Worker:
 {
   "type": "terminal.open",
   "session_id": "term_xxx",
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "cols": 120,
   "rows": 32
 }
@@ -743,7 +743,7 @@ Output message:
   "type": "terminal.output",
   "session_id": "term_xxx",
   "stream": "pty",
-  "data": "/home/chenqi\n"
+  "data": "/home/agentgrid\n"
 }
 ```
 
@@ -772,7 +772,7 @@ Implementation notes:
   "owner": "worker-agent",
   "assigned_to": ["worker-agent"],
   "priority": "normal",
-  "labels": ["compute", "command", "node:jia-node"],
+  "labels": ["compute", "command", "node:linux-worker-01"],
   "inputs": [
     "{\n  \"type\": \"command\",\n  \"program\": \"hostname\",\n  \"args\": [],\n  \"working_dir\": null,\n  \"timeout_seconds\": 30\n}"
   ],
@@ -869,7 +869,7 @@ The CLI has the production Hub URL built in. Users normally do not need to pass 
 Use the explicit Hub URL only for development or migration testing:
 
 ```bash
-agentgrid --hub http://chenqi.tminos.com:20080/agentgrid health
+agentgrid --hub https://hub.example.com/agentgrid health
 ```
 
 Health:
@@ -935,7 +935,7 @@ agentgrid nodes
 Get one node:
 
 ```bash
-agentgrid nodes get --id jia-node
+agentgrid nodes get --id linux-worker-01
 ```
 
 Show current policy:
@@ -968,7 +968,7 @@ Submit command task to a specific node:
 ```bash
 agentgrid submit-command \
   --program hostname \
-  --node jia-node \
+  --node linux-worker-01 \
   --expect-exit-code 0 \
   --expect-stdout-contains hanfeihu \
   --title "Run hostname on jia"
@@ -988,7 +988,7 @@ Submit command and wait for stdout/stderr:
 ```bash
 agentgrid submit-command \
   --program hostname \
-  --node jia-node \
+  --node linux-worker-01 \
   --wait
 ```
 
@@ -1036,7 +1036,7 @@ Submit Docker task:
 ```bash
 agentgrid submit-docker \
   --operation ps \
-  --node chenqi-center \
+  --node hub-node \
   --title "Docker containers"
 ```
 
@@ -1095,7 +1095,7 @@ Content-Type: application/json
         "operation": "status",
         "repo_dir": "/srv/project"
       },
-      "labels": ["compute", "git", "node:chenqi-center"]
+      "labels": ["compute", "git", "node:hub-node"]
     },
     {
       "id": "run_tests",
@@ -1108,7 +1108,7 @@ Content-Type: application/json
         "working_dir": "/srv/project",
         "timeout_seconds": 600
       },
-      "labels": ["compute", "command", "node:chenqi-center"]
+      "labels": ["compute", "command", "node:hub-node"]
     }
   ]
 }
@@ -1286,7 +1286,7 @@ Example operations employee:
 Register or update:
 
 ```bash
-curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/agents \
+curl -X POST https://hub.example.com/agentgrid/api/agents \
   -H 'content-type: application/json' \
   -d '{
     "id": "ops-agent",
@@ -1369,13 +1369,13 @@ Content-Type: application/json
 
 ```json
 {
-  "node_id": "huarui-node",
+  "node_id": "linux-worker-02",
   "node_name": "huarui 子节点",
-  "ssh_host": "huarui.zhuzhux.com",
+  "ssh_host": "worker.example.com",
   "ssh_user": "root",
   "os": "linux",
   "arch": "x86_64",
-  "hub_url": "http://chenqi.tminos.com:20080/agentgrid/api",
+  "hub_url": "https://hub.example.com/agentgrid/api",
   "notes": "credentials not stored"
 }
 ```
@@ -1501,7 +1501,7 @@ Worker flags:
 
 ```bash
 agentgrid-worker \
-  --hub http://chenqi.tminos.com:20080/agentgrid \
+  --hub https://hub.example.com/agentgrid \
   --id zzh0610-windows \
   --name ZZH0610 \
   --join-token agj_xxx \
@@ -1652,7 +1652,7 @@ Workflow JSON:
         "args": [],
         "timeout_seconds": 30
       },
-      "labels": ["compute", "command", "node:jia-node"]
+      "labels": ["compute", "command", "node:linux-worker-01"]
     },
     {
       "id": "huarui_hostname",
@@ -1664,7 +1664,7 @@ Workflow JSON:
         "args": [],
         "timeout_seconds": 30
       },
-      "labels": ["compute", "command", "node:huarui-node"]
+      "labels": ["compute", "command", "node:linux-worker-02"]
     },
     {
       "id": "notify",
@@ -1719,7 +1719,7 @@ Final Workflow result:
       "workflow_node_id": "jia_hostname",
       "task_id": "task_xxx",
       "state": "done",
-      "leased_by_node_id": "jia-node",
+      "leased_by_node_id": "linux-worker-01",
       "result": {
         "type": "command_result",
         "exit_code": 0,
@@ -1755,7 +1755,7 @@ Available context:
     "read_hostname": {
       "task_id": "task_xxx",
       "state": "done",
-      "leased_by_node_id": "jia-node",
+      "leased_by_node_id": "linux-worker-01",
       "result": {
         "stdout": "hanfeihu\n",
         "exit_code": 0
@@ -1779,7 +1779,7 @@ Example:
     "to": ["architect-agent"],
     "message_type": "workflow.context.demo",
     "subject": "工作流结果传递验证",
-    "summary": "jia-node hostname 是：${steps.read_hostname.result.stdout}",
+    "summary": "linux-worker-01 hostname 是：${steps.read_hostname.result.stdout}",
     "payload": {
       "source_task_id": "${steps.read_hostname.task_id}",
       "hostname": "${steps.read_hostname.result.stdout}",
@@ -1912,7 +1912,7 @@ Tool object:
       "duration_ms": { "type": "integer" }
     }
   },
-  "supported_nodes": ["chenqi-center", "jia-node", "huarui-node"],
+  "supported_nodes": ["hub-node", "linux-worker-01", "linux-worker-02"],
   "node_count": 3,
   "support_basis": "node_heartbeat_capabilities",
   "verification_status": "declared_unverified"
@@ -1975,8 +1975,8 @@ CLI:
 ```bash
 agentgrid node-tools
 agentgrid node-tools get --id demo.hello
-agentgrid node-tools node --node chenqi-center
-agentgrid node-tools register --node chenqi-center --file node-tool.json
+agentgrid node-tools node --node hub-node
+agentgrid node-tools register --node hub-node --file node-tool.json
 ```
 
 Registration file:
@@ -2038,7 +2038,7 @@ Dynamic Runtime submit:
 agentgrid runtime submit \
   --tool demo.hello \
   --payload '{"name":"AgentGrid"}' \
-  --node chenqi-center \
+  --node hub-node \
   --wait
 ```
 
@@ -2084,20 +2084,20 @@ CLI:
 ```bash
 agentgrid node-tools probe
 agentgrid node-tools probe --id demo.hello
-agentgrid node-tools probe --id demo.hello --node chenqi-center
+agentgrid node-tools probe --id demo.hello --node hub-node
 ```
 
 Probe task generated by Hub:
 
 ```json
 {
-  "title": "Node Tool Probe demo.hello on chenqi-center",
+  "title": "Node Tool Probe demo.hello on hub-node",
   "created_by": "node-tool-probe-engine",
   "labels": [
     "compute",
     "plugin",
     "tool:demo.hello",
-    "node:chenqi-center",
+    "node:hub-node",
     "probe:demo.hello",
     "node_tool_probe"
   ],
@@ -2152,7 +2152,7 @@ CLI:
 agentgrid tools probes
 agentgrid tools probe
 agentgrid tools probe --id command.run
-agentgrid tools probe --id command.run --node jia-node
+agentgrid tools probe --id command.run --node linux-worker-01
 ```
 
 Probe states:
@@ -2171,7 +2171,7 @@ Example result:
   "kind": "ToolProbe",
   "metadata": {
     "tool_id": "command.run",
-    "node_id": "jia-node",
+    "node_id": "linux-worker-01",
     "task_id": "task_xxx"
   },
   "spec": {
@@ -2289,7 +2289,7 @@ Tool Registry responses include per-node Probe status:
 
 ```json
 {
-  "id": "jia-node",
+  "id": "linux-worker-01",
   "verification_status": "verified",
   "support_basis": "runtime_probe",
   "probe": {
@@ -2323,7 +2323,7 @@ The response includes:
 {
   "candidates": [
     {
-      "node_id": "jia-node",
+      "node_id": "linux-worker-01",
       "score": 8.3,
       "base_resource_score": 11.5,
       "trust": {
@@ -2351,7 +2351,7 @@ MCP Server lets AI clients call AgentGrid through a standard tool interface over
 Binary:
 
 ```bash
-agentgrid-mcp --hub http://chenqi.tminos.com:20080/agentgrid
+agentgrid-mcp --hub https://hub.example.com/agentgrid
 ```
 
 Default Hub URL is already compiled in, so most clients can use:
@@ -2390,7 +2390,7 @@ Rust:
 use agentgrid_sdk::AgentGridClient;
 
 let client = AgentGridClient::default_hub();
-let result = client.submit_command("hostname", vec![], Some("chenqi-center".into()), None)?;
+let result = client.submit_command("hostname", vec![], Some("hub-node".into()), None)?;
 ```
 
 Node:
@@ -2399,7 +2399,7 @@ Node:
 import { AgentGridClient } from './sdk/node/index.js';
 
 const client = new AgentGridClient();
-const result = await client.runCommand({ program: 'hostname', nodeId: 'chenqi-center' });
+const result = await client.runCommand({ program: 'hostname', nodeId: 'hub-node' });
 ```
 
 Python:
@@ -2408,7 +2408,7 @@ Python:
 from agentgrid_sdk import AgentGridClient
 
 client = AgentGridClient()
-result = client.run_command('hostname', node_id='chenqi-center')
+result = client.run_command('hostname', node_id='hub-node')
 ```
 
 Mobile console clients:
@@ -2493,7 +2493,7 @@ Start a template:
 ```bash
 agentgrid task-templates start \
   --id http.healthcheck \
-  --param url=http://chenqi.tminos.com:20080/agentgrid/api/health \
+  --param url=https://hub.example.com/agentgrid/api/health \
   --wait
 ```
 
@@ -2511,9 +2511,9 @@ Start request:
 {
   "title": "检查中心服务器健康",
   "parameters": {
-    "url": "http://chenqi.tminos.com:20080/agentgrid/api/health"
+    "url": "https://hub.example.com/agentgrid/api/health"
   },
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "created_by": "agent-runtime"
 }
 ```
@@ -2551,7 +2551,7 @@ agentgrid submit-plugin \
   --plugin-id hello-plugin \
   --action run \
   --input '{"name":"AgentGrid"}' \
-  --node chenqi-center
+  --node hub-node
 ```
 
 Runtime API:
@@ -2670,7 +2670,7 @@ Delivery payload:
   "created_at": "2026-05-31T00:00:00Z",
   "payload": {
     "task_id": "task_xxx",
-    "node_id": "chenqi-center",
+    "node_id": "hub-node",
     "result": {}
   }
 }
@@ -3054,7 +3054,7 @@ Windows one-line install:
 Run PowerShell as Administrator:
 
 ```powershell
-irm "http://chenqi.tminos.com:20080/agentgrid/install/windows.ps1" | iex
+irm "https://hub.example.com/agentgrid/install/windows.ps1" | iex
 ```
 
 Optional node identity:
@@ -3064,7 +3064,7 @@ $env:AG_NODE_ID="office-pc-01"
 $env:AG_NODE_NAME="Office PC 01"
 $env:AG_MAX_JOBS="4"
 $env:AGENTGRID_JOIN_TOKEN="agj_xxx"
-irm "http://chenqi.tminos.com:20080/agentgrid/install/windows.ps1" | iex
+irm "https://hub.example.com/agentgrid/install/windows.ps1" | iex
 ```
 
 After first heartbeat, the node appears as `pending` in the Web console. A Hub
@@ -3074,7 +3074,7 @@ plugin, or job tasks.
 The bootstrap script downloads:
 
 ```text
-http://chenqi.tminos.com:20080/agentgrid/api/worker/download/windows-x86_64
+https://hub.example.com/agentgrid/api/worker/download/windows-x86_64
 ```
 
 It installs `agentgrid-worker.exe` under:
@@ -3127,7 +3127,7 @@ For screenshot, click, type, and key desktop control, install the optional Deskt
 
 ```powershell
 $env:AG_DESKTOP_HELPER="1"
-irm "http://chenqi.tminos.com:20080/agentgrid/install/windows.ps1" | iex
+irm "https://hub.example.com/agentgrid/install/windows.ps1" | iex
 ```
 
 This keeps the normal background Worker as:
@@ -3621,7 +3621,7 @@ Plan response:
     "valid_payload": true,
     "can_run": true,
     "tool_id": "command.run",
-    "selected_node_id": "chenqi-center",
+    "selected_node_id": "hub-node",
     "eligible_nodes": [],
     "rejected_nodes": [],
     "execution_shape": {
@@ -3795,7 +3795,7 @@ Response shape:
           "job_id": "job_xxx",
           "attempt_id": "attempt_xxx",
           "task_id": "task_xxx",
-          "node_id": "chenqi-center",
+          "node_id": "hub-node",
           "shard_id": null,
           "outcome": "rescheduled",
           "next_attempt_id": "attempt_yyy",
@@ -3833,7 +3833,7 @@ agentgrid jobs checkpoint \
   --id job_xxx \
   --attempt attempt_xxx \
   --task task_xxx \
-  --node chenqi-center \
+  --node hub-node \
   --sequence 12 \
   --progress 42 \
   --resume-token '{"cursor":"page-42"}'
@@ -3877,7 +3877,7 @@ POST /api/events/ingress
   "type": "job.signal",
   "target": {
     "job_id": "job_xxx",
-    "node_id": "chenqi-center"
+    "node_id": "hub-node"
   },
   "idempotency_key": "evt_xxx",
   "payload": {
@@ -3894,7 +3894,7 @@ agentgrid jobs event \
   --source external-system \
   --type job.signal \
   --job job_xxx \
-  --node chenqi-center \
+  --node hub-node \
   --payload '{"signal":"pause"}'
 ```
 
@@ -3917,7 +3917,7 @@ Content-Type: application/json
 
 ```json
 {
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "lease_seconds": 120
 }
 ```
@@ -3930,7 +3930,7 @@ Success response:
   "api_version": "agentgrid.worker-lease/v1",
   "kind": "WorkerLeaseRenewal",
   "task_id": "task_xxx",
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "lease_seconds": 120,
   "lease_expires_at": "2026-06-01T00:00:00Z"
 }
@@ -3964,9 +3964,9 @@ Configure path:
 
 ```bash
 agentgrid-worker \
-  --hub http://chenqi.tminos.com:20080/agentgrid \
-  --id chenqi-center \
-  --journal-path /var/lib/agentgrid/worker/journal/chenqi-center.jsonl
+  --hub https://hub.example.com/agentgrid \
+  --id hub-node \
+  --journal-path /var/lib/agentgrid/worker/journal/hub-node.jsonl
 ```
 
 Disable journal:
@@ -3982,7 +3982,7 @@ Journal record shape:
   "api_version": "agentgrid.worker-journal/v1",
   "kind": "WorkerExecutionJournalRecord",
   "time": "1710000000.000000000Z",
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "event": "leased",
   "task_id": "task_xxx",
   "job_id": "job_xxx",
@@ -4015,7 +4015,7 @@ Content-Type: application/json
 
 ```json
 {
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "records": [
     {
       "api_version": "agentgrid.worker-journal/v1",
@@ -4035,7 +4035,7 @@ Hub response:
   "ok": true,
   "api_version": "agentgrid.worker-reconcile/v2",
   "kind": "WorkerReconcileResult",
-  "node_id": "chenqi-center",
+  "node_id": "hub-node",
   "checked": 1,
   "summary": {
     "total": 1,
@@ -4052,7 +4052,7 @@ Hub response:
       "task_id": "task_xxx",
       "journal_event": "started",
       "hub_state": "in_progress",
-      "leased_by_node_id": "chenqi-center",
+      "leased_by_node_id": "hub-node",
       "action": "worker_should_confirm_running_or_finish",
       "severity": "info",
       "recovery": {
@@ -4067,7 +4067,7 @@ Hub response:
       "hub_snapshot": {
         "exists": true,
         "state": "in_progress",
-        "leased_by_node_id": "chenqi-center",
+        "leased_by_node_id": "hub-node",
         "lease_expires_at": "2026-06-01T00:00:00Z",
         "job_id": "job_xxx",
         "job_attempt_id": "attempt_xxx"

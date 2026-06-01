@@ -1,5 +1,5 @@
 param(
-  [string]$HubUrl = "http://chenqi.tminos.com:20080/agentgrid",
+  [string]$HubUrl = "https://hub.example.com/agentgrid",
   [string]$NodeId = "",
   [string]$NodeName = "",
   [int]$MaxConcurrentJobs = 0,

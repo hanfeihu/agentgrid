@@ -2,7 +2,7 @@ import json
 import urllib.request
 
 
-DEFAULT_HUB_URL = "http://chenqi.tminos.com:20080/agentgrid"
+DEFAULT_HUB_URL = "http://127.0.0.1:20181"
 
 
 class AgentGridClient:

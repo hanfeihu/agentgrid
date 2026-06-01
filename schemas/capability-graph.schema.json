@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentmessage.io/schemas/capability-graph.schema.json",
+  "title": "CapabilityGraph",
+  "description": "AgentGrid Capability Graph v2 snapshot connecting nodes, capabilities, devices, tools, plugins, evidence, and probe status.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "nodes", "tools", "edges"],
+  "properties": {
+    "api_version": {
+      "const": "agentgrid.capability-graph/v2"
+    },
+    "kind": {
+      "const": "CapabilityGraph"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generated_at", "hub_id"],
+      "properties": {
+        "generated_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "hub_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "graph_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "default": []
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/tool"
+      },
+      "default": []
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/device"
+      },
+      "default": []
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/plugin"
+      },
+      "default": []
+    },
+    "task_intents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/task_intent"
+      },
+      "default": []
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "default": []
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    },
+    "date_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "type", "node_id", "status"],
+      "properties": {
+        "device_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "enum": ["desktop", "browser", "filesystem", "serial", "flasher", "test_rig", "mobile", "custom"]
+        },
+        "node_id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "status": {
+          "enum": ["online", "offline", "busy", "unknown", "disabled"]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "type"],
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^(node|tool|plugin|device|capability|intent|evidence):.+$"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^(node|tool|plugin|device|capability|intent|evidence):.+$"
+        },
+        "type": {
+          "enum": ["has_capability", "hosts_device", "provides_tool", "implemented_by_plugin", "requires_dependency", "produces_evidence", "supports_intent", "verified_by_probe", "runs_on_node"]
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    },
+    "evidence_type": {
+      "enum": ["screenshot", "stdout_log", "stderr_log", "serial_log", "file_artifact", "test_report", "operation_timeline", "structured_result", "metric_series", "external_reference"]
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "name", "os", "arch", "status", "capabilities", "tools"],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os": {
+          "enum": ["linux", "macos", "windows"]
+        },
+        "arch": {
+          "enum": ["x86_64", "arm64", "aarch64"]
+        },
+        "status": {
+          "enum": ["online", "offline", "unknown", "draining", "disabled"]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool_id"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      }
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin_id", "version", "tools", "nodes", "risk"],
+      "properties": {
+        "plugin_id": {
+          "$ref": "#/$defs/plugin_id"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool_id"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_id"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "risk": {
+          "enum": ["low", "medium", "high"]
+        }
+      }
+    },
+    "plugin_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$"
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {
+          "enum": ["declared_unverified", "pending", "verified", "failed", "expired", "unsupported", "disabled"]
+        },
+        "last_checked_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "task_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent_type", "tool_id"],
+      "properties": {
+        "intent_type": {
+          "$ref": "#/$defs/tool_id"
+        },
+        "tool_id": {
+          "$ref": "#/$defs/tool_id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_id", "title", "executor", "capabilities", "required_evidence", "probe"],
+      "properties": {
+        "tool_id": {
+          "$ref": "#/$defs/tool_id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executor": {
+          "type": "string",
+          "pattern": "^(worker|hub|plugin:[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*)$"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "required_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_type"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "probe": {
+          "$ref": "#/$defs/probe"
+        },
+        "risk": {
+          "enum": ["low", "medium", "high"]
+        },
+        "input_schema_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_schema_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "tool_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    }
+  }
+}

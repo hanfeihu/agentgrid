@@ -24,6 +24,7 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import {
+  Alert,
   Badge,
   Button,
   Card,
@@ -75,6 +76,7 @@ const menuRoutes = [
   { path: '/terminal', key: 'terminal', name: '远程终端', icon: <CodeOutlined /> },
   { path: '/scheduler', key: 'scheduler', name: '调度策略', icon: <SettingOutlined /> },
   { path: '/settings', key: 'settings', name: '系统设置', icon: <SafetyCertificateOutlined /> },
+  { path: '/users', key: 'users', name: '用户管理', icon: <TeamOutlined /> },
   { path: '/provisioning', key: 'provisioning', name: '节点纳管', icon: <DeploymentUnitOutlined /> },
   { path: '/workflow-templates', key: 'workflowTemplates', name: '工作流模板', icon: <ForkOutlined /> },
   { path: '/events', key: 'events', name: '事件总线', icon: <AuditOutlined /> },
@@ -209,6 +211,8 @@ function App() {
   const [webhooks, setWebhooks] = useState([]);
   const [webhookDeliveries, setWebhookDeliveries] = useState([]);
   const [provisioningPlans, setProvisioningPlans] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [organization, setOrganization] = useState(null);
   const [events, setEvents] = useState([]);
   const [messages, setMessages] = useState([]);
   const [auditEvents, setAuditEvents] = useState([]);
@@ -224,7 +228,7 @@ function App() {
   const refresh = async () => {
     setLoading(true);
     try {
-      const [bootstrapRes, healthRes, nodeRes, agentRes, taskRes, jobRes, workflowRes, toolRes, nodeToolRes, capabilityRes, runtimeRes, standardRes, workflowTemplateRes, taskTemplateRes, webhookRes, webhookDeliveryRes, provisioningRes, eventRes, artifactRes, messageRes, auditRes, schedulerRes, diagnosticsRes, settingsRes] = await Promise.all([
+      const [bootstrapRes, healthRes, nodeRes, agentRes, taskRes, jobRes, workflowRes, toolRes, nodeToolRes, capabilityRes, runtimeRes, standardRes, workflowTemplateRes, taskTemplateRes, webhookRes, webhookDeliveryRes, provisioningRes, userRes, eventRes, artifactRes, messageRes, auditRes, schedulerRes, diagnosticsRes, settingsRes] = await Promise.all([
         fetchJson('/bootstrap'),
         fetchJson('/health'),
         fetchJson('/nodes'),
@@ -242,6 +246,7 @@ function App() {
         fetchJson('/webhooks'),
         fetchJson('/webhooks/deliveries'),
         fetchJson('/node-provisioning/plans'),
+        fetchJson('/users'),
         fetchJson('/events?limit=200'),
         fetchJson('/artifacts'),
         fetchJson('/messages?limit=80'),
@@ -267,6 +272,8 @@ function App() {
       setWebhooks(webhookRes.items || []);
       setWebhookDeliveries(webhookDeliveryRes.items || []);
       setProvisioningPlans(provisioningRes.items || []);
+      setUsers(userRes.items || []);
+      setOrganization(userRes.organization || null);
       setEvents(eventRes.items || []);
       setArtifacts(artifactRes.items || []);
       setMessages(messageRes.items || []);
@@ -401,7 +408,8 @@ function App() {
             {active === 'terminal' && <RemoteTerminal nodes={nodes} />}
             {active === 'scheduler' && <SchedulerConfig config={schedulerConfig} nodes={nodes} onDone={refresh} />}
             {active === 'settings' && <SystemSettings settings={settings} auth={auth} onDone={refresh} />}
-            {active === 'provisioning' && <NodeProvisioning plans={provisioningPlans} onDone={refresh} />}
+            {active === 'users' && <Users users={users} organization={organization} onDone={refresh} />}
+            {active === 'provisioning' && <NodeProvisioning plans={provisioningPlans} settings={settings} onDone={refresh} />}
             {active === 'workflowTemplates' && <WorkflowTemplates templates={workflowTemplates} onDone={refresh} />}
             {active === 'events' && <EventBus initialEvents={events} />}
             {active === 'templates' && <TaskTemplates templates={taskTemplatesStore} nodes={nodes} onDone={refresh} />}
@@ -2872,7 +2880,7 @@ function SystemSettings({ settings, auth, onDone }) {
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     form.setFieldsValue({
-      hub_public_url: settings.hub_public_url || 'http://chenqi.tminos.com:20080/agentgrid',
+      hub_public_url: settings.hub_public_url || 'http://127.0.0.1:20181',
       registration_enabled: settings.registration_enabled !== false,
       smtp_host: settings.smtp?.host || 'smtp.example.com',
       smtp_port: settings.smtp?.port || 465,
@@ -2959,7 +2967,122 @@ function SystemSettings({ settings, auth, onDone }) {
   );
 }
 
-function NodeProvisioning({ plans, onDone }) {
+function Users({ users, organization, onDone }) {
+  const [editing, setEditing] = useState(null);
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const superAdmins = users.filter((user) => user.spec?.role === 'super_admin');
+
+  useEffect(() => {
+    if (!editing) return;
+    form.setFieldsValue({
+      name: editing.spec?.name,
+      role: editing.spec?.role,
+      status: editing.status?.state,
+    });
+  }, [editing, form]);
+
+  const submit = async (values) => {
+    setSaving(true);
+    try {
+      await fetchJson(`/users/${editing.metadata.id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(values),
+      });
+      message.success('用户档案已保存');
+      setEditing(null);
+      onDone();
+    } catch (error) {
+      message.error(`保存失败：${error.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Space direction="vertical" size={16} className="full">
+      <Row gutter={[16, 16]}>
+        <Col xs={24} md={12} xl={6}><Metric title="组织" value={organization?.name || '默认组织'} prefix={<TeamOutlined />} /></Col>
+        <Col xs={24} md={12} xl={6}><Metric title="用户数" value={users.length} /></Col>
+        <Col xs={24} md={12} xl={6}><Metric title="超级管理员" value={superAdmins.length} /></Col>
+        <Col xs={24} md={12} xl={6}><Metric title="启用用户" value={users.filter((user) => user.status?.state === 'active').length} /></Col>
+      </Row>
+
+      <Alert
+        showIcon
+        type="info"
+        message="节点不登录后台"
+        description="用户管理的是人和 AI 员工账号；节点加入集群走“纳管授权”：先生成入网凭证，Worker 上报机器码，管理员在节点管理里确认并授权。"
+      />
+
+      <ProCard title="Hub 用户管理" bordered>
+        <Table
+          rowKey={(row) => row.metadata.id}
+          dataSource={users}
+          tableLayout="fixed"
+          scroll={{ x: 1040 }}
+          columns={[
+            {
+              title: '用户',
+              width: 260,
+              render: (_, row) => (
+                <Space direction="vertical" size={1}>
+                  <Text strong>{row.spec?.name || row.spec?.email}</Text>
+                  <Text copyable type="secondary">{row.spec?.email}</Text>
+                </Space>
+              ),
+            },
+            { title: '角色', width: 130, render: (_, row) => <Tag color={roleColor(row.spec?.role)}>{roleLabel(row.spec?.role)}</Tag> },
+            { title: '状态', width: 110, render: (_, row) => <Tag color={row.status?.state === 'active' ? 'green' : 'default'}>{userStatusLabel(row.status?.state)}</Tag> },
+            { title: '组织', width: 180, render: (_, row) => row.metadata?.organization_id || organization?.id || '-' },
+            { title: '创建时间', width: 180, render: (_, row) => formatTime(row.metadata?.created_at) },
+            { title: '更新时间', width: 180, render: (_, row) => formatTime(row.metadata?.updated_at) },
+            {
+              title: '操作',
+              width: 110,
+              fixed: 'right',
+              render: (_, row) => <Button size="small" onClick={() => setEditing(row)}>编辑</Button>,
+            },
+          ]}
+        />
+      </ProCard>
+
+      <Modal
+        title={editing ? `编辑用户：${editing.spec?.email}` : '编辑用户'}
+        open={Boolean(editing)}
+        onCancel={() => setEditing(null)}
+        onOk={() => form.submit()}
+        confirmLoading={saving}
+        width={620}
+      >
+        <Form form={form} layout="vertical" onFinish={submit}>
+          <Form.Item name="name" label="姓名" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="role" label="角色" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'super_admin', label: '超级管理员' },
+                { value: 'admin', label: '管理员' },
+                { value: 'member', label: '成员' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="status" label="状态" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'active', label: '启用' },
+                { value: 'disabled', label: '停用' },
+              ]}
+            />
+          </Form.Item>
+          <Text type="secondary">规则：Hub 只能有一个超级管理员，且不能停用唯一超级管理员。</Text>
+        </Form>
+      </Modal>
+    </Space>
+  );
+}
+
+function NodeProvisioning({ plans, settings, onDone }) {
   const [form] = Form.useForm();
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -2973,7 +3096,7 @@ function NodeProvisioning({ plans, onDone }) {
         body: JSON.stringify({
           ...values,
           created_by: 'architect-agent',
-          hub_url: values.hub_url || `${window.location.origin}/agentgrid`,
+          hub_url: values.hub_url || settings?.hub_public_url || `${window.location.origin}/agentgrid`,
         }),
       });
       message.success('节点纳管计划已生成');
@@ -2988,10 +3111,16 @@ function NodeProvisioning({ plans, onDone }) {
 
   return (
     <Space direction="vertical" size={16} className="full">
+      <Alert
+        showIcon
+        type="info"
+        message="节点纳管授权流程"
+        description="节点不是后台用户。管理员先在这里生成入网凭证，目标机器运行安装命令后会上报机器码，最后由管理员在节点管理里点击授权并绑定。"
+      />
       <ProCard title="新增节点纳管计划" bordered>
         <Form form={form} layout="vertical" onFinish={submit} initialValues={{ ssh_user: 'root', os: 'linux', arch: 'x86_64' }}>
           <Row gutter={16}>
-            <Col span={6}><Form.Item name="node_id" label="节点 ID" rules={[{ required: true }]}><Input placeholder="huarui-node" /></Form.Item></Col>
+            <Col span={6}><Form.Item name="node_id" label="节点 ID" rules={[{ required: true }]}><Input placeholder="linux-worker-02" /></Form.Item></Col>
             <Col span={6}><Form.Item name="node_name" label="节点名称"><Input placeholder="华瑞子节点" /></Form.Item></Col>
             <Col span={6}><Form.Item name="ssh_host" label="SSH 主机" rules={[{ required: true }]}><Input placeholder="host.example.com" /></Form.Item></Col>
             <Col span={6}><Form.Item name="ssh_user" label="SSH 用户"><Input /></Form.Item></Col>
@@ -4664,6 +4793,30 @@ function riskColor(value) {
     medium: 'orange',
     low: 'green',
   }[value] || 'default';
+}
+
+function roleLabel(value) {
+  return {
+    super_admin: '超级管理员',
+    admin: '管理员',
+    member: '成员',
+  }[value] || value || '-';
+}
+
+function roleColor(value) {
+  return {
+    super_admin: 'red',
+    admin: 'blue',
+    member: 'default',
+  }[value] || 'default';
+}
+
+function userStatusLabel(value) {
+  return {
+    active: '启用',
+    disabled: '停用',
+    pending: '待验证',
+  }[value] || value || '-';
 }
 
 function probeStateLabel(value) {

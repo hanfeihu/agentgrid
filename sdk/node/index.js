@@ -1,4 +1,4 @@
-export const DEFAULT_HUB_URL = 'http://chenqi.tminos.com:20080/agentgrid';
+export const DEFAULT_HUB_URL = 'http://127.0.0.1:20181';
 
 export class AgentGridClient {
   constructor({ hubUrl = DEFAULT_HUB_URL, fetchImpl = fetch } = {}) {

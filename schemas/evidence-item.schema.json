@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentmessage.io/schemas/evidence-item.schema.json",
+  "title": "EvidenceItem",
+  "description": "AgentGrid Evidence Pipeline v2 evidence item for task, job, plugin, probe, reducer, and external proof records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "subject", "evidence", "integrity", "visibility"],
+  "properties": {
+    "api_version": {
+      "const": "agentgrid.evidence/v2"
+    },
+    "kind": {
+      "const": "EvidenceItem"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "created_at", "producer"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^evidence_[A-Za-z0-9_\\-]+$"
+        },
+        "created_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "enum": ["captured", "normalized", "stored", "indexed", "verified", "available", "rejected", "quarantined", "expired", "deleted"],
+          "default": "captured"
+        },
+        "producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": {
+              "enum": ["worker", "plugin", "desktop_helper", "hub", "ai_client", "human", "external_system"]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation"],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "job_id": {
+          "$ref": "#/$defs/job_id"
+        },
+        "job_attempt_id": {
+          "$ref": "#/$defs/attempt_id"
+        },
+        "job_shard_id": {
+          "$ref": "#/$defs/shard_id"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "tool_id": {
+          "$ref": "#/$defs/tool_id"
+        },
+        "plugin_id": {
+          "$ref": "#/$defs/plugin_id"
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "title", "content_type", "storage"],
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/evidence_type"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "encoding": {
+          "enum": ["utf-8", "base64", "binary", "json", "none"],
+          "default": "none"
+        },
+        "storage": {
+          "$ref": "#/$defs/storage"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "line_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "preview": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": ["text", "image", "json", "table", "download", "none"]
+            },
+            "text": {
+              "type": "string"
+            },
+            "thumbnail_artifact_id": {
+              "$ref": "#/$defs/artifact_id"
+            },
+            "download_url": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verified"],
+      "properties": {
+        "verified": {
+          "type": "boolean"
+        },
+        "verification_method": {
+          "enum": ["none", "sha256", "artifact_store", "signed_manifest", "external_system"]
+        },
+        "verified_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    },
+    "visibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["redaction_state", "retention_policy"],
+      "properties": {
+        "redaction_state": {
+          "enum": ["none", "redacted", "restricted", "unknown"]
+        },
+        "retention_policy": {
+          "enum": ["default", "short", "long", "manual"]
+        },
+        "expires_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "classification": {
+          "enum": ["public", "internal", "confidential", "secret"]
+        }
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rel", "href"],
+        "properties": {
+          "rel": {
+            "type": "string",
+            "minLength": 1
+          },
+          "href": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "$defs": {
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^artifact_[A-Za-z0-9_\\-]+$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^(attempt|job_attempt)_[A-Za-z0-9_\\-]+$"
+    },
+    "date_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "enum": ["evidence_schema_invalid", "evidence_payload_missing", "evidence_hash_mismatch", "evidence_storage_failed", "evidence_redaction_required", "evidence_type_unsupported", "evidence_retention_expired"]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "evidence_type": {
+      "enum": ["screenshot", "stdout_log", "stderr_log", "serial_log", "file_artifact", "test_report", "operation_timeline", "structured_result", "metric_series", "external_reference"]
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job_[A-Za-z0-9_\\-]+$"
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "plugin_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$"
+    },
+    "shard_id": {
+      "type": "string",
+      "pattern": "^(shard|job_shard)_[A-Za-z0-9_\\-]+$"
+    },
+    "storage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": {
+              "const": "inline"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "json"],
+          "properties": {
+            "kind": {
+              "const": "inline"
+            },
+            "json": true
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "artifact_id"],
+          "properties": {
+            "kind": {
+              "const": "artifact"
+            },
+            "artifact_id": {
+              "$ref": "#/$defs/artifact_id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "uri"],
+          "properties": {
+            "kind": {
+              "const": "uri"
+            },
+            "uri": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "system", "external_id"],
+          "properties": {
+            "kind": {
+              "const": "external"
+            },
+            "system": {
+              "type": "string",
+              "minLength": 1
+            },
+            "external_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uri": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "const": "none"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task_[A-Za-z0-9_\\-]+$"
+    },
+    "tool_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    }
+  }
+}

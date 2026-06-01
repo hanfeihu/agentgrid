@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::HeaderMap,
     routing::{get, post},
     Json, Router,
@@ -20,6 +20,8 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/api/auth/register", post(register_user))
         .route("/api/auth/change-password", post(change_password))
+        .route("/api/users", get(list_users))
+        .route("/api/users/{id}", post(update_user))
 }
 
 async fn get_bootstrap_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -68,4 +70,16 @@ async fn change_password(
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(store(&state)?.change_password(input)?))
+}
+
+async fn list_users(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.list_users()?))
+}
+
+async fn update_user(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(store(&state)?.update_user(&id, input)?))
 }

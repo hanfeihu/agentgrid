@@ -1,0 +1,427 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentmessage.io/schemas/job-contract.schema.json",
+  "title": "JobContract",
+  "description": "AgentGrid Job Runtime v2 contract for recoverable, sharded, checkpointed, and reducer-based work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {
+      "const": "agentgrid.job/v2"
+    },
+    "kind": {
+      "const": "JobContract"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "created_at", "created_by"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/job_id"
+        },
+        "created_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "created_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "tool_id", "payload"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool_id": {
+          "$ref": "#/$defs/tool_id"
+        },
+        "payload": true,
+        "placement": {
+          "$ref": "#/$defs/placement"
+        },
+        "strategy": {
+          "$ref": "#/$defs/strategy"
+        },
+        "partition": {
+          "$ref": "#/$defs/partition"
+        },
+        "reduce": {
+          "$ref": "#/$defs/reduce"
+        },
+        "retry_policy": {
+          "$ref": "#/$defs/retry_policy"
+        },
+        "checkpoint_policy": {
+          "$ref": "#/$defs/checkpoint_policy"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/idempotency"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence_policy"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {
+          "enum": ["queued", "planning", "running", "reducing", "done", "failed", "cancelled", "paused"]
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "started_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "completed_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "result": true,
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "checkpoint_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mode"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": ["disabled", "worker_reported", "tool_reported", "client_reported"]
+        },
+        "min_interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        }
+      }
+    },
+    "date_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "result": true
+      }
+    },
+    "evidence_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required_types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_type"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "retain_attempt_evidence": {
+          "type": "boolean",
+          "default": true
+        },
+        "retention_policy": {
+          "enum": ["default", "short", "long", "manual"]
+        }
+      }
+    },
+    "evidence_type": {
+      "enum": ["screenshot", "stdout_log", "stderr_log", "serial_log", "file_artifact", "test_report", "operation_timeline", "structured_result", "metric_series", "external_reference"]
+    },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "mode": {
+          "enum": ["none", "at_least_once", "idempotent", "external_exactly_once"]
+        },
+        "scope": {
+          "enum": ["job", "shard", "attempt", "external_system"],
+          "default": "job"
+        }
+      }
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^job_[A-Za-z0-9_\\-]+$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os": {
+          "enum": ["linux", "macos", "windows"]
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "required_tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool_id"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "required_devices": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "preferred_nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "avoid_nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      }
+    },
+    "partition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "const": "none"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "items"],
+          "properties": {
+            "type": {
+              "const": "items"
+            },
+            "items": {
+              "type": "array",
+              "items": true,
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "start", "end", "step"],
+          "properties": {
+            "type": {
+              "const": "range"
+            },
+            "start": {
+              "type": "integer"
+            },
+            "end": {
+              "type": "integer"
+            },
+            "step": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "reduce": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "enum": ["none", "summary", "stdout_concat", "json_array"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "tool_id"],
+          "properties": {
+            "type": {
+              "const": "custom_tool"
+            },
+            "tool_id": {
+              "$ref": "#/$defs/tool_id"
+            },
+            "payload": true
+          }
+        }
+      ]
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts", "on_node_lost", "on_process_failed"],
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "on_node_lost": {
+          "enum": ["reschedule", "fail"]
+        },
+        "on_process_failed": {
+          "enum": ["reschedule", "reschedule_if_idempotent", "fail"]
+        },
+        "backoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": ["none", "fixed", "exponential"]
+            },
+            "initial_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 86400
+            },
+            "max_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 86400
+            }
+          }
+        }
+      }
+    },
+    "strategy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "const": "single"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "shard_count", "max_parallelism", "payload_mode"],
+          "properties": {
+            "type": {
+              "const": "sharded"
+            },
+            "shard_count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "max_parallelism": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "payload_mode": {
+              "enum": ["inject_shard", "template_only"]
+            }
+          }
+        }
+      ]
+    },
+    "capability": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    },
+    "tool_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    }
+  }
+}

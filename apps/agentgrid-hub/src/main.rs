@@ -1346,10 +1346,7 @@ impl Store {
 
     fn ensure_default_settings(&self) -> anyhow::Result<()> {
         let defaults = [
-            (
-                "hub.public_url",
-                json!("http://chenqi.tminos.com:20080/agentgrid"),
-            ),
+            ("hub.public_url", json!("http://127.0.0.1:20181")),
             ("smtp", default_smtp_setting()),
             ("registration.enabled", json!(true)),
         ];
@@ -1744,11 +1741,11 @@ impl Store {
         )?;
         if node_count == 0 {
             self.upsert_node(json!({
-                "id": "chenqi-linux-01",
-                "name": "chenqi Linux 节点",
+                "id": "hub-linux-01",
+                "name": "Hub Linux node",
                 "os": "linux",
                 "arch": "unknown",
-                "address": "chenqi.tminos.com",
+                "address": "hub.example.com",
                 "tags": ["server", "linux"],
                 "capabilities": ["http", "command", "agentmessage"],
                 "groups": ["default", "linux"],
@@ -1857,7 +1854,7 @@ impl Store {
     fn system_settings_full(&self) -> anyhow::Result<Value> {
         let hub_public_url = self
             .setting_value("hub.public_url")?
-            .unwrap_or_else(|| json!("http://chenqi.tminos.com:20080/agentgrid"));
+            .unwrap_or_else(|| json!("http://127.0.0.1:20181"));
         let smtp = self
             .setting_value("smtp")?
             .unwrap_or_else(default_smtp_setting);
@@ -1894,6 +1891,98 @@ impl Store {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    fn list_users(&self) -> anyhow::Result<Value> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT * FROM hub_users
+            WHERE project_id = ?1
+            ORDER BY
+              CASE role WHEN 'super_admin' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+              created_at ASC
+            ",
+        )?;
+        let rows = stmt.query_map(params![PROJECT_ID], hub_user_row)?;
+        let items = collect_values(rows)?
+            .into_iter()
+            .map(user_public)
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "ok": true,
+            "organization": self.default_organization()?,
+            "items": items
+        }))
+    }
+
+    fn update_user(&self, id: &str, data: Value) -> anyhow::Result<Value> {
+        let existing = self
+            .conn
+            .query_row(
+                "SELECT * FROM hub_users WHERE project_id = ?1 AND id = ?2",
+                params![PROJECT_ID, id],
+                hub_user_row,
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("user not found"))?;
+        let current_role = existing
+            .pointer("/spec/role")
+            .and_then(Value::as_str)
+            .unwrap_or("member");
+        let role = optional_string(&data, "role").unwrap_or_else(|| current_role.to_string());
+        if current_role == "super_admin" && role != "super_admin" {
+            anyhow::bail!("the only super_admin cannot be downgraded");
+        }
+        if role == "super_admin" && current_role != "super_admin" && self.count_super_admins()? > 0
+        {
+            anyhow::bail!("Hub allows exactly one super_admin");
+        }
+        let status = optional_string(&data, "status").unwrap_or_else(|| {
+            existing
+                .pointer("/status/state")
+                .and_then(Value::as_str)
+                .unwrap_or("active")
+                .to_string()
+        });
+        if current_role == "super_admin" && status != "active" {
+            anyhow::bail!("the only super_admin cannot be disabled");
+        }
+        let name = optional_string(&data, "name").unwrap_or_else(|| {
+            existing
+                .pointer("/spec/name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        });
+        let now = now();
+        self.conn.execute(
+            "
+            UPDATE hub_users
+            SET name = ?1,
+                role = ?2,
+                status = ?3,
+                updated_at = ?4
+            WHERE project_id = ?5 AND id = ?6
+            ",
+            params![name, role, status, now, PROJECT_ID, id],
+        )?;
+        self.audit(
+            "hub.user.updated",
+            "super-admin",
+            Some(id),
+            "Hub 用户档案已更新",
+            json!({ "user_id": id, "input": data }),
+        )?;
+        let item = self
+            .conn
+            .query_row(
+                "SELECT * FROM hub_users WHERE project_id = ?1 AND id = ?2",
+                params![PROJECT_ID, id],
+                hub_user_row,
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("user not found after update"))?;
+        Ok(json!({ "ok": true, "item": user_public(item) }))
     }
 
     fn user_by_session_token(&self, token: &str) -> anyhow::Result<Option<Value>> {
@@ -2330,7 +2419,7 @@ impl Store {
                 machine_fingerprint, join_token_hash, join_token_hint, auth_status, authorized_at,
                 auto_update_enabled, update_channel,
                 status, created_at, updated_at, last_heartbeat_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?29, ?30)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?30, ?31)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 os = excluded.os,
@@ -2538,7 +2627,7 @@ impl Store {
         let hub_url = self
             .setting_value("hub.public_url")?
             .and_then(|value| value.as_str().map(ToString::to_string))
-            .unwrap_or_else(|| "http://chenqi.tminos.com:20080/agentgrid".to_string());
+            .unwrap_or_else(|| "http://127.0.0.1:20181".to_string());
         self.conn.execute(
             "
             INSERT INTO node_provisioning_plans (
@@ -3153,7 +3242,7 @@ impl Store {
             "kind": "CapabilityManifest",
             "metadata": {
                 "project_id": PROJECT_ID,
-                "hub_url": "http://chenqi.tminos.com:20080/agentgrid",
+                "hub_url": "http://127.0.0.1:20181",
                 "generated_at": now()
             },
             "workflow": [
@@ -3469,11 +3558,7 @@ impl Store {
         let ssh_user = string_or(&data, "ssh_user", "root");
         let os = string_or(&data, "os", "linux");
         let arch = string_or(&data, "arch", "x86_64");
-        let hub_url = string_or(
-            &data,
-            "hub_url",
-            "http://chenqi.tminos.com:20080/agentgrid/api",
-        );
+        let hub_url = string_or(&data, "hub_url", "http://127.0.0.1:20181/api");
         let notes = string_or(&data, "notes", "凭据不进入 AgentGrid 数据库和文档。");
         let created_by = string_or(&data, "created_by", "architect-agent");
         let join_token = optional_string(&data, "join_token")
@@ -9021,7 +9106,7 @@ fn mobile_sdk_standard() -> Value {
                 "natural-language parser"
             ]
         },
-        "default_hub_url": "http://chenqi.tminos.com:20080/agentgrid",
+        "default_hub_url": "http://127.0.0.1:20181",
         "authentication": {
             "current": "No full authorization design is required by this standard version.",
             "reserved_header": "Authorization: Bearer <token>",
@@ -10810,7 +10895,7 @@ fn agent_runtime_examples() -> Value {
             "request": {
                 "tool_id": "http.request",
                 "title": "GET health endpoint",
-                "payload": { "type": "http_request", "method": "GET", "url": "http://chenqi.tminos.com:20080/agentgrid/api/health", "headers": [], "body": null, "timeout_seconds": 30, "max_response_bytes": 65536 }
+                "payload": { "type": "http_request", "method": "GET", "url": "http://127.0.0.1:20181/api/health", "headers": [], "body": null, "timeout_seconds": 30, "max_response_bytes": 65536 }
             }
         }
     ])
@@ -11069,7 +11154,7 @@ fn probe_payload_for_tool(tool_id: &str) -> Option<Value> {
         "http.request" => Some(json!({
             "type": "http_request",
             "method": "GET",
-            "url": "http://chenqi.tminos.com:20080/agentgrid/api/health",
+            "url": "http://127.0.0.1:20181/api/health",
             "headers": [],
             "body": null,
             "timeout_seconds": 15,
@@ -14747,7 +14832,7 @@ fn node_provisioning_steps(
         {
             "name": "Hub 审批节点",
             "command": approve_url,
-            "description": "管理员在自己的浏览器登录 Hub，确认节点 ID、机器指纹、token hint 后点击授权。Linux 服务器本身不需要打开浏览器。"
+            "description": "管理员在 Hub 的节点管理页面确认节点 ID、机器指纹、token hint 后点击授权。节点本身不登录后台，只负责上报机器码和心跳。"
         }
     ])
 }

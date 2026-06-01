@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HUB_URL="${AGENTGRID_HUB_URL:-http://chenqi.tminos.com:20080/agentgrid}"
+HUB_URL="${AGENTGRID_HUB_URL:-https://hub.example.com/agentgrid}"
 NODE_ID="${AGENTGRID_NODE_ID:-$(hostname)-macos}"
 NODE_NAME="${AGENTGRID_NODE_NAME:-$(hostname)}"
 INSTALL_DIR="${AGENTGRID_WORKER_DIR:-$HOME/Library/Application Support/AgentGridWorker}"

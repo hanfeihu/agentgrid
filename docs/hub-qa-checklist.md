@@ -5,7 +5,7 @@ This checklist defines the first acceptance pass for AgentGrid Hub MVP.
 The target Hub is exposed at:
 
 ```text
-http://chenqi.tminos.com:20080/agentgrid
+https://hub.example.com/agentgrid
 ```
 
 For direct local service testing on the server, use:
@@ -45,7 +45,7 @@ exist, task assignment is accepted through `AgentMessage` records with
 
 ### 3.1 Chinese Web Page
 
-1. Open `http://chenqi.tminos.com:20080/agentgrid`.
+1. Open `https://hub.example.com/agentgrid`.
 2. Confirm the page title or header shows `AgentGrid 协作中心`.
 3. Confirm employee cards are visible and contain Chinese names such as
    `项目负责人`, `协议工程师`, `测试工程师`, or `代码审查工程师`.
@@ -118,7 +118,7 @@ Expected result:
 Set a shell variable for repeatable commands:
 
 ```bash
-BASE='http://chenqi.tminos.com:20080/agentgrid'
+BASE='https://hub.example.com/agentgrid'
 ```
 
 ### 4.1 Health Check
@@ -283,7 +283,7 @@ Check:
 
 ```bash
 curl -sS http://127.0.0.1:20080/api/health
-curl -sS http://chenqi.tminos.com:20080/agentgrid/api/health
+curl -sS https://hub.example.com/agentgrid/api/health
 ```
 
 If local works but public route fails, inspect Nginx routing and reload state.

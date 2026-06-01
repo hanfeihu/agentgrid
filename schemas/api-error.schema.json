@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentgrid.dev/schemas/api-error.schema.json",
+  "title": "AgentGrid API Error Envelope",
+  "description": "Common error envelope returned by AgentGrid Hub API endpoints.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "error"],
+  "properties": {
+    "ok": {
+      "const": false
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_\\-]*$",
+          "examples": [
+            "bad_request",
+            "not_found",
+            "conflict",
+            "invalid_transition",
+            "permission_denied",
+            "unauthorized",
+            "storage_error",
+            "scheduler_no_eligible_node",
+            "worker_execution_failed"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "details": {
+          "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "retryable": {
+          "type": "boolean",
+          "default": false
+        },
+        "correlation_id": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "result": {
+          "type": ["object", "array", "string", "number", "boolean", "null"],
+          "description": "Optional structured execution result associated with the failure."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "ok": false,
+      "error": {
+        "code": "not_found",
+        "message": "Task not found",
+        "details": {
+          "task_id": "task_missing"
+        },
+        "retryable": false
+      }
+    }
+  ]
+}

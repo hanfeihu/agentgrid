@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-pub const DEFAULT_HUB_URL: &str = "http://chenqi.tminos.com:20080/agentgrid";
+pub const DEFAULT_HUB_URL: &str = "http://127.0.0.1:20181";
 
 #[derive(Clone)]
 pub struct AgentGridClient {

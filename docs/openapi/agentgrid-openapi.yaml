@@ -1,0 +1,1520 @@
+openapi: 3.1.0
+info:
+  title: AgentGrid Hub API
+  version: 1.0.0
+  summary: Machine-readable API standard for AgentGrid Hub v1.
+  description: |
+    AgentGrid Hub coordinates AI clients, worker nodes, tools, jobs,
+    artifacts, and event streams through structured contracts.
+servers:
+  - url: https://hub.example.com/agentgrid/api
+    description: Default AgentGrid Hub API
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+  - name: Auth
+  - name: Nodes
+  - name: Tasks
+  - name: Jobs
+  - name: Artifacts
+  - name: Tools
+  - name: Events
+paths:
+  /health:
+    get:
+      tags: [Health]
+      security: []
+      summary: Check Hub health.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Hub health response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Log in and receive a Hub bearer token.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /auth/register/request-code:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Request an email registration code.
+      operationId: requestRegistrationCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: Registration code accepted for delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Register a Hub user with an email verification code.
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "200":
+          description: Registration succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /nodes:
+    get:
+      tags: [Nodes]
+      summary: List worker nodes.
+      operationId: listNodes
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [online, offline, unknown]
+        - name: os
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Node list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Node"
+        default:
+          $ref: "#/components/responses/Error"
+  /nodes/{node_id}:
+    get:
+      tags: [Nodes]
+      summary: Get a worker node.
+      operationId: getNode
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      responses:
+        "200":
+          description: Node details.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/Node"
+        default:
+          $ref: "#/components/responses/Error"
+  /nodes/{node_id}/approve:
+    post:
+      tags: [Nodes]
+      summary: Approve a pending node join.
+      operationId: approveNode
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [actor]
+              properties:
+                actor:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Node approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/Node"
+        default:
+          $ref: "#/components/responses/Error"
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks.
+      operationId: listTasks
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: project_id
+          in: query
+          schema:
+            type: string
+        - name: owner
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            $ref: "#/components/schemas/TaskState"
+        - name: priority
+          in: query
+          schema:
+            $ref: "#/components/schemas/Priority"
+      responses:
+        "200":
+          description: Task list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentTask"
+                  next_cursor:
+                    type: [string, "null"]
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [Tasks]
+      summary: Create a task.
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "200":
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/AgentTask"
+                  message_id:
+                    type: [string, "null"]
+        default:
+          $ref: "#/components/responses/Error"
+  /tasks/{task_id}:
+    get:
+      tags: [Tasks]
+      summary: Get a task.
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Task details.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/AgentTask"
+        default:
+          $ref: "#/components/responses/Error"
+  /tasks/{task_id}/schedule-preview:
+    get:
+      tags: [Tasks]
+      summary: Preview scheduling decisions for a task.
+      operationId: previewTaskSchedule
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Scheduler preview.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/PlacementContract"
+        default:
+          $ref: "#/components/responses/Error"
+  /worker/tasks/{task_id}/complete:
+    post:
+      tags: [Tasks]
+      summary: Complete a leased worker task.
+      operationId: completeWorkerTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerTaskCompletionRequest"
+      responses:
+        "200":
+          description: Task completion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /worker/tasks/{task_id}/fail:
+    post:
+      tags: [Tasks]
+      summary: Fail a leased worker task.
+      operationId: failWorkerTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerTaskFailureRequest"
+      responses:
+        "200":
+          description: Task failure accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /worker/tasks/{task_id}/renew:
+    post:
+      tags: [Tasks]
+      summary: Renew a running task lease.
+      operationId: renewWorkerTaskLease
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [node_id, lease_seconds]
+              properties:
+                node_id:
+                  type: string
+                  minLength: 1
+                lease_seconds:
+                  type: integer
+                  minimum: 1
+                  maximum: 3600
+      responses:
+        "200":
+          description: Lease renewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /jobs:
+    get:
+      tags: [Jobs]
+      summary: List jobs.
+      operationId: listJobs
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: state
+          in: query
+          schema:
+            $ref: "#/components/schemas/JobState"
+      responses:
+        "200":
+          description: Job list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Job"
+                  next_cursor:
+                    type: [string, "null"]
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [Jobs]
+      summary: Create a recoverable Job Runtime job.
+      operationId: createJob
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+      responses:
+        "200":
+          description: Job created or reused.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  reused:
+                    type: boolean
+                    default: false
+                  item:
+                    $ref: "#/components/schemas/Job"
+        default:
+          $ref: "#/components/responses/Error"
+  /jobs/plan:
+    post:
+      tags: [Jobs]
+      summary: Plan a job without creating it.
+      operationId: planJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+      responses:
+        "200":
+          description: Job plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/JobPlan"
+        default:
+          $ref: "#/components/responses/Error"
+  /jobs/reliability:
+    get:
+      tags: [Jobs]
+      summary: Read Job Runtime reliability contract and counters.
+      operationId: getJobReliability
+      responses:
+        "200":
+          description: Job reliability status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/JobReliability"
+        default:
+          $ref: "#/components/responses/Error"
+  /jobs/{id}:
+    get:
+      tags: [Jobs]
+      summary: Get a job.
+      operationId: getJob
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job details.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/Job"
+        default:
+          $ref: "#/components/responses/Error"
+  /jobs/{id}/execution:
+    get:
+      tags: [Jobs]
+      summary: Get job execution timeline, attempts, checkpoints, and events.
+      operationId: getJobExecution
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job execution view.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/JobExecutionView"
+        default:
+          $ref: "#/components/responses/Error"
+  /jobs/recovery/scan:
+    post:
+      tags: [Jobs]
+      summary: Run a manual Job Runtime recovery scan.
+      operationId: runJobRecoveryScan
+      responses:
+        "200":
+          description: Recovery scan result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    type: object
+                    additionalProperties: true
+        default:
+          $ref: "#/components/responses/Error"
+  /artifacts:
+    get:
+      tags: [Artifacts]
+      summary: List artifacts.
+      operationId: listArtifacts
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: task_id
+          in: query
+          schema:
+            type: string
+            pattern: "^task_[A-Za-z0-9_\\-]+$"
+        - name: job_id
+          in: query
+          schema:
+            type: string
+            pattern: "^job_[A-Za-z0-9_\\-]+$"
+      responses:
+        "200":
+          description: Artifact list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Artifact"
+                  next_cursor:
+                    type: [string, "null"]
+        default:
+          $ref: "#/components/responses/Error"
+  /artifacts/{artifact_id}:
+    get:
+      tags: [Artifacts]
+      summary: Get artifact metadata.
+      operationId: getArtifact
+      parameters:
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: Artifact metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/Artifact"
+        default:
+          $ref: "#/components/responses/Error"
+  /artifacts/{artifact_id}/download:
+    get:
+      tags: [Artifacts]
+      summary: Download artifact content.
+      operationId: downloadArtifact
+      parameters:
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: Artifact bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/Error"
+  /tools:
+    get:
+      tags: [Tools]
+      summary: List tool registry entries.
+      operationId: listTools
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: risk
+          in: query
+          schema:
+            $ref: "#/components/schemas/Risk"
+      responses:
+        "200":
+          description: Tool list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Tool"
+        default:
+          $ref: "#/components/responses/Error"
+  /tools/{tool_id}:
+    get:
+      tags: [Tools]
+      summary: Get a tool registry entry.
+      operationId: getTool
+      parameters:
+        - $ref: "#/components/parameters/ToolId"
+      responses:
+        "200":
+          description: Tool details.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/Tool"
+        default:
+          $ref: "#/components/responses/Error"
+  /tools/{tool_id}/nodes:
+    get:
+      tags: [Tools]
+      summary: List nodes supporting a tool.
+      operationId: listToolNodes
+      parameters:
+        - $ref: "#/components/parameters/ToolId"
+      responses:
+        "200":
+          description: Supporting nodes.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ToolNode"
+        default:
+          $ref: "#/components/responses/Error"
+  /tools/{tool_id}/nodes/{node_id}/probe:
+    post:
+      tags: [Tools]
+      summary: Probe one tool on one node.
+      operationId: probeToolNode
+      parameters:
+        - $ref: "#/components/parameters/ToolId"
+        - $ref: "#/components/parameters/NodeId"
+      responses:
+        "200":
+          description: Probe task created or scheduled.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/AgentTask"
+        default:
+          $ref: "#/components/responses/Error"
+  /events:
+    get:
+      tags: [Events]
+      summary: Poll event-bus records.
+      operationId: listEvents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: subject_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Event list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Event"
+                  next_cursor:
+                    type: [string, "null"]
+        default:
+          $ref: "#/components/responses/Error"
+  /events/stream:
+    get:
+      tags: [Events]
+      summary: Subscribe to event-bus records through Server-Sent Events.
+      operationId: streamEvents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: subject_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE event stream. Event names include events.snapshot and events.error.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /events/ingress:
+    post:
+      tags: [Events]
+      summary: Ingest a structured external event.
+      operationId: ingestEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventIngressRequest"
+      responses:
+        "200":
+          description: Event accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/Event"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^job_[A-Za-z0-9_\\-]+$"
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+    NodeId:
+      name: node_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^task_[A-Za-z0-9_\\-]+$"
+    ToolId:
+      name: tool_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"
+  responses:
+    Error:
+      description: Error response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+  schemas:
+    AgentTask:
+      $ref: "../../schemas/agent-task.schema.json"
+    AgentTaskResult:
+      $ref: "../../schemas/agent-task-result.schema.json"
+    ApiError:
+      $ref: "../../schemas/api-error.schema.json"
+    PlacementContract:
+      $ref: "../../schemas/placement-contract.schema.json"
+    Artifact:
+      type: object
+      additionalProperties: false
+      required: [id, type, created_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          enum: [screenshot, stdout_log, stderr_log, serial_log, file_artifact, test_report, operation_timeline, json, other]
+        task_id:
+          type: [string, "null"]
+          pattern: "^task_[A-Za-z0-9_\\-]+$"
+        job_id:
+          type: [string, "null"]
+          pattern: "^job_[A-Za-z0-9_\\-]+$"
+        node_id:
+          type: [string, "null"]
+        name:
+          type: [string, "null"]
+        content_type:
+          type: [string, "null"]
+        size_bytes:
+          type: [integer, "null"]
+          minimum: 0
+        sha256:
+          type: [string, "null"]
+          pattern: "^[a-fA-F0-9]{64}$"
+        download_url:
+          type: [string, "null"]
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+    AuthResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, token, user]
+      properties:
+        ok:
+          const: true
+        token:
+          type: string
+          minLength: 1
+        user:
+          $ref: "#/components/schemas/User"
+    CheckpointPolicy:
+      type: object
+      additionalProperties: true
+      properties:
+        enabled:
+          type: boolean
+          default: false
+        mode:
+          type: string
+          enum: [none, worker_reported, client_reported]
+          default: none
+    CreateJobRequest:
+      type: object
+      additionalProperties: false
+      required: [title, tool_id, payload]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        tool_id:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"
+        payload:
+          $ref: "#/components/schemas/JsonValue"
+        placement:
+          type: [object, "null"]
+          additionalProperties: true
+        strategy:
+          $ref: "#/components/schemas/JobStrategy"
+        partition:
+          $ref: "#/components/schemas/JobPartition"
+        reduce:
+          $ref: "#/components/schemas/JobReduce"
+        retry_policy:
+          $ref: "#/components/schemas/RetryPolicy"
+        checkpoint_policy:
+          $ref: "#/components/schemas/CheckpointPolicy"
+        idempotency:
+          $ref: "#/components/schemas/Idempotency"
+    CreateTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [title, summary]
+      properties:
+        project_id:
+          type: string
+          default: agentgrid
+        created_by:
+          type: string
+          minLength: 1
+        assigned_to:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          uniqueItems: true
+          default: []
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        summary:
+          type: string
+          minLength: 1
+        owner:
+          type: [string, "null"]
+        priority:
+          $ref: "#/components/schemas/Priority"
+        tool_id:
+          type: [string, "null"]
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"
+        payload:
+          $ref: "#/components/schemas/JsonValue"
+        placement:
+          type: [object, "null"]
+          additionalProperties: true
+        inputs:
+          type: array
+          items:
+            type: string
+          default: []
+        outputs:
+          type: array
+          items:
+            type: string
+          default: []
+        acceptance_criteria:
+          type: array
+          items:
+            type: string
+          default: []
+        labels:
+          type: array
+          items:
+            type: string
+          uniqueItems: true
+          default: []
+        depends_on:
+          type: array
+          items:
+            type: string
+            pattern: "^task_[A-Za-z0-9_\\-]+$"
+          uniqueItems: true
+          default: []
+        due_at:
+          type: [string, "null"]
+          format: date-time
+        requires_ack:
+          type: boolean
+          default: false
+        correlation_id:
+          type: [string, "null"]
+    Event:
+      type: object
+      additionalProperties: true
+      required: [id, type, created_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          minLength: 1
+        subject_id:
+          type: [string, "null"]
+        source:
+          type: [string, "null"]
+        payload:
+          $ref: "#/components/schemas/JsonValue"
+        created_at:
+          type: string
+          format: date-time
+    EventIngressRequest:
+      type: object
+      additionalProperties: false
+      required: [source, type, payload]
+      properties:
+        source:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          minLength: 1
+        target:
+          type: object
+          additionalProperties: true
+          properties:
+            job_id:
+              type: string
+              pattern: "^job_[A-Za-z0-9_\\-]+$"
+            task_id:
+              type: string
+              pattern: "^task_[A-Za-z0-9_\\-]+$"
+            node_id:
+              type: string
+        idempotency_key:
+          type: [string, "null"]
+        payload:
+          $ref: "#/components/schemas/JsonValue"
+        ttl_seconds:
+          type: [integer, "null"]
+          minimum: 1
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, service, time]
+      properties:
+        ok:
+          const: true
+        service:
+          type: string
+          examples: [agentgrid-hub]
+        version:
+          type: string
+        time:
+          type: string
+          format: date-time
+    Idempotency:
+      type: object
+      additionalProperties: false
+      properties:
+        key:
+          type: [string, "null"]
+        mode:
+          type: string
+          enum: [at_least_once, idempotent, external_exactly_once]
+          default: at_least_once
+    Job:
+      type: object
+      additionalProperties: true
+      required: [api_version, kind, metadata, spec, status]
+      properties:
+        api_version:
+          const: agentgrid.job/v1
+        kind:
+          const: Job
+        metadata:
+          type: object
+          additionalProperties: true
+          required: [id, created_at, updated_at]
+          properties:
+            id:
+              type: string
+              pattern: "^job_[A-Za-z0-9_\\-]+$"
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+        spec:
+          $ref: "#/components/schemas/CreateJobRequest"
+        status:
+          type: object
+          additionalProperties: true
+          required: [state]
+          properties:
+            state:
+              $ref: "#/components/schemas/JobState"
+            result:
+              $ref: "#/components/schemas/JsonValue"
+    JobExecutionView:
+      type: object
+      additionalProperties: true
+      required: [api_version, kind, job_id, summary, recovery, timeline, attempts, checkpoints, events]
+      properties:
+        api_version:
+          const: agentgrid.job-execution/v1
+        kind:
+          const: JobExecutionView
+        job_id:
+          type: string
+          pattern: "^job_[A-Za-z0-9_\\-]+$"
+        summary:
+          type: object
+          additionalProperties: true
+        recovery:
+          type: object
+          additionalProperties: true
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+        attempts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        checkpoints:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+    JobPartition:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              const: none
+        - type: object
+          additionalProperties: false
+          required: [type, items]
+          properties:
+            type:
+              const: items
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/JsonValue"
+        - type: object
+          additionalProperties: false
+          required: [type, start, end, step]
+          properties:
+            type:
+              const: range
+            start:
+              type: integer
+            end:
+              type: integer
+            step:
+              type: integer
+              minimum: 1
+    JobPlan:
+      type: object
+      additionalProperties: true
+      required: [api_version, kind, valid_payload, can_run, tool_id]
+      properties:
+        api_version:
+          const: agentgrid.job-plan/v1
+        kind:
+          const: JobPlan
+        valid_payload:
+          type: boolean
+        can_run:
+          type: boolean
+        tool_id:
+          type: string
+        selected_node_id:
+          type: [string, "null"]
+        placement:
+          $ref: "#/components/schemas/PlacementContract"
+    JobReduce:
+      type: object
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [summary, stdout_concat, json_array]
+          default: summary
+    JobReliability:
+      type: object
+      additionalProperties: true
+      properties:
+        api_version:
+          const: agentgrid.job-reliability/v1
+        kind:
+          const: JobReliability
+        delivery:
+          type: string
+          enum: [at_least_once]
+        retry_reschedule_contract:
+          type: object
+          additionalProperties: true
+    JobState:
+      type: string
+      enum: [queued, running, done, failed, cancelled]
+    JobStrategy:
+      type: object
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [single, sharded]
+          default: single
+        shard_count:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 1
+        max_parallelism:
+          type: integer
+          minimum: 1
+          default: 1
+        payload_mode:
+          type: string
+          enum: [none, inject_shard]
+          default: none
+    JsonValue:
+      description: Any JSON value.
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+    Node:
+      type: object
+      additionalProperties: true
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        name:
+          type: string
+        os:
+          type: string
+        status:
+          type: string
+          enum: [online, offline, unknown]
+        auth_status:
+          type: string
+          enum: [pending, bound, legacy]
+        capabilities:
+          type: array
+          items:
+            type: string
+        running_jobs:
+          type: integer
+          minimum: 0
+        max_concurrent_jobs:
+          type: integer
+          minimum: 0
+    OkResponse:
+      type: object
+      additionalProperties: true
+      required: [ok]
+      properties:
+        ok:
+          const: true
+    Priority:
+      type: string
+      enum: [p0, p1, p2, p3, normal, low]
+      default: normal
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, name, password, code]
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+        code:
+          type: string
+          minLength: 1
+    RetryPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        max_attempts:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 3
+        on_node_lost:
+          type: string
+          enum: [reschedule, fail]
+          default: reschedule
+        on_process_failed:
+          type: string
+          enum: [reschedule_if_idempotent, fail]
+          default: reschedule_if_idempotent
+    Risk:
+      type: string
+      enum: [low, medium, high]
+    TaskState:
+      type: string
+      enum: [todo, assigned, queued, leased, in_progress, blocked, review, testing, done, failed, cancelled]
+    Tool:
+      type: object
+      additionalProperties: true
+      required: [id, name, payload_type, labels, risk]
+      properties:
+        id:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"
+        name:
+          type: string
+        summary:
+          type: string
+        category:
+          type: string
+        payload_type:
+          type: string
+        capability:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        risk:
+          $ref: "#/components/schemas/Risk"
+        requires_policy:
+          type: boolean
+          default: false
+        input_schema:
+          type: object
+          additionalProperties: true
+        output_schema:
+          type: object
+          additionalProperties: true
+        supported_nodes:
+          type: array
+          items:
+            type: string
+        node_count:
+          type: integer
+          minimum: 0
+        verification_status:
+          type: string
+          enum: [declared_unverified, verified, failed, unavailable, unsupported]
+    ToolNode:
+      type: object
+      additionalProperties: true
+      required: [node_id, status]
+      properties:
+        node_id:
+          type: string
+        status:
+          type: string
+          enum: [available, unavailable, unknown]
+        verification_status:
+          type: string
+          enum: [declared_unverified, verified, failed, unavailable, unsupported]
+        last_probe_at:
+          type: [string, "null"]
+          format: date-time
+    User:
+      type: object
+      additionalProperties: true
+      required: [metadata, spec]
+      properties:
+        metadata:
+          type: object
+          additionalProperties: true
+          required: [id]
+          properties:
+            id:
+              type: string
+        spec:
+          type: object
+          additionalProperties: true
+          properties:
+            email:
+              type: string
+              format: email
+            role:
+              type: string
+    WorkerTaskCompletionRequest:
+      type: object
+      additionalProperties: false
+      required: [node_id, result]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        result:
+          $ref: "#/components/schemas/AgentTaskResult"
+    WorkerTaskFailureRequest:
+      type: object
+      additionalProperties: false
+      required: [node_id, error]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        error:
+          type: object
+          additionalProperties: true
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              minLength: 1
+            message:
+              type: string
+              minLength: 1
+            details:
+              $ref: "#/components/schemas/JsonValue"
+            retryable:
+              type: boolean
+              default: false
+        result:
+          $ref: "#/components/schemas/AgentTaskResult"

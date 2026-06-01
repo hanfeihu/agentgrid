@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-label="AgentGrid console overview screenshot mock">
+  <rect width="1440" height="900" fill="#f5f7fb"/>
+  <rect x="0" y="0" width="256" height="900" fill="#ffffff"/>
+  <rect x="255" y="0" width="1" height="900" fill="#e5e7eb"/>
+  <rect x="28" y="26" width="42" height="42" rx="8" fill="#1677ff"/>
+  <text x="49" y="53" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#ffffff">AG</text>
+  <text x="84" y="43" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#111827">AgentGrid</text>
+  <text x="84" y="63" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">AI machine control plane</text>
+  <g font-family="Arial, sans-serif" font-size="14" fill="#374151">
+    <rect x="18" y="96" width="220" height="38" rx="7" fill="#eaf3ff"/>
+    <text x="52" y="120" fill="#1677ff" font-weight="700">Cluster Overview</text>
+    <text x="52" y="168">Nodes</text>
+    <text x="52" y="216">Capabilities</text>
+    <text x="52" y="264">Tools</text>
+    <text x="52" y="312">Tasks</text>
+    <text x="52" y="360">Jobs</text>
+    <text x="52" y="408">Artifacts</text>
+    <text x="52" y="456">Events</text>
+    <text x="52" y="504">User Management</text>
+    <text x="52" y="552">Node Provisioning</text>
+  </g>
+  <rect x="256" y="0" width="1184" height="76" fill="#ffffff"/>
+  <rect x="256" y="75" width="1184" height="1" fill="#e5e7eb"/>
+  <text x="296" y="47" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#111827">Cluster Overview</text>
+  <rect x="1110" y="23" width="110" height="30" rx="15" fill="#ecfdf5"/>
+  <text x="1165" y="43" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#047857">Rust Hub</text>
+  <rect x="1230" y="23" width="160" height="30" rx="6" fill="#1677ff"/>
+  <text x="1310" y="43" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ffffff">Refresh</text>
+  <g transform="translate(296 112)">
+    <g>
+      <rect width="250" height="116" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+      <text x="20" y="34" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Total Nodes</text>
+      <text x="20" y="78" font-family="Arial, sans-serif" font-size="38" font-weight="700" fill="#111827">8</text>
+      <text x="85" y="78" font-family="Arial, sans-serif" font-size="13" fill="#16a34a">all online</text>
+    </g>
+    <g transform="translate(274 0)">
+      <rect width="250" height="116" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+      <text x="20" y="34" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Runnable Tools</text>
+      <text x="20" y="78" font-family="Arial, sans-serif" font-size="38" font-weight="700" fill="#111827">12</text>
+      <text x="96" y="78" font-family="Arial, sans-serif" font-size="13" fill="#2563eb">verified probes</text>
+    </g>
+    <g transform="translate(548 0)">
+      <rect width="250" height="116" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+      <text x="20" y="34" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Tasks</text>
+      <text x="20" y="78" font-family="Arial, sans-serif" font-size="38" font-weight="700" fill="#111827">184</text>
+      <text x="118" y="78" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">with evidence</text>
+    </g>
+    <g transform="translate(822 0)">
+      <rect width="250" height="116" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+      <text x="20" y="34" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Jobs</text>
+      <text x="20" y="78" font-family="Arial, sans-serif" font-size="38" font-weight="700" fill="#111827">31</text>
+      <text x="86" y="78" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">recoverable</text>
+    </g>
+  </g>
+  <rect x="296" y="260" width="720" height="560" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+  <text x="320" y="300" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#111827">Node Resources</text>
+  <g font-family="Arial, sans-serif">
+    <g transform="translate(320 330)">
+      <rect width="660" height="76" rx="7" fill="#f9fafb"/>
+      <text x="18" y="30" font-size="15" font-weight="700" fill="#111827">linux-worker-01</text>
+      <text x="18" y="52" font-size="12" fill="#6b7280">Linux · 16 cores · 64 GB</text>
+      <rect x="280" y="22" width="120" height="8" rx="4" fill="#e5e7eb"/>
+      <rect x="280" y="22" width="34" height="8" rx="4" fill="#1677ff"/>
+      <text x="420" y="31" font-size="12" fill="#374151">CPU 28%</text>
+      <rect x="500" y="22" width="120" height="8" rx="4" fill="#e5e7eb"/>
+      <rect x="500" y="22" width="58" height="8" rx="4" fill="#16a34a"/>
+      <text x="500" y="54" font-size="12" fill="#374151">Memory 48%</text>
+    </g>
+    <g transform="translate(320 422)">
+      <rect width="660" height="76" rx="7" fill="#f9fafb"/>
+      <text x="18" y="30" font-size="15" font-weight="700" fill="#111827">windows-desktop-01</text>
+      <text x="18" y="52" font-size="12" fill="#6b7280">Windows · Desktop Helper · screenshots</text>
+      <rect x="280" y="22" width="120" height="8" rx="4" fill="#e5e7eb"/>
+      <rect x="280" y="22" width="20" height="8" rx="4" fill="#1677ff"/>
+      <text x="420" y="31" font-size="12" fill="#374151">CPU 16%</text>
+      <rect x="500" y="22" width="120" height="8" rx="4" fill="#e5e7eb"/>
+      <rect x="500" y="22" width="70" height="8" rx="4" fill="#16a34a"/>
+      <text x="500" y="54" font-size="12" fill="#374151">Memory 58%</text>
+    </g>
+    <g transform="translate(320 514)">
+      <rect width="660" height="76" rx="7" fill="#f9fafb"/>
+      <text x="18" y="30" font-size="15" font-weight="700" fill="#111827">hardware-bench-01</text>
+      <text x="18" y="52" font-size="12" fill="#6b7280">Serial · flasher · test reports</text>
+      <rect x="280" y="22" width="120" height="8" rx="4" fill="#e5e7eb"/>
+      <rect x="280" y="22" width="48" height="8" rx="4" fill="#1677ff"/>
+      <text x="420" y="31" font-size="12" fill="#374151">CPU 40%</text>
+      <rect x="500" y="22" width="120" height="8" rx="4" fill="#e5e7eb"/>
+      <rect x="500" y="22" width="36" height="8" rx="4" fill="#16a34a"/>
+      <text x="500" y="54" font-size="12" fill="#374151">Memory 30%</text>
+    </g>
+  </g>
+  <rect x="1040" y="260" width="350" height="268" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+  <text x="1064" y="300" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#111827">Placement Decision</text>
+  <text x="1064" y="338" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Tool</text>
+  <text x="1130" y="338" font-family="Arial, sans-serif" font-size="13" fill="#111827">desktop.screenshot</text>
+  <text x="1064" y="374" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Selected</text>
+  <text x="1130" y="374" font-family="Arial, sans-serif" font-size="13" fill="#111827">windows-desktop-01</text>
+  <text x="1064" y="410" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Reason</text>
+  <text x="1130" y="410" font-family="Arial, sans-serif" font-size="13" fill="#111827">verified probe</text>
+  <text x="1064" y="446" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">Evidence</text>
+  <text x="1130" y="446" font-family="Arial, sans-serif" font-size="13" fill="#111827">screenshot artifact</text>
+  <rect x="1064" y="476" width="278" height="10" rx="5" fill="#e5e7eb"/>
+  <rect x="1064" y="476" width="231" height="10" rx="5" fill="#1677ff"/>
+  <text x="1064" y="506" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">score 83.4 · low load · online · bound</text>
+  <rect x="1040" y="552" width="350" height="268" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+  <text x="1064" y="592" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#111827">Evidence Timeline</text>
+  <circle cx="1072" cy="632" r="5" fill="#16a34a"/>
+  <text x="1092" y="637" font-family="Arial, sans-serif" font-size="13" fill="#111827">task.assigned</text>
+  <circle cx="1072" cy="674" r="5" fill="#1677ff"/>
+  <text x="1092" y="679" font-family="Arial, sans-serif" font-size="13" fill="#111827">worker.started</text>
+  <circle cx="1072" cy="716" r="5" fill="#1677ff"/>
+  <text x="1092" y="721" font-family="Arial, sans-serif" font-size="13" fill="#111827">artifact.uploaded screenshot.png</text>
+  <circle cx="1072" cy="758" r="5" fill="#16a34a"/>
+  <text x="1092" y="763" font-family="Arial, sans-serif" font-size="13" fill="#111827">task.completed</text>
+  <line x1="1072" y1="637" x2="1072" y2="753" stroke="#d1d5db" stroke-width="2"/>
+</svg>
+

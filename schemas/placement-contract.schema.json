@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentgrid.dev/schemas/placement-contract.schema.json",
+  "title": "PlacementContract",
+  "description": "AgentGrid scheduler placement contract with hard constraints, soft preferences, and explainable decisions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "hard_constraints", "soft_constraints"],
+  "properties": {
+    "api_version": {
+      "const": "agentgrid.placement/v1"
+    },
+    "kind": {
+      "const": "PlacementContract"
+    },
+    "hard_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Hard target node. Labels such as node:<node_id> should compile into this field.",
+          "default": null
+        },
+        "os": {
+          "type": ["string", "null"],
+          "enum": ["linux", "mac", "macos", "windows", "ios", "android", null],
+          "default": null
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "required_tools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "required_devices": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "online_required": {
+          "type": "boolean",
+          "default": true
+        },
+        "policy_allowed_required": {
+          "type": "boolean",
+          "default": true
+        },
+        "auth_status": {
+          "type": ["string", "null"],
+          "enum": ["bound", "legacy", "pending", null],
+          "default": "bound"
+        }
+      },
+      "default": {}
+    },
+    "soft_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preferred_nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "avoided_nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "max_cpu_load": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "max_memory_load": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "max_disk_load": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "min_free_slots": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "prefer_verified_tools": {
+          "type": "boolean",
+          "default": true
+        },
+        "prefer_historical_success": {
+          "type": "boolean",
+          "default": true
+        },
+        "weight": {
+          "type": ["number", "null"],
+          "default": null
+        },
+        "risk_tolerance": {
+          "enum": ["low", "medium", "high"],
+          "default": "medium"
+        },
+        "cost_weight": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1
+        }
+      },
+      "default": {}
+    },
+    "decision": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "selected_node_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "eligible_nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_score"
+          },
+          "default": []
+        },
+        "rejected_nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_rejection"
+          },
+          "default": []
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "decided_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null
+        }
+      },
+      "default": null
+    }
+  },
+  "$defs": {
+    "node_score": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["node_id", "score"],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "score": {
+          "type": "number"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "node_rejection": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["node_id", "reasons"],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "api_version": "agentgrid.placement/v1",
+      "kind": "PlacementContract",
+      "hard_constraints": {
+        "os": "linux",
+        "required_tools": ["command.run"],
+        "online_required": true,
+        "policy_allowed_required": true,
+        "auth_status": "bound"
+      },
+      "soft_constraints": {
+        "preferred_nodes": ["hub-node"],
+        "prefer_verified_tools": true,
+        "risk_tolerance": "medium"
+      },
+      "decision": {
+        "selected_node_id": "hub-node",
+        "eligible_nodes": [
+          {
+            "node_id": "hub-node",
+            "score": 0.91,
+            "reasons": ["online", "tool_verified"]
+          }
+        ],
+        "rejected_nodes": [],
+        "reason": "highest_score_after_hard_constraints",
+        "decided_at": "2026-06-01T00:00:00Z"
+      }
+    }
+  ]
+}

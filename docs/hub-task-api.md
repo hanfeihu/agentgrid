@@ -7,7 +7,7 @@ The current Hub MVP delivers work through `AgentMessage` records. The task API s
 Base URL:
 
 ```text
-http://chenqi.tminos.com:20080/agentgrid
+https://hub.example.com/agentgrid
 ```
 
 Current object version:

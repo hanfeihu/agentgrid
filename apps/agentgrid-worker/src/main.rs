@@ -57,7 +57,7 @@ struct CommandPolicy {
 #[command(name = "agentgrid-worker")]
 #[command(about = "AgentGrid Rust worker node")]
 struct Cli {
-    #[arg(long, default_value = "http://chenqi.tminos.com:20080/agentgrid")]
+    #[arg(long, default_value = "http://127.0.0.1:20181")]
     hub: String,
     #[arg(long)]
     id: Option<String>,

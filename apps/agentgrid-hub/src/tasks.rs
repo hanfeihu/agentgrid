@@ -62,7 +62,7 @@ async fn agent_runtime_manifest(State(state): State<AppState>) -> Result<Json<Va
         "runtime": {
             "name": "AgentGrid",
             "version": AGENTGRID_BUILD_VERSION,
-            "hub_url": "http://chenqi.tminos.com:20080/agentgrid",
+            "hub_url": "http://127.0.0.1:20181",
             "project_id": PROJECT_ID,
             "protocols": ["AgentMessage", "AgentTask", "ToolContract", "WorkflowDAG"],
             "event_transport": "sse"

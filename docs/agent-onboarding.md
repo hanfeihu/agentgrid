@@ -13,7 +13,7 @@
 Hub 地址：
 
 ```text
-http://chenqi.tminos.com:20080/agentgrid
+https://hub.example.com/agentgrid
 ```
 
 协议版本：
@@ -44,7 +44,7 @@ POST /api/messages
 ## 2. 查看 Hub 是否在线
 
 ```bash
-curl http://chenqi.tminos.com:20080/agentgrid/api/health
+curl https://hub.example.com/agentgrid/api/health
 ```
 
 期望看到：
@@ -62,7 +62,7 @@ curl http://chenqi.tminos.com:20080/agentgrid/api/health
 员工第一次接入时，应先登记自己的身份。`id` 要稳定，后续任务会按这个 ID 分配。
 
 ```bash
-curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/agents \
+curl -X POST https://hub.example.com/agentgrid/api/agents \
   -H 'content-type: application/json' \
   -d '{
     "id": "docs-agent",
@@ -88,7 +88,7 @@ curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/agents \
 查看当前员工列表：
 
 ```bash
-curl http://chenqi.tminos.com:20080/agentgrid/api/agents
+curl https://hub.example.com/agentgrid/api/agents
 ```
 
 ## 4. 领取任务
@@ -96,7 +96,7 @@ curl http://chenqi.tminos.com:20080/agentgrid/api/agents
 当前没有独立的 `GET /api/tasks`。员工通过消息列表领取发给自己的 `task.assigned`。
 
 ```bash
-curl 'http://chenqi.tminos.com:20080/agentgrid/api/messages?limit=50'
+curl 'https://hub.example.com/agentgrid/api/messages?limit=50'
 ```
 
 在返回结果中查找：
@@ -140,7 +140,7 @@ curl 'http://chenqi.tminos.com:20080/agentgrid/api/messages?limit=50'
 收到任务后先发送 `task.started`。这相当于确认自己已经接单。
 
 ```bash
-curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
+curl -X POST https://hub.example.com/agentgrid/api/messages \
   -H 'content-type: application/json' \
   -d '{
     "project_id": "agentgrid",
@@ -165,7 +165,7 @@ curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
 任务有阶段性输出时发送 `task.progress`。建议包含 `task_id`、`state`、`progress` 和已改动文件。
 
 ```bash
-curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
+curl -X POST https://hub.example.com/agentgrid/api/messages \
   -H 'content-type: application/json' \
   -d '{
     "project_id": "agentgrid",
@@ -190,7 +190,7 @@ curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
 任务无法继续时发送 `task.blocked`。不要沉默等待；把需要的信息、负责人或决策写清楚。
 
 ```bash
-curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
+curl -X POST https://hub.example.com/agentgrid/api/messages \
   -H 'content-type: application/json' \
   -d '{
     "project_id": "agentgrid",
@@ -215,7 +215,7 @@ curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
 需要审查时发送 `review.requested` 给 `review-agent`，并抄送任务负责人或相关员工。
 
 ```bash
-curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
+curl -X POST https://hub.example.com/agentgrid/api/messages \
   -H 'content-type: application/json' \
   -d '{
     "project_id": "agentgrid",
@@ -247,7 +247,7 @@ curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
 任务完成后发送 `task.completed`。如果输出进入审查阶段，`payload.state` 可设为 `review`；如果已经验收完毕，可设为 `done`。
 
 ```bash
-curl -X POST http://chenqi.tminos.com:20080/agentgrid/api/messages \
+curl -X POST https://hub.example.com/agentgrid/api/messages \
   -H 'content-type: application/json' \
   -d '{
     "project_id": "agentgrid",

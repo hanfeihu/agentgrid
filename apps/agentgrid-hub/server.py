@@ -420,12 +420,12 @@ class HubStore:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "chenqi-linux-01",
+                        "hub-linux-01",
                         DEFAULT_PROJECT_ID,
-                        "chenqi Linux 节点",
+                        "Hub Linux node",
                         "linux",
                         "unknown",
-                        "chenqi.tminos.com",
+                        "hub.example.com",
                         json.dumps(["server", "linux"], ensure_ascii=False),
                         json.dumps(["http", "command", "agentmessage"], ensure_ascii=False),
                         0,

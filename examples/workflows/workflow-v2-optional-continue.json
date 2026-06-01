@@ -11,7 +11,7 @@
         "args": ["-lc", "exit 2"],
         "timeout_seconds": 30
       },
-      "labels": ["compute", "command", "node:chenqi-center"],
+      "labels": ["compute", "command", "node:hub-node"],
       "optional": true,
       "on_failure": "continue"
     },
@@ -25,7 +25,7 @@
         "args": [],
         "timeout_seconds": 30
       },
-      "labels": ["compute", "command", "node:chenqi-center"]
+      "labels": ["compute", "command", "node:hub-node"]
     }
   ]
 }

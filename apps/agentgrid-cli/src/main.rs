@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
-const DEFAULT_HUB_URL: &str = "http://chenqi.tminos.com:20080/agentgrid";
+const DEFAULT_HUB_URL: &str = "http://127.0.0.1:20181";
 
 #[derive(Debug, Parser)]
 #[command(name = "agentgrid")]

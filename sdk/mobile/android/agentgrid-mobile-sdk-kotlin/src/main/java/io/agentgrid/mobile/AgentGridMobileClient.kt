@@ -105,7 +105,7 @@ class AgentGridMobileClient(
     }
 
     companion object {
-        const val DEFAULT_HUB_URL = "http://chenqi.tminos.com:20080/agentgrid"
+        const val DEFAULT_HUB_URL = "https://hub.example.com/agentgrid"
     }
 }
 
