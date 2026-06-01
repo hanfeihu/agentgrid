@@ -38,15 +38,16 @@ The Release workflow builds:
 
 ## Release Assets
 
-The workflow uploads:
+The alpha workflow uploads:
 
 ```text
 agentgrid-<version>-linux-x86_64.tar.gz
-agentgrid-<version>-macos-x86_64.tar.gz
 agentgrid-<version>-macos-arm64.tar.gz
 agentgrid-<version>-windows-x86_64.zip
 *.sha256
 ```
+
+macOS Intel builds are not published in the first alpha release because GitHub-hosted Intel macOS runners can have long queue times. Intel Mac users can build from source until a dedicated release job is added.
 
 ## Smoke Test
 
