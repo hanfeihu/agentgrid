@@ -26,8 +26,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Response,
     },
-    routing::{delete, get, post},
-    Json, Router,
+    Json,
 };
 use base64::Engine as _;
 use chrono::Utc;
@@ -42,6 +41,15 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::IntervalStream;
 use uuid::Uuid;
+
+mod artifacts;
+mod auth;
+mod jobs;
+mod nodes;
+mod routes;
+mod runtime_standard;
+mod settings;
+mod tasks;
 
 const API_VERSION: &str = "agentmessage.io/v1";
 const AGENTGRID_BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -91,210 +99,7 @@ async fn main() -> anyhow::Result<()> {
     };
     start_node_tool_probe_loop(state.clone());
     start_job_recovery_loop(state.clone());
-    let app = Router::new()
-        .route("/", get(home))
-        .route("/install/windows.ps1", get(windows_install_script))
-        .route("/api/health", get(health))
-        .route("/api/bootstrap", get(get_bootstrap_status))
-        .route("/api/bootstrap/admin", post(create_super_admin))
-        .route("/api/auth/me", get(auth_me))
-        .route("/api/auth/login", post(login_user))
-        .route(
-            "/api/auth/register/request-code",
-            post(request_register_code),
-        )
-        .route("/api/auth/register", post(register_user))
-        .route("/api/auth/change-password", post(change_password))
-        .route(
-            "/api/settings",
-            get(get_system_settings).post(update_system_settings),
-        )
-        .route("/api/worker/update-manifest", get(worker_update_manifest))
-        .route("/api/worker/download/{target}", get(download_worker_binary))
-        .route("/api/agents", get(list_agents).post(upsert_agent))
-        .route("/api/nodes", get(list_nodes).post(upsert_node))
-        .route("/api/nodes/{id}", delete(delete_node))
-        .route("/api/nodes/{id}/config", post(update_node_config))
-        .route("/api/nodes/{id}/approve", post(approve_node_join))
-        .route(
-            "/api/nodes/{id}/tools",
-            get(list_node_tools).post(register_node_tools),
-        )
-        .route("/api/node-tools", get(list_node_tools_catalog))
-        .route("/api/node-tools/probe", post(probe_node_tools))
-        .route("/api/node-tools/{tool_id}", get(get_node_tool_catalog))
-        .route("/api/node-tools/{tool_id}/probe", post(probe_node_tool))
-        .route(
-            "/api/node-tools/{tool_id}/nodes/{node_id}/probe",
-            post(probe_node_tool_node),
-        )
-        .route("/api/messages", get(list_messages).post(create_message))
-        .route("/api/events", get(list_events))
-        .route("/api/events/stream", get(event_stream))
-        .route("/api/audit-events", get(list_audit_events))
-        .route("/api/policy", get(get_policy))
-        .route("/api/runtime-standard", get(runtime_standard))
-        .route(
-            "/api/runtime-standard/tool-contracts",
-            get(runtime_standard_tool_contracts),
-        )
-        .route(
-            "/api/runtime-standard/capabilities",
-            get(runtime_standard_capabilities),
-        )
-        .route(
-            "/api/runtime-standard/state-machine",
-            get(runtime_standard_state_machine),
-        )
-        .route(
-            "/api/runtime-standard/workflow-template",
-            get(runtime_standard_workflow_template),
-        )
-        .route(
-            "/api/runtime-standard/result-report",
-            get(runtime_standard_result_report),
-        )
-        .route(
-            "/api/runtime-standard/workbench",
-            get(runtime_standard_workbench),
-        )
-        .route(
-            "/api/runtime-standard/devices",
-            get(runtime_standard_devices),
-        )
-        .route(
-            "/api/runtime-standard/evidence",
-            get(runtime_standard_evidence),
-        )
-        .route(
-            "/api/runtime-standard/runbook",
-            get(runtime_standard_runbook),
-        )
-        .route(
-            "/api/runtime-standard/mobile-sdk",
-            get(runtime_standard_mobile_sdk),
-        )
-        .route(
-            "/api/runtime-standard/plugin-runtime",
-            get(runtime_standard_plugin_runtime),
-        )
-        .route(
-            "/api/runtime-standard/capability-graph",
-            get(runtime_standard_capability_graph),
-        )
-        .route(
-            "/api/runtime-standard/execution-contract",
-            get(runtime_standard_execution_contract),
-        )
-        .route(
-            "/api/runtime-standard/evidence-pipeline",
-            get(runtime_standard_evidence_pipeline),
-        )
-        .route(
-            "/api/runtime-standard/probe-engine",
-            get(runtime_standard_probe_engine),
-        )
-        .route(
-            "/api/runtime-standard/placement-engine",
-            get(runtime_standard_placement_engine),
-        )
-        .route(
-            "/api/runtime-standard/task-intent",
-            get(runtime_standard_task_intent),
-        )
-        .route(
-            "/api/runtime-standard/artifact-store",
-            get(runtime_standard_artifact_store),
-        )
-        .route(
-            "/api/runtime-standard/event-timeline",
-            get(runtime_standard_event_timeline),
-        )
-        .route("/api/agent-runtime/manifest", get(agent_runtime_manifest))
-        .route("/api/agent-runtime/tasks", post(agent_runtime_submit_task))
-        .route("/api/agent-runtime/tasks/{id}", get(agent_runtime_get_task))
-        .route("/api/agent-runtime/tasks/{id}/events", get(task_events))
-        .route("/api/task-templates", get(list_task_templates))
-        .route("/api/task-templates/{id}", get(get_task_template))
-        .route("/api/task-templates/{id}/start", post(start_task_template))
-        .route("/api/webhooks", get(list_webhooks).post(create_webhook))
-        .route("/api/webhooks/deliveries", get(list_webhook_deliveries))
-        .route("/api/webhooks/{id}", delete(delete_webhook))
-        .route("/api/capabilities/manifest", get(capabilities_manifest))
-        .route("/api/tools", get(list_tools))
-        .route("/api/tools/probes", get(list_tool_probes))
-        .route("/api/tools/probe", post(probe_all_tools))
-        .route("/api/tools/{id}", get(get_tool))
-        .route("/api/tools/{id}/nodes", get(list_tool_nodes))
-        .route("/api/tools/{id}/probe", post(probe_tool))
-        .route(
-            "/api/tools/{id}/nodes/{node_id}/probe",
-            post(probe_tool_node),
-        )
-        .route(
-            "/api/scheduler-config",
-            get(get_scheduler_config).post(update_scheduler_config),
-        )
-        .route("/api/diagnostics", get(get_diagnostics))
-        .route(
-            "/api/execution-records/tasks/{id}",
-            get(task_execution_record),
-        )
-        .route(
-            "/api/execution-records/workflows/{id}",
-            get(workflow_execution_record),
-        )
-        .route("/api/artifacts", get(list_artifacts))
-        .route("/api/artifacts/{id}/download", get(download_artifact))
-        .route("/api/terminal/ws", get(terminal_client_ws))
-        .route(
-            "/api/node-provisioning/plans",
-            get(list_node_provisioning_plans).post(create_node_provisioning_plan),
-        )
-        .route(
-            "/api/workflow-templates",
-            get(list_workflow_templates).post(create_workflow_template),
-        )
-        .route(
-            "/api/workflow-templates/{id}/start",
-            post(start_workflow_template),
-        )
-        .route("/api/workflows", get(list_workflows).post(create_workflow))
-        .route("/api/workflows/{id}", get(get_workflow))
-        .route("/api/workflows/{id}/start", post(start_workflow))
-        .route("/api/workflows/{id}/cancel", post(cancel_workflow))
-        .route("/api/jobs", get(list_jobs).post(create_job))
-        .route("/api/jobs/plan", post(plan_job))
-        .route("/api/jobs/recovery/scan", post(job_recovery_scan))
-        .route("/api/jobs/reliability", get(job_reliability))
-        .route("/api/jobs/{id}", get(get_job))
-        .route("/api/jobs/{id}/checkpoints", post(create_job_checkpoint))
-        .route("/api/jobs/{id}/execution", get(job_execution))
-        .route("/api/jobs/{id}/events", get(job_events))
-        .route("/api/events/ingress", post(create_ingress_event))
-        .route("/api/tasks", get(list_tasks).post(create_task))
-        .route("/api/tasks/{id}", get(get_task))
-        .route("/api/tasks/{id}/snapshot", get(task_snapshot))
-        .route(
-            "/api/tasks/{id}/schedule-preview",
-            get(task_schedule_preview),
-        )
-        .route("/api/tasks/{id}/events", get(task_events))
-        .route("/api/tasks/{id}/control", post(control_task))
-        .route("/api/tasks/{id}/{action}", post(update_task))
-        .route("/api/worker/lease", post(lease_tasks))
-        .route("/api/worker/reconcile", post(worker_reconcile))
-        .route("/api/worker/tasks/{id}/control", get(worker_task_control))
-        .route("/api/worker/tasks/{id}/renew", post(renew_worker_task))
-        .route("/api/worker/tasks/{id}/logs", post(worker_task_log))
-        .route("/api/worker/terminal/ws", get(terminal_worker_ws))
-        .route(
-            "/api/worker/tasks/{id}/complete",
-            post(complete_worker_task),
-        )
-        .route("/api/worker/tasks/{id}/fail", post(fail_worker_task))
-        .fallback(static_asset)
-        .with_state(state);
+    let app = routes::router(state);
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse()?;
     println!("AgentGrid Rust Hub listening on http://{addr}");

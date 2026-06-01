@@ -6,6 +6,12 @@ APP_DIR="/opt/agentgrid-hub"
 
 ssh "$REMOTE" "sudo mkdir -p '$APP_DIR/data' && sudo chown -R \$(id -un):\$(id -gn) '$APP_DIR'"
 rsync -av --delete \
+  --exclude .git \
+  --exclude target \
+  --exclude apps/agentgrid-web/node_modules \
+  --exclude apps/agentgrid-web/dist \
+  --exclude '*.db' \
+  --exclude '*.log' \
   apps/agentgrid-hub/server.py \
   apps/agentgrid-hub/README.md \
   examples \
