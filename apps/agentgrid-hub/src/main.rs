@@ -300,6 +300,14 @@ async fn terminal_worker_ws(
 
 async fn list_local_services(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let nodes = store(&state)?.list_nodes()?;
+    let bridge_workers = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
     let mut items = Vec::new();
     for node in nodes {
         let node_id = node
@@ -331,6 +339,13 @@ async fn list_local_services(State(state): State<AppState>) -> Result<Json<Value
             if service_id.is_empty() {
                 continue;
             }
+            let bridge_worker_connected = bridge_workers.contains(&node_id);
+            let service_available = service
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                == "available";
+            let chat_ready = node_state == "online" && service_available && bridge_worker_connected;
             items.push(json!({
                 "api_version": "agentgrid.bridge/v1",
                 "kind": "LocalService",
@@ -341,7 +356,9 @@ async fn list_local_services(State(state): State<AppState>) -> Result<Json<Value
                 },
                 "spec": service,
                 "status": {
-                    "node_state": node_state
+                    "node_state": node_state,
+                    "bridge_worker_connected": bridge_worker_connected,
+                    "chat_ready": chat_ready
                 }
             }));
         }
