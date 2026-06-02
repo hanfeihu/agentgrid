@@ -38,6 +38,12 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 const WORKER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const TASK_LEASE_SECONDS: u64 = 120;
 const TASK_LEASE_RENEW_INTERVAL_SECONDS: u64 = 45;
+const CONTROL_WS_PING_INTERVAL_SECONDS: u64 = 15;
+const CONTROL_WS_STALE_AFTER_SECONDS: u64 = 45;
+const CONTROL_WS_SEND_TIMEOUT_SECONDS: u64 = 10;
+const CONTROL_WS_RECONNECT_MIN_SECONDS: u64 = 2;
+const CONTROL_WS_RECONNECT_MAX_SECONDS: u64 = 30;
+const CONTROL_WS_STABLE_RESET_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone)]
 struct SecurityPolicy {
@@ -707,6 +713,13 @@ fn now_rfc3339() -> String {
     }
 }
 
+fn reconnect_delay(attempt: u32) -> Duration {
+    let capped_attempt = attempt.min(5);
+    let seconds = (CONTROL_WS_RECONNECT_MIN_SECONDS * 2_u64.pow(capped_attempt))
+        .min(CONTROL_WS_RECONNECT_MAX_SECONDS);
+    Duration::from_secs(seconds)
+}
+
 fn start_auto_update_agent(
     base: String,
     node_id: String,
@@ -965,11 +978,18 @@ fn start_bridge_agent(base: String, node_id: String) {
             }
         };
         runtime.block_on(async move {
+            let mut reconnect_attempt = 0_u32;
             loop {
+                let started_at = std::time::Instant::now();
                 if let Err(error) = bridge_agent_loop(&base, &node_id).await {
                     eprintln!("bridge websocket disconnected: {error:#}");
                 }
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                if started_at.elapsed() >= Duration::from_secs(CONTROL_WS_STABLE_RESET_SECONDS) {
+                    reconnect_attempt = 0;
+                } else {
+                    reconnect_attempt = reconnect_attempt.saturating_add(1);
+                }
+                tokio::time::sleep(reconnect_delay(reconnect_attempt)).await;
             }
         });
     });
@@ -984,22 +1004,77 @@ async fn bridge_agent_loop(base: &str, node_id: &str) -> Result<()> {
         String,
         mpsc::UnboundedSender<BridgePayload>,
     >::new()));
+    let mut ping_interval =
+        tokio::time::interval(Duration::from_secs(CONTROL_WS_PING_INTERVAL_SECONDS));
+    let mut stale_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(
+        CONTROL_WS_STALE_AFTER_SECONDS,
+    )));
 
     let send_task = tokio::spawn(async move {
         while let Some(value) = out_rx.recv().await {
-            if sink.send(Message::Text(value.to_string())).await.is_err() {
+            let send_result = tokio::time::timeout(
+                Duration::from_secs(CONTROL_WS_SEND_TIMEOUT_SECONDS),
+                sink.send(Message::Text(value.to_string())),
+            )
+            .await;
+            if !matches!(send_result, Ok(Ok(()))) {
                 break;
             }
         }
     });
 
-    while let Some(message) = stream.next().await {
-        let message = message?;
-        let Message::Text(text) = message else {
-            continue;
-        };
-        let value: Value = serde_json::from_str(&text)?;
-        handle_bridge_command(value, Arc::clone(&sessions), out_tx.clone()).await;
+    loop {
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                let _ = out_tx.send(json!({
+                    "type": "bridge.worker_ping",
+                    "node_id": node_id,
+                    "ts": now_rfc3339()
+                }));
+            }
+            _ = &mut stale_timeout => {
+                sessions.lock().await.clear();
+                send_task.abort();
+                anyhow::bail!("bridge websocket stale: no hub response for {CONTROL_WS_STALE_AFTER_SECONDS}s");
+            }
+            message = stream.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                let message = message?;
+                stale_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(CONTROL_WS_STALE_AFTER_SECONDS));
+                match message {
+                    Message::Text(text) => {
+                        let value: Value = serde_json::from_str(&text)?;
+                        if value.get("type").and_then(Value::as_str) == Some("bridge.worker_pong") {
+                            continue;
+                        }
+                        handle_bridge_command(value, Arc::clone(&sessions), out_tx.clone()).await;
+                    }
+                    Message::Ping(payload) => {
+                        let _ = out_tx.send(json!({
+                            "type": "bridge.worker_pong",
+                            "node_id": node_id,
+                            "payload_base64": base64::engine::general_purpose::STANDARD.encode(payload),
+                            "ts": now_rfc3339()
+                        }));
+                    }
+                    Message::Pong(_) => {}
+                    Message::Close(frame) => {
+                        sessions.lock().await.clear();
+                        send_task.abort();
+                        anyhow::bail!("bridge websocket closed by hub: {frame:?}");
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if send_task.is_finished() {
+            sessions.lock().await.clear();
+            send_task.abort();
+            anyhow::bail!("bridge websocket send loop stopped");
+        }
     }
     sessions.lock().await.clear();
     send_task.abort();
@@ -1607,11 +1682,18 @@ fn start_terminal_agent(base: String, node_id: String) {
             }
         };
         runtime.block_on(async move {
+            let mut reconnect_attempt = 0_u32;
             loop {
+                let started_at = std::time::Instant::now();
                 if let Err(error) = terminal_agent_loop(&base, &node_id).await {
                     eprintln!("terminal websocket disconnected: {error:#}");
                 }
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                if started_at.elapsed() >= Duration::from_secs(CONTROL_WS_STABLE_RESET_SECONDS) {
+                    reconnect_attempt = 0;
+                } else {
+                    reconnect_attempt = reconnect_attempt.saturating_add(1);
+                }
+                tokio::time::sleep(reconnect_delay(reconnect_attempt)).await;
             }
         });
     });
@@ -1623,24 +1705,80 @@ async fn terminal_agent_loop(base: &str, node_id: &str) -> Result<()> {
     let (mut sink, mut stream) = socket.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
     let sessions = Arc::new(AsyncMutex::new(HashMap::<String, TerminalSession>::new()));
+    let mut ping_interval =
+        tokio::time::interval(Duration::from_secs(CONTROL_WS_PING_INTERVAL_SECONDS));
+    let mut stale_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(
+        CONTROL_WS_STALE_AFTER_SECONDS,
+    )));
 
     let send_task = tokio::spawn(async move {
         while let Some(value) = out_rx.recv().await {
-            if sink.send(Message::Text(value.to_string())).await.is_err() {
+            let send_result = tokio::time::timeout(
+                Duration::from_secs(CONTROL_WS_SEND_TIMEOUT_SECONDS),
+                sink.send(Message::Text(value.to_string())),
+            )
+            .await;
+            if !matches!(send_result, Ok(Ok(()))) {
                 break;
             }
         }
     });
 
-    while let Some(message) = stream.next().await {
-        let message = message?;
-        let Message::Text(text) = message else {
-            continue;
-        };
-        let value: Value = serde_json::from_str(&text)?;
-        handle_terminal_command(value, Arc::clone(&sessions), out_tx.clone()).await;
+    loop {
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                let _ = out_tx.send(json!({
+                    "type": "terminal.worker_ping",
+                    "node_id": node_id,
+                    "ts": now_rfc3339()
+                }));
+            }
+            _ = &mut stale_timeout => {
+                sessions.lock().await.clear();
+                send_task.abort();
+                anyhow::bail!("terminal websocket stale: no hub response for {CONTROL_WS_STALE_AFTER_SECONDS}s");
+            }
+            message = stream.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                let message = message?;
+                stale_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(CONTROL_WS_STALE_AFTER_SECONDS));
+                match message {
+                    Message::Text(text) => {
+                        let value: Value = serde_json::from_str(&text)?;
+                        if value.get("type").and_then(Value::as_str) == Some("terminal.worker_pong") {
+                            continue;
+                        }
+                        handle_terminal_command(value, Arc::clone(&sessions), out_tx.clone()).await;
+                    }
+                    Message::Ping(payload) => {
+                        let _ = out_tx.send(json!({
+                            "type": "terminal.worker_pong",
+                            "node_id": node_id,
+                            "payload_base64": base64::engine::general_purpose::STANDARD.encode(payload),
+                            "ts": now_rfc3339()
+                        }));
+                    }
+                    Message::Pong(_) => {}
+                    Message::Close(frame) => {
+                        sessions.lock().await.clear();
+                        send_task.abort();
+                        anyhow::bail!("terminal websocket closed by hub: {frame:?}");
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if send_task.is_finished() {
+            sessions.lock().await.clear();
+            send_task.abort();
+            anyhow::bail!("terminal websocket send loop stopped");
+        }
     }
 
+    sessions.lock().await.clear();
     send_task.abort();
     Ok(())
 }

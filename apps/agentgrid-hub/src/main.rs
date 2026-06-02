@@ -893,6 +893,7 @@ async fn handle_bridge_client(
 async fn handle_bridge_worker(socket: WebSocket, state: AppState, node_id: String) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let connection_tx = tx.clone();
     state
         .bridge
         .workers
@@ -924,6 +925,28 @@ async fn handle_bridge_worker(socket: WebSocket, state: AppState, node_id: Strin
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
+        if value.get("type").and_then(Value::as_str) == Some("bridge.worker_ping") {
+            let _ = state
+                .bridge
+                .workers
+                .lock()
+                .await
+                .get(&node_id)
+                .cloned()
+                .and_then(|worker| {
+                    worker
+                        .send(
+                            json!({
+                                "type": "bridge.worker_pong",
+                                "node_id": node_id.clone(),
+                                "ts": now()
+                            })
+                            .to_string(),
+                        )
+                        .ok()
+                });
+            continue;
+        }
         if value
             .get("type")
             .and_then(Value::as_str)
@@ -939,7 +962,14 @@ async fn handle_bridge_worker(socket: WebSocket, state: AppState, node_id: Strin
             let _ = client.send(value.to_string());
         }
     }
-    state.bridge.workers.lock().await.remove(&node_id);
+    let mut workers = state.bridge.workers.lock().await;
+    if workers
+        .get(&node_id)
+        .is_some_and(|worker| worker.same_channel(&connection_tx))
+    {
+        workers.remove(&node_id);
+    }
+    drop(workers);
     send_task.abort();
 }
 
@@ -1131,6 +1161,7 @@ async fn handle_terminal_client(socket: WebSocket, state: AppState, node_id: Str
 async fn handle_terminal_worker(socket: WebSocket, state: AppState, node_id: String) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let connection_tx = tx.clone();
     state
         .terminal
         .workers
@@ -1161,6 +1192,28 @@ async fn handle_terminal_worker(socket: WebSocket, state: AppState, node_id: Str
                 let Ok(value) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
+                if value.get("type").and_then(Value::as_str) == Some("terminal.worker_ping") {
+                    let _ = state
+                        .terminal
+                        .workers
+                        .lock()
+                        .await
+                        .get(&node_id)
+                        .cloned()
+                        .and_then(|worker| {
+                            worker
+                                .send(
+                                    json!({
+                                        "type": "terminal.worker_pong",
+                                        "node_id": node_id.clone(),
+                                        "ts": now()
+                                    })
+                                    .to_string(),
+                                )
+                                .ok()
+                        });
+                    continue;
+                }
                 let Some(session_id) = value.get("session_id").and_then(Value::as_str) else {
                     continue;
                 };
@@ -1174,7 +1227,14 @@ async fn handle_terminal_worker(socket: WebSocket, state: AppState, node_id: Str
         }
     }
 
-    state.terminal.workers.lock().await.remove(&node_id);
+    let mut workers = state.terminal.workers.lock().await;
+    if workers
+        .get(&node_id)
+        .is_some_and(|worker| worker.same_channel(&connection_tx))
+    {
+        workers.remove(&node_id);
+    }
+    drop(workers);
     send_task.abort();
     let _ = Store::open(state.db_path.as_ref()).and_then(|store| {
         store.audit(
