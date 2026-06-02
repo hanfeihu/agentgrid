@@ -1,5 +1,7 @@
 # AgentGrid Mobile SDK
 
+[Full docs](../../docs/mobile-sdk.md) | [中文说明](../../docs/zh-CN/mobile-sdk.md)
+
 AgentGrid Mobile SDK is the console-client SDK family for phones and tablets.
 It is intentionally not a Worker runtime.
 

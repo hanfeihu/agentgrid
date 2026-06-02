@@ -1,5 +1,7 @@
 # AgentGrid Android Mobile SDK
 
+[Full Mobile SDK docs](../../../docs/mobile-sdk.md) | [中文说明](../../../docs/zh-CN/mobile-sdk.md)
+
 This directory is a standalone Gradle project for the Android Mobile SDK.
 
 ## Module

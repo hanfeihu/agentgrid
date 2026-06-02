@@ -142,6 +142,7 @@ cargo run -p agentgrid-cli -- submit-command \
 | Install | [docs/install.md](docs/install.md) | [docs/zh-CN/install.md](docs/zh-CN/install.md) |
 | Deployment | [docs/deployment.md](docs/deployment.md) | [docs/zh-CN/deployment.md](docs/zh-CN/deployment.md) |
 | CLI | [docs/cli.md](docs/cli.md) | [docs/zh-CN/cli.md](docs/zh-CN/cli.md) |
+| Mobile SDK | [docs/mobile-sdk.md](docs/mobile-sdk.md) | [docs/zh-CN/mobile-sdk.md](docs/zh-CN/mobile-sdk.md) |
 | Node join | [docs/node-join-standard.md](docs/node-join-standard.md) | [docs/zh-CN/node-join.md](docs/zh-CN/node-join.md) |
 | Artifacts and releases | [docs/artifacts.md](docs/artifacts.md) | [docs/zh-CN/artifacts.md](docs/zh-CN/artifacts.md) |
 | Release process | [docs/release.md](docs/release.md) | [docs/zh-CN/release.md](docs/zh-CN/release.md) |

@@ -1,5 +1,7 @@
 # agentgrid-mobile-sdk-kotlin
 
+[Full Mobile SDK docs](../../../../docs/mobile-sdk.md) | [中文说明](../../../../docs/zh-CN/mobile-sdk.md)
+
 Kotlin SDK source for building an AgentGrid mobile console client.
 
 ```kotlin

@@ -142,6 +142,7 @@ cargo run -p agentgrid-cli -- submit-command \
 | 安装 | [docs/zh-CN/install.md](docs/zh-CN/install.md) | [docs/install.md](docs/install.md) |
 | 部署 | [docs/zh-CN/deployment.md](docs/zh-CN/deployment.md) | [docs/deployment.md](docs/deployment.md) |
 | 命令 | [docs/zh-CN/cli.md](docs/zh-CN/cli.md) | [docs/cli.md](docs/cli.md) |
+| Mobile SDK | [docs/zh-CN/mobile-sdk.md](docs/zh-CN/mobile-sdk.md) | [docs/mobile-sdk.md](docs/mobile-sdk.md) |
 | 节点入网 | [docs/zh-CN/node-join.md](docs/zh-CN/node-join.md) | [docs/node-join-standard.md](docs/node-join-standard.md) |
 | 产物 | [docs/zh-CN/artifacts.md](docs/zh-CN/artifacts.md) | [docs/artifacts.md](docs/artifacts.md) |
 | 发布流程 | [docs/zh-CN/release.md](docs/zh-CN/release.md) | [docs/release.md](docs/release.md) |

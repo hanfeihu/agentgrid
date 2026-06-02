@@ -1,5 +1,7 @@
 # agentgrid-mobile-sdk-swift
 
+[Full Mobile SDK docs](../../../../docs/mobile-sdk.md) | [中文说明](../../../../docs/zh-CN/mobile-sdk.md)
+
 Swift SDK for building an AgentGrid mobile console client.
 
 ```swift
