@@ -1489,15 +1489,24 @@ struct CodexBridgeView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                CodexConversationHeader(
-                    model: model,
-                    chooseComputer: {
-                        showingComputerPicker = true
-                    }
-                )
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
+                if model.codexConnected {
+                    CodexChatTopBar(
+                        model: model,
+                        chooseComputer: {
+                            showingComputerPicker = true
+                        }
+                    )
+                } else {
+                    CodexConversationHeader(
+                        model: model,
+                        chooseComputer: {
+                            showingComputerPicker = true
+                        }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
+                }
 
                 CodexChatCard(model: model)
             }
@@ -1626,6 +1635,67 @@ struct CodexConversationHeader: View {
             .padding(16)
             .background(AppTheme.card)
             .cornerRadius(20)
+        }
+    }
+}
+
+struct CodexChatTopBar: View {
+    @ObservedObject var model: AgentGridMobileModel
+    let chooseComputer: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.green.opacity(0.13))
+                    .frame(width: 38, height: 38)
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.green)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.selectedService?.nodeName ?? "Codex")
+                    .font(.headline.weight(.bold))
+                    .lineLimit(1)
+                Text("正在和这台电脑上的 Codex 对话")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                chooseComputer()
+            } label: {
+                Image(systemName: "rectangle.2.swap")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(AppTheme.accent)
+                    .frame(width: 34, height: 34)
+                    .background(AppTheme.accent.opacity(0.10))
+                    .clipShape(Circle())
+            }
+
+            Button {
+                model.disconnectCodexChat()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.red)
+                    .frame(width: 34, height: 34)
+                    .background(Color.red.opacity(0.10))
+                    .clipShape(Circle())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 10)
+        .background(AppTheme.card)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.black.opacity(0.06))
+                .frame(height: 1)
         }
     }
 }
@@ -2028,8 +2098,8 @@ struct CodexChatCard: View {
             if model.codexConnected {
                 QuickPromptBar(model: model)
                     .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+                    .padding(.top, 8)
+                    .padding(.bottom, 6)
             }
 
             ScrollViewReader { proxy in
@@ -2046,7 +2116,8 @@ struct CodexChatCard: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 14)
                 }
                 .dismissesKeyboardInteractively()
                 .onTapGesture {
@@ -2062,35 +2133,29 @@ struct CodexChatCard: View {
 
             Divider()
 
-            HStack(alignment: .bottom, spacing: 10) {
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: $model.codexChatInput)
-                        .font(.body)
-                        .frame(minHeight: 44, maxHeight: 110)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(AppTheme.field)
-                        .cornerRadius(18)
-                        .focused($inputFocused)
-                        .toolbar {
-                            ToolbarItemGroup(placement: .keyboard) {
-                                Spacer()
-                                Button("收起键盘") {
-                                    inputFocused = false
-                                    dismissKeyboard()
-                                }
+            HStack(alignment: .center, spacing: 10) {
+                TextField(model.codexConnected ? "输入消息" : "先连接一台工作电脑", text: $model.codexChatInput)
+                    .font(.body)
+                    .textInputAutocapitalization(.never)
+                    .disableAutocorrection(true)
+                    .padding(.horizontal, 14)
+                    .frame(height: 42)
+                    .background(AppTheme.field)
+                    .cornerRadius(21)
+                    .focused($inputFocused)
+                    .submitLabel(.send)
+                    .onSubmit {
+                        Task { await model.sendCodexChatMessage() }
+                    }
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("收起键盘") {
+                                inputFocused = false
+                                dismissKeyboard()
                             }
                         }
-
-                    if model.codexChatInput.isEmpty {
-                        Text(model.codexConnected ? "输入你想让 Codex 帮你做什么" : "先连接一台工作电脑")
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 15)
-                            .padding(.vertical, 18)
-                            .allowsHitTesting(false)
                     }
-                }
 
                 Button {
                     Task { await model.sendCodexChatMessage() }
@@ -2107,8 +2172,8 @@ struct CodexChatCard: View {
                 .disabled(!model.codexConnected || model.codexChatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
             .background(AppTheme.card)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2182,8 +2247,8 @@ struct QuickPromptBar: View {
                                 .font(.caption.weight(.semibold))
                         }
                         .foregroundColor(AppTheme.accent)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
                         .background(AppTheme.card)
                         .overlay(
                             Capsule()
@@ -2212,13 +2277,13 @@ struct ChatBubble: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundColor(.secondary)
                 Text(message.text.isEmpty ? "..." : message.text)
-                    .font(.subheadline)
+                    .font(.body)
                     .foregroundColor(message.isUser ? .white : .primary)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 9)
                     .background(backgroundColor)
-                    .cornerRadius(16)
+                    .cornerRadius(17)
                 if message.isStreaming {
                     Text("正在输入...")
                         .font(.caption2)
