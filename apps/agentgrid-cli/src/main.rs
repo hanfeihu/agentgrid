@@ -4,13 +4,13 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
-const DEFAULT_HUB_URL: &str = "http://127.0.0.1:20181";
+const DEFAULT_HUB_URL: &str = "http://chenqi.tminos.com:20080/agentgrid";
 
 #[derive(Debug, Parser)]
 #[command(name = "agentgrid")]
 #[command(about = "AgentGrid CLI for AI agent collaboration and compute runtime")]
 struct Cli {
-    #[arg(long, default_value = DEFAULT_HUB_URL)]
+    #[arg(long, default_value = DEFAULT_HUB_URL, env = "AGENTGRID_HUB")]
     hub: String,
 
     #[command(subcommand)]
@@ -70,6 +70,34 @@ enum Commands {
     Webhooks {
         #[command(subcommand)]
         command: Option<WebhookCommands>,
+    },
+    PortBridges {
+        #[command(subcommand)]
+        command: Option<PortBridgeCommands>,
+    },
+    BridgePort {
+        #[arg(long = "source-node")]
+        source_node: String,
+        #[arg(long = "target-node")]
+        target_node: String,
+        #[arg(long = "target-port")]
+        target_port: u16,
+        #[arg(long = "source-port", default_value_t = 0)]
+        source_port: u16,
+        #[arg(long = "target-host", default_value = "127.0.0.1")]
+        target_host: String,
+        #[arg(long = "bind-host", default_value = "127.0.0.1")]
+        bind_host: String,
+        #[arg(long, default_value_t = 1800)]
+        ttl_seconds: u64,
+        #[arg(long, default_value = "tcp")]
+        protocol: String,
+        #[arg(long)]
+        purpose: Option<String>,
+        #[arg(long, default_value = "agentgrid-cli")]
+        created_by: String,
+        #[arg(long, default_value = "text")]
+        output: String,
     },
     SubmitHttp {
         #[arg(long)]
@@ -817,6 +845,43 @@ enum WebhookCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum PortBridgeCommands {
+    List,
+    Get {
+        #[arg(long)]
+        id: String,
+    },
+    Create {
+        #[arg(long = "source-node")]
+        source_node: String,
+        #[arg(long = "target-node")]
+        target_node: String,
+        #[arg(long = "target-port")]
+        target_port: u16,
+        #[arg(long = "source-port", default_value_t = 0)]
+        source_port: u16,
+        #[arg(long = "target-host", default_value = "127.0.0.1")]
+        target_host: String,
+        #[arg(long = "bind-host", default_value = "127.0.0.1")]
+        bind_host: String,
+        #[arg(long, default_value_t = 1800)]
+        ttl_seconds: u64,
+        #[arg(long, default_value = "tcp")]
+        protocol: String,
+        #[arg(long)]
+        purpose: Option<String>,
+        #[arg(long, default_value = "agentgrid-cli")]
+        created_by: String,
+        #[arg(long, default_value = "text")]
+        output: String,
+    },
+    Close {
+        #[arg(long)]
+        id: String,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let client = reqwest::blocking::Client::new();
@@ -1407,6 +1472,82 @@ fn main() -> Result<()> {
                     .text()?,
             ),
         },
+        Commands::PortBridges { command } => match command.unwrap_or(PortBridgeCommands::List) {
+            PortBridgeCommands::List => print_json(
+                client
+                    .get(format!("{base}/api/port-bridges"))
+                    .send()?
+                    .text()?,
+            ),
+            PortBridgeCommands::Get { id } => print_json(
+                client
+                    .get(format!("{base}/api/port-bridges/{id}"))
+                    .send()?
+                    .text()?,
+            ),
+            PortBridgeCommands::Create {
+                source_node,
+                target_node,
+                target_port,
+                source_port,
+                target_host,
+                bind_host,
+                ttl_seconds,
+                protocol,
+                purpose,
+                created_by,
+                output,
+            } => {
+                let body = port_bridge_create_json(
+                    source_node,
+                    target_node,
+                    target_port,
+                    source_port,
+                    target_host,
+                    bind_host,
+                    ttl_seconds,
+                    protocol,
+                    purpose,
+                    created_by,
+                );
+                let value = post_json(&client, &format!("{base}/api/port-bridges"), &body)?;
+                print_port_bridge_create(&value, &output)?;
+            }
+            PortBridgeCommands::Close { id } => print_json(
+                client
+                    .delete(format!("{base}/api/port-bridges/{id}"))
+                    .send()?
+                    .text()?,
+            ),
+        },
+        Commands::BridgePort {
+            source_node,
+            target_node,
+            target_port,
+            source_port,
+            target_host,
+            bind_host,
+            ttl_seconds,
+            protocol,
+            purpose,
+            created_by,
+            output,
+        } => {
+            let body = port_bridge_create_json(
+                source_node,
+                target_node,
+                target_port,
+                source_port,
+                target_host,
+                bind_host,
+                ttl_seconds,
+                protocol,
+                purpose,
+                created_by,
+            );
+            let value = post_json(&client, &format!("{base}/api/port-bridges"), &body)?;
+            print_port_bridge_create(&value, &output)?;
+        }
         Commands::SubmitHttp {
             url,
             method,
@@ -2345,6 +2486,82 @@ fn remove_null_fields(value: &mut Value) {
     if let Some(map) = value.as_object_mut() {
         map.retain(|_, item| !item.is_null());
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn port_bridge_create_json(
+    source_node: String,
+    target_node: String,
+    target_port: u16,
+    source_port: u16,
+    target_host: String,
+    bind_host: String,
+    ttl_seconds: u64,
+    protocol: String,
+    purpose: Option<String>,
+    created_by: String,
+) -> Value {
+    let mut body = serde_json::json!({
+        "source_node_id": source_node,
+        "target_node_id": target_node,
+        "source_bind_host": bind_host,
+        "source_bind_port": source_port,
+        "target_host": target_host,
+        "target_port": target_port,
+        "protocol": protocol,
+        "ttl_seconds": ttl_seconds,
+        "purpose": purpose,
+        "created_by": created_by
+    });
+    remove_null_fields(&mut body);
+    body
+}
+
+fn print_port_bridge_create(value: &Value, output: &str) -> Result<()> {
+    if output == "json" {
+        println!("{}", serde_json::to_string_pretty(value)?);
+        return Ok(());
+    }
+    let item = value.get("item").unwrap_or(value);
+    let id = item
+        .pointer("/metadata/id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let state = item
+        .pointer("/status/state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let source_node = item
+        .pointer("/spec/source_node_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let target_node = item
+        .pointer("/spec/target_node_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let target_host = item
+        .pointer("/spec/target_host")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let target_port = item
+        .pointer("/spec/target_port")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let source_url = item
+        .pointer("/status/source_url")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    println!("Port Bridge ID: {id}");
+    println!("State: {state}");
+    println!("Source Node: {source_node}");
+    println!("Target: {target_node} -> {target_host}:{target_port}");
+    if !source_url.is_empty() {
+        println!("Source URL: {source_url}");
+    }
+    println!();
+    println!("查看详情: agentgrid port-bridges get --id {id}");
+    println!("关闭桥接: agentgrid port-bridges close --id {id}");
+    Ok(())
 }
 
 fn build_command_verify(

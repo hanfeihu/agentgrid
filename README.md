@@ -137,6 +137,7 @@ cargo run -p agentgrid-cli -- submit-command \
 | --- | --- | --- |
 | 5-minute quick start | [docs/quickstart.md](docs/quickstart.md) | [docs/zh-CN/quickstart.md](docs/zh-CN/quickstart.md) |
 | Vision and ecosystem | [docs/vision.md](docs/vision.md) | [docs/zh-CN/vision.md](docs/zh-CN/vision.md) |
+| Maturity and known gaps | [docs/maturity.md](docs/maturity.md) | [docs/zh-CN/maturity.md](docs/zh-CN/maturity.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) | [docs/zh-CN/architecture.md](docs/zh-CN/architecture.md) |
 | Install | [docs/install.md](docs/install.md) | [docs/zh-CN/install.md](docs/zh-CN/install.md) |
 | Deployment | [docs/deployment.md](docs/deployment.md) | [docs/zh-CN/deployment.md](docs/zh-CN/deployment.md) |

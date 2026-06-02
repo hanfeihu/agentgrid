@@ -72,14 +72,22 @@ async fn change_password(
     Ok(Json(store(&state)?.change_password(input)?))
 }
 
-async fn list_users(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.list_users()?))
+async fn list_users(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let store = store(&state)?;
+    store.require_admin_session(bearer_token_from_headers(&headers).as_deref())?;
+    Ok(Json(store.list_users()?))
 }
 
 async fn update_user(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.update_user(&id, input)?))
+    let store = store(&state)?;
+    store.require_admin_session(bearer_token_from_headers(&headers).as_deref())?;
+    Ok(Json(store.update_user(&id, input)?))
 }

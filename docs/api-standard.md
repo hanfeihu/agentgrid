@@ -16,6 +16,10 @@ https://hub.example.com/agentgrid/api
 - API responses use a common envelope: `ok: true` with `item` or `items`, or
   `ok: false` with `error`.
 - Mutating endpoints should emit audit/event-bus records.
+- Management endpoints require a Hub bearer token whose user role is `admin`
+  or `super_admin`. This includes user management, system settings, node
+  approval, node config changes, node deletion, manual tool probes, and node
+  provisioning plans.
 - AI clients must send structured payloads. Natural language may appear in
   titles or summaries, but scheduling, placement, tools, and results are
   machine-readable fields.
@@ -28,8 +32,9 @@ https://hub.example.com/agentgrid/api
 | Family | Endpoints |
 | --- | --- |
 | Health | `GET /health` |
-| Auth | `POST /auth/login`, `POST /auth/register/request-code`, `POST /auth/register` |
-| Nodes | `GET /nodes`, `GET /nodes/{node_id}`, `POST /nodes/{node_id}/approve` |
+| Auth | `POST /auth/login`, `POST /auth/register/request-code`, `POST /auth/register`, `GET /auth/me` |
+| Admin | `GET /users`, `POST /users/{user_id}`, `GET /settings`, `POST /settings`, `GET /node-provisioning/plans`, `POST /node-provisioning/plans` |
+| Nodes | `GET /nodes`, `GET /nodes/{node_id}`, `DELETE /nodes/{node_id}`, `POST /nodes/{node_id}/config`, `POST /nodes/{node_id}/approve` |
 | Tasks | `GET /tasks`, `POST /tasks`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/schedule-preview`, `POST /worker/tasks/{task_id}/complete`, `POST /worker/tasks/{task_id}/fail`, `POST /worker/tasks/{task_id}/renew` |
 | Jobs | `GET /jobs`, `POST /jobs`, `POST /jobs/plan`, `GET /jobs/reliability`, `GET /jobs/{id}`, `GET /jobs/{id}/execution`, `POST /jobs/recovery/scan` |
 | Artifacts | `GET /artifacts`, `GET /artifacts/{artifact_id}`, `GET /artifacts/{artifact_id}/download` |

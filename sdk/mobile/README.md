@@ -10,6 +10,8 @@ Mobile apps use this SDK to:
 - Poll task status and task events.
 - Read execution records.
 - View Hub artifacts such as screenshots, logs, reports, and files.
+- Open controlled bridge sessions to registered node-local services such as
+  Codex on `127.0.0.1:8390`.
 
 Mobile apps must not execute AgentGrid tasks locally. If a phone app needs a
 machine operation, it submits a structured task to Hub and lets Hub schedule an
@@ -23,7 +25,7 @@ eligible Worker node.
 Default Hub URL:
 
 ```text
-https://hub.example.com/agentgrid
+http://chenqi.tminos.com:20080/agentgrid
 ```
 
 The default Hub URL is plain HTTP. On iOS, App Transport Security blocks that
@@ -35,7 +37,7 @@ this to the app target's `Info.plist` when using the default URL:
 <dict>
     <key>NSExceptionDomains</key>
     <dict>
-        <key>hub.example.com</key>
+        <key>chenqi.tminos.com</key>
         <dict>
             <key>NSExceptionAllowsInsecureHTTPLoads</key>
             <true/>
@@ -55,6 +57,76 @@ token and send it as:
 ```http
 Authorization: Bearer <token>
 ```
+
+## Codex Bridge
+
+AgentGrid Mobile SDK v1 includes Node Service Bridge helpers. This is not
+arbitrary port forwarding. A phone can only connect to services that a Worker
+has registered in its heartbeat.
+
+The first built-in service is:
+
+```json
+{
+  "id": "codex.local",
+  "host": "127.0.0.1",
+  "port": 8390,
+  "capability": "codex.local_bridge"
+}
+```
+
+Flow:
+
+```text
+mobile app -> Hub -> Worker bridge websocket -> 127.0.0.1:8390 on the node
+```
+
+Hub endpoints:
+
+```http
+GET /api/local-services
+POST /api/bridge-sessions
+WS /api/bridge-sessions/{session_id}/ws?token=<bridge_token>
+WS /api/worker/bridge/ws?node_id=<node_id>
+```
+
+Bridge session rules:
+
+- The user must be logged in to create a bridge session.
+- Sessions are short-lived and include a one-time bridge token.
+- The node must be online and connected to the Worker bridge websocket.
+- `codex.local` must report `status: "available"` in the node heartbeat.
+- v1 only allows `codex.local` on `127.0.0.1:8390`.
+
+SDK flow:
+
+1. `localServices()` lists nodes that expose `codex.local`.
+2. `createBridgeSession(nodeID, "codex.local")` creates a short-lived session.
+3. `bridgeWebSocketURL(sessionID, token)` builds the WebSocket endpoint.
+4. Send structured messages such as:
+
+```json
+{
+  "type": "bridge.request",
+  "method": "POST",
+  "path": "/",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "example": true
+  }
+}
+```
+
+Validation:
+
+```bash
+scripts/e2e-codex-bridge.sh
+```
+
+The E2E test starts a temporary Hub, Worker, and fake `127.0.0.1:8390`
+service, then verifies `client -> Hub -> Worker -> local service`.
 
 ## Standard
 

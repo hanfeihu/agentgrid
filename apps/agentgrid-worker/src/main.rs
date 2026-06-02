@@ -20,13 +20,19 @@ use agentgrid_protocol::{
     SessionPayload,
 };
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use clap::Parser;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sysinfo::{Disks, System};
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::{mpsc, Mutex as AsyncMutex},
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const WORKER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -86,6 +92,10 @@ struct Cli {
     #[arg(long, default_value = "stable")]
     update_channel: String,
     #[arg(long)]
+    update_public_key: Option<String>,
+    #[arg(long, default_value_t = false)]
+    require_update_signature: bool,
+    #[arg(long)]
     journal_path: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_journal: bool,
@@ -120,6 +130,7 @@ fn main() -> Result<()> {
             "session".to_string(),
             "agentmessage".to_string(),
             "plugin".to_string(),
+            "port_bridge".to_string(),
         ]
     } else {
         cli.capabilities
@@ -143,12 +154,15 @@ fn main() -> Result<()> {
         }
     }
     start_terminal_agent(base.clone(), node_id.clone());
+    start_bridge_agent(base.clone(), node_id.clone());
     if cli.auto_update && !cli.no_auto_update && !cli.once {
         start_auto_update_agent(
             base.clone(),
             node_id.clone(),
             cli.update_interval_seconds.max(30),
             cli.update_channel.clone(),
+            update_public_key_from_config(cli.update_public_key.as_deref()),
+            cli.require_update_signature || env_truthy("AGENTGRID_REQUIRE_UPDATE_SIGNATURE"),
         );
     }
     let mut policy = fetch_policy(&client, &base).unwrap_or_else(|error| {
@@ -698,11 +712,19 @@ fn start_auto_update_agent(
     node_id: String,
     interval_seconds: u64,
     update_channel: String,
+    update_public_key: Option<String>,
+    require_signature: bool,
 ) {
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(10));
         loop {
-            match check_and_apply_worker_update(&base, &node_id, &update_channel) {
+            match check_and_apply_worker_update(
+                &base,
+                &node_id,
+                &update_channel,
+                update_public_key.as_deref(),
+                require_signature,
+            ) {
                 Ok(false) => {}
                 Ok(true) => return,
                 Err(error) => eprintln!("auto update check failed: {error:#}"),
@@ -712,7 +734,13 @@ fn start_auto_update_agent(
     });
 }
 
-fn check_and_apply_worker_update(base: &str, node_id: &str, update_channel: &str) -> Result<bool> {
+fn check_and_apply_worker_update(
+    base: &str,
+    node_id: &str,
+    update_channel: &str,
+    configured_public_key: Option<&str>,
+    require_signature: bool,
+) -> Result<bool> {
     let current_exe = env::current_exe().context("current executable path unavailable")?;
     let current_bytes = fs::read(&current_exe).context("read current worker binary")?;
     let current_sha256 = sha256_hex(&current_bytes);
@@ -779,9 +807,114 @@ fn check_and_apply_worker_update(base: &str, node_id: &str, update_channel: &str
     if downloaded_sha256 != sha256 {
         anyhow::bail!("downloaded worker sha256 mismatch");
     }
+    verify_worker_update_signature_from_manifest(
+        &manifest,
+        &bytes,
+        configured_public_key,
+        require_signature,
+    )?;
     install_worker_update(&current_exe, &bytes)?;
     restart_current_process(&current_exe)?;
     Ok(true)
+}
+
+fn update_public_key_from_config(cli_value: Option<&str>) -> Option<String> {
+    cli_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            env::var("AGENTGRID_WORKER_UPDATE_PUBLIC_KEY")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn env_truthy(name: &str) -> bool {
+    env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn verify_worker_update_signature_from_manifest(
+    manifest: &Value,
+    bytes: &[u8],
+    configured_public_key: Option<&str>,
+    require_signature: bool,
+) -> Result<()> {
+    let manifest_requires_signature = manifest
+        .get("signature_required")
+        .or_else(|| manifest.pointer("/signing/required"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let must_verify = require_signature || manifest_requires_signature;
+    let signature = manifest
+        .get("signature")
+        .or_else(|| manifest.pointer("/signing/signature"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let public_key = configured_public_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            if must_verify {
+                return None;
+            }
+            manifest
+                .get("signing_public_key")
+                .or_else(|| manifest.pointer("/signing/public_key"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
+
+    match (signature, public_key) {
+        (Some(signature), Some(public_key)) => {
+            verify_worker_update_signature(public_key, bytes, signature)?;
+            eprintln!("worker update signature verified with ed25519");
+            Ok(())
+        }
+        (Some(_), None) if must_verify => {
+            anyhow::bail!("worker update signature present but no public key configured")
+        }
+        (None, _) if must_verify => anyhow::bail!("worker update signature required but missing"),
+        (Some(_), None) => {
+            eprintln!("worker update signature skipped: no public key configured");
+            Ok(())
+        }
+        (None, _) => {
+            eprintln!("worker update signature not provided; sha256-only compatibility mode");
+            Ok(())
+        }
+    }
+}
+
+fn verify_worker_update_signature(
+    public_key_b64: &str,
+    bytes: &[u8],
+    signature_b64: &str,
+) -> Result<()> {
+    let public_key_bytes = base64::engine::general_purpose::STANDARD
+        .decode(public_key_b64.trim())
+        .context("decode ed25519 public key")?;
+    let key_bytes: [u8; 32] = public_key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("ed25519 public key must be 32 bytes"))?;
+    let signature_bytes = base64::engine::general_purpose::STANDARD
+        .decode(signature_b64.trim())
+        .context("decode ed25519 signature")?;
+    let signature_array: [u8; 64] = signature_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("ed25519 signature must be 64 bytes"))?;
+    let verifying_key = VerifyingKey::from_bytes(&key_bytes)?;
+    let signature = Signature::from_bytes(&signature_array);
+    verifying_key
+        .verify(bytes, &signature)
+        .context("verify ed25519 worker update signature")
 }
 
 fn install_worker_update(current_exe: &PathBuf, bytes: &[u8]) -> Result<()> {
@@ -820,6 +953,648 @@ fn restart_current_process(current_exe: &PathBuf) -> Result<()> {
         .spawn()
         .context("spawn updated worker")?;
     std::process::exit(0);
+}
+
+fn start_bridge_agent(base: String, node_id: String) {
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("bridge runtime start failed: {error}");
+                return;
+            }
+        };
+        runtime.block_on(async move {
+            loop {
+                if let Err(error) = bridge_agent_loop(&base, &node_id).await {
+                    eprintln!("bridge websocket disconnected: {error:#}");
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+    });
+}
+
+async fn bridge_agent_loop(base: &str, node_id: &str) -> Result<()> {
+    let url = bridge_ws_url(base, node_id);
+    let (socket, _) = connect_async(&url).await?;
+    let (mut sink, mut stream) = socket.split();
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    let sessions = Arc::new(AsyncMutex::new(HashMap::<
+        String,
+        mpsc::UnboundedSender<BridgePayload>,
+    >::new()));
+
+    let send_task = tokio::spawn(async move {
+        while let Some(value) = out_rx.recv().await {
+            if sink.send(Message::Text(value.to_string())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(message) = stream.next().await {
+        let message = message?;
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let value: Value = serde_json::from_str(&text)?;
+        handle_bridge_command(value, Arc::clone(&sessions), out_tx.clone()).await;
+    }
+    sessions.lock().await.clear();
+    send_task.abort();
+    Ok(())
+}
+
+async fn handle_bridge_command(
+    value: Value,
+    sessions: Arc<AsyncMutex<HashMap<String, mpsc::UnboundedSender<BridgePayload>>>>,
+    out_tx: mpsc::UnboundedSender<Value>,
+) {
+    let session_id = value
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    match value.get("type").and_then(Value::as_str).unwrap_or("") {
+        "bridge.open" => {
+            let service_id = value
+                .get("service_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if service_id != "codex.local" {
+                let _ = out_tx.send(json!({
+                    "type": "bridge.error",
+                    "session_id": session_id,
+                    "message": "unsupported local service"
+                }));
+                return;
+            }
+            let _ = out_tx.send(json!({
+            "type": "bridge.ready",
+            "session_id": session_id,
+            "service_id": service_id
+            }));
+        }
+        "bridge.request" => {
+            let service_id = value
+                .get("service_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if service_id != "codex.local" {
+                let _ = out_tx.send(json!({
+                    "type": "bridge.error",
+                    "session_id": session_id,
+                    "message": "unsupported local service"
+                }));
+                return;
+            }
+            let response = match forward_codex_local_request(&value).await {
+                Ok(response) => response,
+                Err(error) => json!({
+                "type": "bridge.error",
+                "session_id": session_id,
+                "service_id": service_id,
+                "message": error.to_string()
+                }),
+            };
+            let _ = out_tx.send(response);
+        }
+        "bridge.websocket.open" => {
+            let service_id = value
+                .get("service_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if service_id != "codex.local" {
+                let _ = out_tx.send(json!({
+                    "type": "bridge.error",
+                    "session_id": session_id,
+                    "message": "unsupported local service"
+                }));
+                return;
+            }
+            if let Err(error) =
+                open_codex_websocket_session(&session_id, &value, sessions, out_tx.clone()).await
+            {
+                let _ = out_tx.send(json!({
+                    "type": "bridge.error",
+                    "session_id": session_id,
+                    "service_id": service_id,
+                    "message": error.to_string()
+                }));
+            }
+        }
+        "bridge.websocket.message" => {
+            let payload = bridge_websocket_payload(&value);
+            let writer = {
+                let sessions = sessions.lock().await;
+                sessions.get(&session_id).cloned()
+            };
+            if let Some(writer) = writer {
+                let _ = writer.send(BridgePayload::Text(payload));
+            } else {
+                let _ = out_tx.send(json!({
+                    "type": "bridge.error",
+                    "session_id": session_id,
+                    "service_id": "codex.local",
+                    "message": "codex websocket session is not open"
+                }));
+            }
+        }
+        "bridge.websocket.close" | "bridge.close" => {
+            sessions.lock().await.remove(&session_id);
+            let _ = out_tx.send(json!({
+            "type": "bridge.closed",
+            "session_id": session_id,
+            "service_id": "codex.local"
+            }));
+        }
+        "port_bridge.start_source" => {
+            start_port_bridge_source(value, Arc::clone(&sessions), out_tx.clone()).await;
+        }
+        "port_bridge.prepare_target" => {
+            prepare_port_bridge_target(value, out_tx.clone()).await;
+        }
+        "port_bridge.open_target" => {
+            open_port_bridge_target(value, Arc::clone(&sessions), out_tx.clone()).await;
+        }
+        "port_bridge.data" => {
+            let bridge_id = value
+                .get("bridge_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let connection_id = value
+                .get("connection_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let key = port_bridge_connection_key(&bridge_id, connection_id);
+            let writer = {
+                let sessions = sessions.lock().await;
+                sessions.get(&key).cloned()
+            };
+            if let Some(writer) = writer {
+                if let Some(bytes) = value
+                    .get("data_base64")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| base64::engine::general_purpose::STANDARD.decode(raw).ok())
+                {
+                    let _ = writer.send(BridgePayload::Bytes(bytes));
+                }
+            }
+        }
+        "port_bridge.close_connection" => {
+            let bridge_id = value
+                .get("bridge_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let connection_id = value
+                .get("connection_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            sessions
+                .lock()
+                .await
+                .remove(&port_bridge_connection_key(&bridge_id, connection_id));
+        }
+        "port_bridge.close" => {
+            let bridge_id = value
+                .get("bridge_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            close_port_bridge_sessions(&bridge_id, Arc::clone(&sessions)).await;
+            let _ = out_tx.send(json!({
+                "type": "port_bridge.closed",
+                "bridge_id": bridge_id
+            }));
+        }
+        other => {
+            let _ = out_tx.send(json!({
+            "type": "bridge.error",
+            "session_id": session_id,
+            "message": format!("unsupported bridge message: {other}")
+            }));
+        }
+    }
+}
+
+async fn open_codex_websocket_session(
+    session_id: &str,
+    value: &Value,
+    sessions: Arc<AsyncMutex<HashMap<String, mpsc::UnboundedSender<BridgePayload>>>>,
+    out_tx: mpsc::UnboundedSender<Value>,
+) -> Result<()> {
+    let path =
+        sanitize_local_service_path(value.get("path").and_then(Value::as_str).unwrap_or("/"))?;
+    let url = format!("ws://127.0.0.1:8390{path}");
+    let (socket, _) = connect_async(&url).await?;
+    let (mut local_sink, mut local_stream) = socket.split();
+    let (local_tx, mut local_rx) = mpsc::unbounded_channel::<BridgePayload>();
+    sessions
+        .lock()
+        .await
+        .insert(session_id.to_string(), local_tx);
+
+    let session_id_string = session_id.to_string();
+    let out_tx_for_task = out_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(payload) = local_rx.recv() => {
+                    let sent = match payload {
+                        BridgePayload::Text(text) => local_sink.send(Message::Text(text)).await,
+                        BridgePayload::Bytes(bytes) => local_sink.send(Message::Binary(bytes)).await,
+                    };
+                    if sent.is_err() { break; }
+                }
+                message = local_stream.next() => {
+                    match message {
+                        Some(Ok(Message::Text(text))) => {
+                            let _ = out_tx_for_task.send(json!({
+                                "type": "bridge.websocket.message",
+                                "session_id": session_id_string,
+                                "service_id": "codex.local",
+                                "body": text.to_string()
+                            }));
+                        }
+                        Some(Ok(Message::Binary(bytes))) => {
+                            let _ = out_tx_for_task.send(json!({
+                                "type": "bridge.websocket.message",
+                                "session_id": session_id_string,
+                                "service_id": "codex.local",
+                                "body_base64": base64::engine::general_purpose::STANDARD.encode(bytes)
+                            }));
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
+                        Some(Err(error)) => {
+                            let _ = out_tx_for_task.send(json!({
+                                "type": "bridge.error",
+                                "session_id": session_id_string,
+                                "service_id": "codex.local",
+                                "message": error.to_string()
+                            }));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let _ = out_tx_for_task.send(json!({
+            "type": "bridge.websocket.closed",
+            "session_id": session_id_string,
+            "service_id": "codex.local"
+        }));
+    });
+
+    let _ = out_tx.send(json!({
+        "type": "bridge.websocket.ready",
+        "session_id": session_id,
+        "service_id": "codex.local"
+    }));
+    Ok(())
+}
+
+#[derive(Debug)]
+enum BridgePayload {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+async fn start_port_bridge_source(
+    value: Value,
+    sessions: Arc<AsyncMutex<HashMap<String, mpsc::UnboundedSender<BridgePayload>>>>,
+    out_tx: mpsc::UnboundedSender<Value>,
+) {
+    let bridge_id = value
+        .get("bridge_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let bind_host = value
+        .get("source_bind_host")
+        .and_then(Value::as_str)
+        .unwrap_or("127.0.0.1");
+    let bind_port = value
+        .get("source_bind_port")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if bridge_id.is_empty() || bind_host != "127.0.0.1" || bind_port > u16::MAX as u64 {
+        let _ = out_tx.send(json!({
+            "type": "port_bridge.error",
+            "bridge_id": bridge_id,
+            "message": "invalid source port bridge request"
+        }));
+        return;
+    }
+    let address = format!("{bind_host}:{}", bind_port as u16);
+    let listener = match TcpListener::bind(&address).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            let _ = out_tx.send(json!({
+                "type": "port_bridge.error",
+                "bridge_id": bridge_id,
+                "message": format!("source bind failed: {error}")
+            }));
+            return;
+        }
+    };
+    let actual_port = listener.local_addr().map(|addr| addr.port()).unwrap_or(0);
+    let _ = out_tx.send(json!({
+        "type": "port_bridge.source_ready",
+        "bridge_id": bridge_id,
+        "source_bind_host": bind_host,
+        "source_bind_port": actual_port
+    }));
+    let sessions_for_task = Arc::clone(&sessions);
+    let out_tx_for_task = out_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let connection_id = uuid_like_id();
+            let key = port_bridge_connection_key(&bridge_id, &connection_id);
+            let (writer_tx, writer_rx) = mpsc::unbounded_channel::<BridgePayload>();
+            sessions_for_task
+                .lock()
+                .await
+                .insert(key.clone(), writer_tx);
+            let _ = out_tx_for_task.send(json!({
+                "type": "port_bridge.open_target",
+                "bridge_id": bridge_id,
+                "connection_id": connection_id
+            }));
+            spawn_port_bridge_stream(
+                "source",
+                bridge_id.clone(),
+                connection_id,
+                stream,
+                writer_rx,
+                Arc::clone(&sessions_for_task),
+                out_tx_for_task.clone(),
+            );
+        }
+    });
+}
+
+async fn prepare_port_bridge_target(value: Value, out_tx: mpsc::UnboundedSender<Value>) {
+    let bridge_id = value.get("bridge_id").and_then(Value::as_str).unwrap_or("");
+    let _ = out_tx.send(json!({
+        "type": "port_bridge.target_ready",
+        "bridge_id": bridge_id
+    }));
+}
+
+async fn open_port_bridge_target(
+    value: Value,
+    sessions: Arc<AsyncMutex<HashMap<String, mpsc::UnboundedSender<BridgePayload>>>>,
+    out_tx: mpsc::UnboundedSender<Value>,
+) {
+    let bridge_id = value
+        .get("bridge_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let connection_id = value
+        .get("connection_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let target_host = value
+        .get("target_host")
+        .and_then(Value::as_str)
+        .unwrap_or("127.0.0.1");
+    let target_port = value
+        .get("target_port")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if bridge_id.is_empty()
+        || connection_id.is_empty()
+        || !is_allowed_port_bridge_target_host_worker(target_host)
+        || target_port == 0
+        || target_port > u16::MAX as u64
+    {
+        let _ = out_tx.send(json!({
+            "type": "port_bridge.error",
+            "bridge_id": bridge_id,
+            "connection_id": connection_id,
+            "message": "invalid target port bridge request"
+        }));
+        return;
+    }
+    let address = format!("{target_host}:{}", target_port as u16);
+    let stream = match TcpStream::connect(&address).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = out_tx.send(json!({
+                "type": "port_bridge.error",
+                "bridge_id": bridge_id,
+                "connection_id": connection_id,
+                "message": format!("target connect failed: {error}")
+            }));
+            return;
+        }
+    };
+    let key = port_bridge_connection_key(&bridge_id, &connection_id);
+    let (writer_tx, writer_rx) = mpsc::unbounded_channel::<BridgePayload>();
+    sessions.lock().await.insert(key.clone(), writer_tx);
+    spawn_port_bridge_stream(
+        "target",
+        bridge_id,
+        connection_id,
+        stream,
+        writer_rx,
+        sessions,
+        out_tx,
+    );
+}
+
+fn spawn_port_bridge_stream(
+    side: &'static str,
+    bridge_id: String,
+    connection_id: String,
+    stream: TcpStream,
+    mut writer_rx: mpsc::UnboundedReceiver<BridgePayload>,
+    sessions: Arc<AsyncMutex<HashMap<String, mpsc::UnboundedSender<BridgePayload>>>>,
+    out_tx: mpsc::UnboundedSender<Value>,
+) {
+    tokio::spawn(async move {
+        let (mut reader, mut writer) = stream.into_split();
+        let bridge_id_for_read = bridge_id.clone();
+        let connection_id_for_read = connection_id.clone();
+        let out_tx_for_read = out_tx.clone();
+        let read_task = tokio::spawn(async move {
+            let mut buffer = vec![0u8; 16 * 1024];
+            loop {
+                match reader.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(size) => {
+                        let data =
+                            base64::engine::general_purpose::STANDARD.encode(&buffer[..size]);
+                        let _ = out_tx_for_read.send(json!({
+                            "type": "port_bridge.data",
+                            "bridge_id": bridge_id_for_read,
+                            "connection_id": connection_id_for_read,
+                            "from": side,
+                            "data_base64": data
+                        }));
+                    }
+                    Err(error) => {
+                        let _ = out_tx_for_read.send(json!({
+                            "type": "port_bridge.error",
+                            "bridge_id": bridge_id_for_read,
+                            "connection_id": connection_id_for_read,
+                            "message": format!("{side} read failed: {error}")
+                        }));
+                        break;
+                    }
+                }
+            }
+        });
+        while let Some(payload) = writer_rx.recv().await {
+            let bytes = match payload {
+                BridgePayload::Text(text) => text.into_bytes(),
+                BridgePayload::Bytes(bytes) => bytes,
+            };
+            if writer.write_all(&bytes).await.is_err() {
+                break;
+            }
+        }
+        read_task.abort();
+        sessions
+            .lock()
+            .await
+            .remove(&port_bridge_connection_key(&bridge_id, &connection_id));
+        let _ = out_tx.send(json!({
+            "type": "port_bridge.close_connection",
+            "bridge_id": bridge_id,
+            "connection_id": connection_id,
+            "from": side
+        }));
+    });
+}
+
+async fn close_port_bridge_sessions(
+    bridge_id: &str,
+    sessions: Arc<AsyncMutex<HashMap<String, mpsc::UnboundedSender<BridgePayload>>>>,
+) {
+    let prefix = format!("pbridge:{bridge_id}:");
+    sessions
+        .lock()
+        .await
+        .retain(|key, _| !key.starts_with(&prefix));
+}
+
+fn port_bridge_connection_key(bridge_id: &str, connection_id: &str) -> String {
+    format!("pbridge:{bridge_id}:{connection_id}")
+}
+
+fn uuid_like_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("conn_{nanos:x}")
+}
+
+fn is_allowed_port_bridge_target_host_worker(host: &str) -> bool {
+    if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+        return true;
+    }
+    host.parse::<IpAddr>().ok().is_some_and(|ip| match ip {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
+    })
+}
+
+fn bridge_websocket_payload(value: &Value) -> String {
+    if let Some(body) = value.get("body") {
+        if let Some(text) = body.as_str() {
+            return text.to_string();
+        }
+        return body.to_string();
+    }
+    value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+async fn forward_codex_local_request(value: &Value) -> Result<Value> {
+    let session_id = value
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("POST")
+        .to_ascii_uppercase();
+    let path =
+        sanitize_local_service_path(value.get("path").and_then(Value::as_str).unwrap_or("/"))?;
+    let url = format!("http://127.0.0.1:8390{path}");
+    let client = reqwest::Client::new();
+    let mut request = match method.as_str() {
+        "GET" => client.get(url),
+        "POST" => client.post(url),
+        "PUT" => client.put(url),
+        "PATCH" => client.patch(url),
+        "DELETE" => client.delete(url),
+        _ => anyhow::bail!("unsupported bridge HTTP method: {method}"),
+    };
+    if let Some(headers) = value.get("headers").and_then(Value::as_object) {
+        for (name, header_value) in headers {
+            if !is_forwardable_header(name) {
+                continue;
+            }
+            if let Some(header_value) = header_value.as_str() {
+                request = request.header(name, header_value);
+            }
+        }
+    }
+    if let Some(body) = value.get("body").filter(|body| !body.is_null()) {
+        if let Some(text) = body.as_str() {
+            request = request.body(text.to_string());
+        } else {
+            request = request.json(body);
+        }
+    }
+    let response = request.send().await?;
+    let status = response.status().as_u16();
+    let mut headers = serde_json::Map::new();
+    for (name, value) in response.headers() {
+        if let Ok(value) = value.to_str() {
+            headers.insert(name.as_str().to_string(), json!(value));
+        }
+    }
+    let body = response.text().await?;
+    Ok(json!({
+        "type": "bridge.response",
+        "session_id": session_id,
+        "service_id": "codex.local",
+        "status": status,
+        "headers": headers,
+        "body": body
+    }))
+}
+
+fn sanitize_local_service_path(path: &str) -> Result<String> {
+    if !path.starts_with('/') || path.contains("://") || path.contains('\\') {
+        anyhow::bail!("invalid local service path");
+    }
+    Ok(path.to_string())
+}
+
+fn is_forwardable_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    !matches!(
+        name.as_str(),
+        "host" | "connection" | "upgrade" | "proxy-authorization" | "proxy-authenticate"
+    )
 }
 
 fn start_terminal_agent(base: String, node_id: String) {
@@ -1012,6 +1787,16 @@ fn terminal_ws_url(base: &str, node_id: &str) -> String {
         url = format!("ws://{rest}");
     }
     format!("{url}/api/worker/terminal/ws?node_id={node_id}")
+}
+
+fn bridge_ws_url(base: &str, node_id: &str) -> String {
+    let mut url = base.trim_end_matches('/').to_string();
+    if let Some(rest) = url.strip_prefix("https://") {
+        url = format!("wss://{rest}");
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        url = format!("ws://{rest}");
+    }
+    format!("{url}/api/worker/bridge/ws?node_id={node_id}")
 }
 
 fn parse_task_payload(task: &Value) -> Result<JobPayload> {
@@ -1620,6 +2405,7 @@ fn collect_report(
         "update_channel": update_channel,
         "tags": tags,
         "capabilities": capabilities,
+        "local_services": discover_local_services(),
         "groups": node_groups(tags),
         "cpu_cores": system.cpus().len() as i64,
         "memory_mb": total_memory_mb,
@@ -1631,6 +2417,40 @@ fn collect_report(
         "max_concurrent_jobs": max_concurrent_jobs as i64,
         "status": "online"
     })
+}
+
+fn discover_local_services() -> Vec<Value> {
+    vec![codex_local_service()]
+}
+
+fn codex_local_service() -> Value {
+    let available = std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:8390"
+            .parse()
+            .expect("codex bridge socket address"),
+        Duration::from_millis(150),
+    )
+    .is_ok();
+    json!({
+        "id": "codex.local",
+        "name": "Codex Local Bridge",
+        "capability": "codex.local_bridge",
+        "protocol": "http",
+        "host": "127.0.0.1",
+        "port": 8390,
+        "status": if available { "available" } else { "unavailable" },
+        "exposure": "hub_authenticated",
+        "allowed_transports": ["websocket"],
+        "allowed_methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+        "health_checked_at": chrono_like_now()
+    })
+}
+
+fn chrono_like_now() -> String {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => format!("{}", duration.as_secs()),
+        Err(_) => "0".to_string(),
+    }
 }
 
 fn worker_target() -> String {
@@ -1848,5 +2668,58 @@ fn local_ip_address() -> Option<String> {
         IpAddr::V4(ip) if !ip.is_loopback() => Some(ip.to_string()),
         IpAddr::V6(ip) if !ip.is_loopback() => Some(ip.to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand_core::OsRng;
+
+    #[test]
+    fn worker_update_signature_verifies_and_rejects_tampering() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().to_bytes());
+        let bytes = b"agentgrid worker update bytes";
+        let signature =
+            base64::engine::general_purpose::STANDARD.encode(signing_key.sign(bytes).to_bytes());
+        let manifest = json!({
+            "signature": signature,
+            "signature_required": true
+        });
+
+        verify_worker_update_signature_from_manifest(&manifest, bytes, Some(&public_key), true)
+            .expect("valid signature");
+
+        let error = verify_worker_update_signature_from_manifest(
+            &manifest,
+            b"tampered update bytes",
+            Some(&public_key),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("verify ed25519"));
+    }
+
+    #[test]
+    fn required_update_signature_does_not_trust_manifest_public_key() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let bytes = b"agentgrid worker update bytes";
+        let signature =
+            base64::engine::general_purpose::STANDARD.encode(signing_key.sign(bytes).to_bytes());
+        let manifest_public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().to_bytes());
+        let manifest = json!({
+            "signature": signature,
+            "signing_public_key": manifest_public_key,
+            "signature_required": true
+        });
+
+        let error =
+            verify_worker_update_signature_from_manifest(&manifest, bytes, None, true).unwrap_err();
+        assert!(error.to_string().contains("no public key configured"));
     }
 }

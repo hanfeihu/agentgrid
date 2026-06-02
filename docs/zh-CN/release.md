@@ -45,11 +45,25 @@ agentgrid-<version>-linux-x86_64.tar.gz
 agentgrid-<version>-macos-arm64.tar.gz
 agentgrid-<version>-windows-x86_64.zip
 *.sha256
+*.ed25519.sig
 ```
+
+生产环境的 Worker 自动更新包应该使用 Ed25519 签名。`scripts/publish-worker-updates.sh` 会写入 `agentgrid-worker(.exe).sha256`；如果设置了 `AGENTGRID_WORKER_UPDATE_PRIVATE_KEY_FILE`，还会生成 `agentgrid-worker(.exe).ed25519.sig`。
+
+Hub 会通过 `/api/worker/update-manifest` 返回签名元数据。Worker 配置 `--update-public-key <base64-ed25519-public-key>` 或 `AGENTGRID_WORKER_UPDATE_PUBLIC_KEY` 后会验签。Worker 节点使用 `--require-update-signature` 或 `AGENTGRID_REQUIRE_UPDATE_SIGNATURE=true` 可以拒绝未签名更新包。
+
+Hub 也可以强制签名清单。给 Hub 设置 `AGENTGRID_WORKER_UPDATE_SIGNATURE_REQUIRED=true` 和 `AGENTGRID_WORKER_UPDATE_PUBLIC_KEY=<base64-ed25519-public-key>` 后，如果签名文件缺失、公钥缺失或验签失败，Hub 会直接拒绝返回更新清单。
 
 首个 alpha 暂不发布 macOS Intel 包，因为 GitHub 托管的 Intel macOS runner 排队时间可能很长。Intel Mac 用户可以先从源码构建，后续再补独立发布任务。
 
 ## 冒烟测试
+
+发布前先跑本地端到端冒烟测试：
+
+```bash
+scripts/e2e-hub-worker-cli.sh
+scripts/e2e-codex-bridge.sh
+```
 
 Release 发布后：
 

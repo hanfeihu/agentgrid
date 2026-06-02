@@ -11,7 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+base64 = "0.22"
 clap.workspace = true
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem", "rand_core"] }
 agentgrid-executor = { path = "../../crates/agentgrid-executor" }
 agentgrid-protocol = { path = "../../crates/agentgrid-protocol" }
 futures-util = "0.3"
@@ -23,3 +25,6 @@ sha2 = "0.10"
 sysinfo = "0.37"
 tokio.workspace = true
 tokio-tungstenite = "0.24"
+
+[dev-dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }

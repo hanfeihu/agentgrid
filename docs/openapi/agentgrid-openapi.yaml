@@ -14,7 +14,9 @@ security:
 tags:
   - name: Health
   - name: Auth
+  - name: Admin
   - name: Nodes
+  - name: PortBridges
   - name: Tasks
   - name: Jobs
   - name: Artifacts
@@ -103,6 +105,240 @@ paths:
                 $ref: "#/components/schemas/AuthResponse"
         default:
           $ref: "#/components/responses/Error"
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Resolve the current Hub bearer token.
+      operationId: getCurrentUser
+      responses:
+        "200":
+          description: Current session state.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                required: [ok, authenticated]
+                properties:
+                  ok:
+                    const: true
+                  authenticated:
+                    type: boolean
+                  user:
+                    $ref: "#/components/schemas/User"
+                  organization:
+                    $ref: "#/components/schemas/Organization"
+        default:
+          $ref: "#/components/responses/Error"
+  /users:
+    get:
+      tags: [Admin]
+      summary: List Hub users.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: listUsers
+      x-agentgrid-required-role: admin_or_super_admin
+      responses:
+        "200":
+          description: Hub users.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, organization, items]
+                properties:
+                  ok:
+                    const: true
+                  organization:
+                    $ref: "#/components/schemas/Organization"
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/User"
+        default:
+          $ref: "#/components/responses/Error"
+  /users/{user_id}:
+    post:
+      tags: [Admin]
+      summary: Update a Hub user profile, role, or status.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: updateUser
+      x-agentgrid-required-role: admin_or_super_admin
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: User updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/User"
+        default:
+          $ref: "#/components/responses/Error"
+  /settings:
+    get:
+      tags: [Admin]
+      summary: Read Hub system settings.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: getSettings
+      x-agentgrid-required-role: admin_or_super_admin
+      responses:
+        "200":
+          description: Public settings plus safe SMTP hints.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/HubSettings"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [Admin]
+      summary: Update Hub system settings.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: updateSettings
+      x-agentgrid-required-role: admin_or_super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HubSettingsUpdate"
+      responses:
+        "200":
+          description: Settings updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/HubSettings"
+        default:
+          $ref: "#/components/responses/Error"
+  /node-provisioning/plans:
+    get:
+      tags: [Admin]
+      summary: List node provisioning plans and pending join requests.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: listNodeProvisioningPlans
+      x-agentgrid-required-role: admin_or_super_admin
+      responses:
+        "200":
+          description: Node provisioning plans.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NodeProvisioningPlan"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [Admin]
+      summary: Create a node provisioning plan and join token.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: createNodeProvisioningPlan
+      x-agentgrid-required-role: admin_or_super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNodeProvisioningPlanRequest"
+      responses:
+        "201":
+          description: Plan created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/NodeProvisioningPlan"
+        default:
+          $ref: "#/components/responses/Error"
+  /worker/update-manifest:
+    get:
+      tags: [Nodes]
+      security: []
+      summary: Return the published Worker update manifest for a target.
+      operationId: getWorkerUpdateManifest
+      parameters:
+        - name: worker_target
+          in: query
+          schema:
+            type: string
+            examples: [linux-x86_64, windows-x86_64, darwin-aarch64]
+        - name: os
+          in: query
+          schema:
+            type: string
+        - name: arch
+          in: query
+          schema:
+            type: string
+        - name: current_sha256
+          in: query
+          schema:
+            type: string
+            pattern: "^[a-fA-F0-9]{64}$"
+        - name: glibc_version
+          in: query
+          schema:
+            type: string
+        - name: node_id
+          in: query
+          schema:
+            type: string
+        - name: channel
+          in: query
+          schema:
+            type: string
+            default: stable
+      responses:
+        "200":
+          description: Worker update manifest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerUpdateManifest"
+        default:
+          $ref: "#/components/responses/Error"
   /nodes:
     get:
       tags: [Nodes]
@@ -160,11 +396,61 @@ paths:
                     $ref: "#/components/schemas/Node"
         default:
           $ref: "#/components/responses/Error"
+    delete:
+      tags: [Admin]
+      summary: Delete a worker node record.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: deleteNode
+      x-agentgrid-required-role: admin_or_super_admin
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      responses:
+        "200":
+          description: Node deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /nodes/{node_id}/config:
+    post:
+      tags: [Admin]
+      summary: Update worker node routing and scheduling config.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
+      operationId: updateNodeConfig
+      x-agentgrid-required-role: admin_or_super_admin
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNodeConfigRequest"
+      responses:
+        "200":
+          description: Node config updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/Node"
+        default:
+          $ref: "#/components/responses/Error"
   /nodes/{node_id}/approve:
     post:
-      tags: [Nodes]
+      tags: [Admin]
       summary: Approve a pending node join.
+      description: Requires a bearer session whose user role is `admin` or `super_admin`.
       operationId: approveNode
+      x-agentgrid-required-role: admin_or_super_admin
       parameters:
         - $ref: "#/components/parameters/NodeId"
       requestBody:
@@ -193,6 +479,111 @@ paths:
                     const: true
                   item:
                     $ref: "#/components/schemas/Node"
+        default:
+          $ref: "#/components/responses/Error"
+  /port-bridges:
+    get:
+      tags: [PortBridges]
+      security: []
+      summary: List active node port bridge sessions.
+      description: |
+        Port bridges are Hub-orchestrated TCP tunnels between two Worker nodes.
+        The source Worker binds a local loopback port; the target Worker connects
+        to a target host and port from its own network context.
+      operationId: listPortBridges
+      responses:
+        "200":
+          description: Port bridge sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PortBridgeSession"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [PortBridges]
+      security: []
+      summary: Create a node port bridge session.
+      description: |
+        v1 supports TCP only. The source bind host must be `127.0.0.1`; the
+        target host must be loopback, localhost, or a private IP address.
+      operationId: createPortBridge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePortBridgeRequest"
+      responses:
+        "200":
+          description: Port bridge session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/PortBridgeSession"
+        default:
+          $ref: "#/components/responses/Error"
+  /port-bridges/{port_bridge_id}:
+    get:
+      tags: [PortBridges]
+      security: []
+      summary: Get a node port bridge session.
+      operationId: getPortBridge
+      parameters:
+        - $ref: "#/components/parameters/PortBridgeId"
+      responses:
+        "200":
+          description: Port bridge session.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/PortBridgeSession"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [PortBridges]
+      security: []
+      summary: Close a node port bridge session.
+      operationId: closePortBridge
+      parameters:
+        - $ref: "#/components/parameters/PortBridgeId"
+      responses:
+        "200":
+          description: Port bridge session closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/PortBridgeSession"
         default:
           $ref: "#/components/responses/Error"
   /tasks:
@@ -879,6 +1270,13 @@ components:
       schema:
         type: string
         minLength: 1
+    PortBridgeId:
+      name: port_bridge_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^pbridge_[A-Za-z0-9_\\-]+$"
     TaskId:
       name: task_id
       in: path
@@ -893,6 +1291,13 @@ components:
       schema:
         type: string
         pattern: "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
   responses:
     Error:
       description: Error response.
@@ -956,6 +1361,82 @@ components:
           minLength: 1
         user:
           $ref: "#/components/schemas/User"
+        organization:
+          $ref: "#/components/schemas/Organization"
+    WorkerUpdateManifest:
+      type: object
+      additionalProperties: true
+      required:
+        - ok
+        - service
+        - version
+        - target
+        - sha256
+        - size_bytes
+        - download_url
+        - update_available
+        - compatible
+        - signature_algorithm
+        - signature_required
+      properties:
+        ok:
+          const: true
+        service:
+          const: agentgrid-worker-update
+        version:
+          type: string
+        target:
+          type: string
+        sha256:
+          type: string
+          pattern: "^[a-fA-F0-9]{64}$"
+        size_bytes:
+          type: integer
+          minimum: 0
+        download_url:
+          type: string
+        update_available:
+          type: boolean
+        compatible:
+          type: boolean
+        compatibility:
+          type: object
+          additionalProperties: true
+        signature_algorithm:
+          type: string
+          enum: [none, ed25519]
+        signature:
+          type: [string, "null"]
+          description: Base64 Ed25519 signature over the raw Worker binary bytes.
+        signing_key_id:
+          type: [string, "null"]
+        signing_public_key:
+          type: [string, "null"]
+          description: Optional base64 Ed25519 public key. Production Workers should prefer locally pinned public keys.
+        signature_required:
+          type: boolean
+        signing:
+          type: object
+          additionalProperties: true
+          properties:
+            algorithm:
+              type: string
+              enum: [none, ed25519]
+            key_id:
+              type: [string, "null"]
+            public_key:
+              type: [string, "null"]
+            signature:
+              type: [string, "null"]
+            required:
+              type: boolean
+            verified_by_hub:
+              type: boolean
+            signed_payload:
+              type: string
+        published_at:
+          type: string
+          format: date-time
     CheckpointPolicy:
       type: object
       additionalProperties: true
@@ -996,6 +1477,30 @@ components:
           $ref: "#/components/schemas/CheckpointPolicy"
         idempotency:
           $ref: "#/components/schemas/Idempotency"
+    CreateNodeProvisioningPlanRequest:
+      type: object
+      additionalProperties: true
+      required: [node_id, node_name, os, arch]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        node_name:
+          type: string
+          minLength: 1
+        ssh_host:
+          type: string
+        ssh_user:
+          type: string
+        os:
+          type: string
+        arch:
+          type: string
+        hub_url:
+          type: string
+        join_token:
+          type: string
+          description: Optional caller-provided join token. Hub may generate one when omitted.
     CreateTaskRequest:
       type: object
       additionalProperties: false
@@ -1312,6 +1817,52 @@ components:
           default: none
     JsonValue:
       description: Any JSON value.
+    HubSettings:
+      type: object
+      additionalProperties: true
+      properties:
+        hub_public_url:
+          type: string
+        registration_enabled:
+          type: boolean
+        smtp:
+          type: object
+          additionalProperties: true
+          properties:
+            host:
+              type: string
+            port:
+              type: integer
+            username:
+              type: string
+            from:
+              type: string
+            password_hint:
+              type: string
+          description: Public settings response never returns the raw SMTP password.
+    HubSettingsUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        hub_public_url:
+          type: string
+        registration_enabled:
+          type: boolean
+        smtp:
+          type: object
+          additionalProperties: true
+          properties:
+            host:
+              type: string
+            port:
+              type: integer
+            username:
+              type: string
+            password:
+              type: string
+              description: Stored by the private Hub deployment; never returned by public settings.
+            from:
+              type: string
     LoginRequest:
       type: object
       additionalProperties: false
@@ -1351,6 +1902,171 @@ components:
         max_concurrent_jobs:
           type: integer
           minimum: 0
+    NodeProvisioningPlan:
+      type: object
+      additionalProperties: true
+      required: [metadata, spec, status]
+      properties:
+        metadata:
+          type: object
+          additionalProperties: true
+          properties:
+            id:
+              type: string
+            node_id:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+        spec:
+          type: object
+          additionalProperties: true
+          properties:
+            node_name:
+              type: string
+            os:
+              type: string
+            arch:
+              type: string
+            hub_url:
+              type: string
+            join_token:
+              type: [string, "null"]
+              description: Only returned when Hub intentionally exposes a fresh plan token.
+            join_token_hint:
+              type: string
+            bound_machine_fingerprint:
+              type: [string, "null"]
+        status:
+          type: object
+          additionalProperties: true
+          properties:
+            state:
+              type: string
+              enum: [planned, pending, bound, failed, cancelled]
+    CreatePortBridgeRequest:
+      type: object
+      additionalProperties: false
+      required: [source_node_id, target_node_id, target_port]
+      properties:
+        source_node_id:
+          type: string
+          minLength: 1
+          description: Worker node that exposes the loopback source port.
+        target_node_id:
+          type: string
+          minLength: 1
+          description: Worker node that connects to the target host and port.
+        source_bind_host:
+          type: string
+          default: 127.0.0.1
+          enum: [127.0.0.1]
+        source_bind_port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          default: 0
+          description: Use 0 to let the source Worker choose an available local port.
+        target_host:
+          type: string
+          default: 127.0.0.1
+          description: Must be loopback, localhost, or a private IP address in v1.
+        target_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        protocol:
+          type: string
+          enum: [tcp]
+          default: tcp
+        ttl_seconds:
+          type: integer
+          minimum: 30
+          maximum: 86400
+          default: 1800
+        purpose:
+          type: [string, "null"]
+        created_by:
+          type: string
+          default: agentgrid-cli
+    PortBridgeSession:
+      type: object
+      additionalProperties: false
+      required: [api_version, kind, metadata, spec, status]
+      properties:
+        api_version:
+          const: agentgrid.bridge/v1
+        kind:
+          const: PortBridgeSession
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [id, created_at, expires_at, created_by]
+          properties:
+            id:
+              type: string
+              pattern: "^pbridge_[A-Za-z0-9_\\-]+$"
+            created_at:
+              type: string
+              format: date-time
+            expires_at:
+              type: string
+              format: date-time
+            created_by:
+              type: string
+        spec:
+          type: object
+          additionalProperties: false
+          required:
+            - source_node_id
+            - target_node_id
+            - source_bind_host
+            - source_bind_port
+            - target_host
+            - target_port
+            - protocol
+            - purpose
+          properties:
+            source_node_id:
+              type: string
+            target_node_id:
+              type: string
+            source_bind_host:
+              type: string
+            source_bind_port:
+              type: integer
+              minimum: 0
+              maximum: 65535
+            target_host:
+              type: string
+            target_port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+            protocol:
+              type: string
+              enum: [tcp]
+            purpose:
+              type: string
+        status:
+          type: object
+          additionalProperties: false
+          required: [state, source_connected, target_connected, source_url, last_error]
+          properties:
+            state:
+              type: string
+              enum: [starting, waiting_for_worker, ready, closed, failed]
+            source_connected:
+              type: boolean
+            target_connected:
+              type: boolean
+            source_url:
+              type: string
+            last_error:
+              type: [string, "null"]
     OkResponse:
       type: object
       additionalProperties: true
@@ -1358,6 +2074,23 @@ components:
       properties:
         ok:
           const: true
+    Organization:
+      type: object
+      additionalProperties: false
+      required: [id, name, slug]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     Priority:
       type: string
       enum: [p0, p1, p2, p3, normal, low]
@@ -1482,6 +2215,43 @@ components:
               format: email
             role:
               type: string
+    UpdateNodeConfigRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+        groups:
+          type: array
+          items:
+            type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        weight:
+          type: number
+          minimum: 0.1
+        max_concurrent_jobs:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [online, disabled, draining]
+    UpdateUserRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        role:
+          type: string
+          enum: [member, admin, super_admin]
+        status:
+          type: string
+          enum: [active, disabled]
     WorkerTaskCompletionRequest:
       type: object
       additionalProperties: false

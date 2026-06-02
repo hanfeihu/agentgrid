@@ -25,8 +25,8 @@ public enum AgentGridMobileError: Error, LocalizedError {
 public struct AgentGridMobileClient {
     /// The public AgentGrid hub currently serves HTTP on port 20080.
     /// iOS apps that use this default must add a scoped App Transport Security
-    /// exception for `hub.example.com` in the app target's Info.plist.
-    public static let defaultHubURL = URL(string: "https://hub.example.com/agentgrid")!
+    /// exception for `chenqi.tminos.com` in the app target's Info.plist.
+    public static let defaultHubURL = URL(string: "http://chenqi.tminos.com:20080/agentgrid")!
 
     private let hubURL: URL
     private let bearerToken: String?
@@ -76,6 +76,37 @@ public struct AgentGridMobileClient {
         try await get("/api/tools")
     }
 
+    public func localServices() async throws -> AgentGridJSONObject {
+        try await get("/api/local-services")
+    }
+
+    public func createBridgeSession(
+        nodeID: String,
+        serviceID: String = "codex.local"
+    ) async throws -> AgentGridJSONObject {
+        try await post("/api/bridge-sessions", body: [
+            "node_id": nodeID,
+            "service_id": serviceID
+        ])
+    }
+
+    public func bridgeWebSocketURL(sessionID: String, token: String? = nil) throws -> URL {
+        guard var components = URLComponents(
+            url: hubURL.appendingPathComponent("api/bridge-sessions/\(sessionID)/ws"),
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw AgentGridMobileError.invalidURL(sessionID)
+        }
+        components.scheme = hubURL.scheme == "https" ? "wss" : "ws"
+        if let token {
+            components.queryItems = [URLQueryItem(name: "token", value: token)]
+        }
+        guard let url = components.url else {
+            throw AgentGridMobileError.invalidURL(sessionID)
+        }
+        return url
+    }
+
     public func submitTask(_ request: AgentGridJSONObject) async throws -> AgentGridJSONObject {
         try await post("/api/agent-runtime/tasks", body: request)
     }
@@ -111,11 +142,11 @@ public struct AgentGridMobileClient {
         try await post("/api/task-templates/\(templateID)/start", body: request)
     }
 
-    private func get(_ path: String) async throws -> AgentGridJSONObject {
+    public func get(_ path: String) async throws -> AgentGridJSONObject {
         try await send(path: path, method: "GET", body: nil)
     }
 
-    private func post(_ path: String, body: AgentGridJSONObject) async throws -> AgentGridJSONObject {
+    public func post(_ path: String, body: AgentGridJSONObject) async throws -> AgentGridJSONObject {
         try await send(path: path, method: "POST", body: body)
     }
 

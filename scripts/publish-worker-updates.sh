@@ -36,4 +36,24 @@ if command -v shasum >/dev/null 2>&1; then
 elif command -v sha256sum >/dev/null 2>&1; then
   sha256sum "$DEST_BIN" > "$DEST_BIN.sha256"
 fi
+
+SIGNATURE_FILE="$DEST_BIN.ed25519.sig"
+if [[ -n "${AGENTGRID_WORKER_UPDATE_PRIVATE_KEY_FILE:-}" ]]; then
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "openssl is required to sign worker updates" >&2
+    exit 1
+  fi
+  openssl pkeyutl \
+    -sign \
+    -rawin \
+    -inkey "$AGENTGRID_WORKER_UPDATE_PRIVATE_KEY_FILE" \
+    -in "$DEST_BIN" \
+    | base64 | tr -d '\n' > "$SIGNATURE_FILE"
+  echo >> "$SIGNATURE_FILE"
+  echo "signed worker update: $SIGNATURE_FILE"
+else
+  rm -f "$SIGNATURE_FILE"
+  echo "worker update signature skipped: set AGENTGRID_WORKER_UPDATE_PRIVATE_KEY_FILE to sign"
+fi
+
 echo "published $TARGET worker update: $DEST_BIN"

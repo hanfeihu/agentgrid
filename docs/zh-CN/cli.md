@@ -212,6 +212,34 @@ agentgrid runtime submit \
 agentgrid runtime get --id task_xxx
 ```
 
+## 节点端口桥接
+
+把 B 节点的本地端口临时桥接到 A 节点本机端口：
+
+```bash
+agentgrid bridge-port \
+  --source-node a-node \
+  --target-node b-node \
+  --target-port 8080 \
+  --source-port 18080 \
+  --purpose "让 A 节点浏览器访问 B 节点 Web 调试页"
+```
+
+等价资源命令：
+
+```bash
+agentgrid port-bridges create \
+  --source-node a-node \
+  --target-node b-node \
+  --target-port 8080 \
+  --source-port 18080
+agentgrid port-bridges
+agentgrid port-bridges get --id pbridge_xxx
+agentgrid port-bridges close --id pbridge_xxx
+```
+
+返回的 `Source URL` 需要在 A 节点本机打开。
+
 ## Webhook
 
 ```bash
@@ -223,4 +251,3 @@ agentgrid webhooks create \
   --event task.failed
 agentgrid webhooks deliveries
 ```
-

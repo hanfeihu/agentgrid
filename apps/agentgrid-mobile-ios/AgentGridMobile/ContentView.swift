@@ -1,0 +1,2288 @@
+import Foundation
+import SwiftUI
+
+struct AgentNode: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let os: String
+    let address: String
+    let state: String
+    let cpuCores: Int
+    let cpuUsagePercent: Double
+    let memoryMB: Int
+    let memoryUsedMB: Int
+    let diskTotalMB: Int
+    let diskFreeMB: Int
+    let maxConcurrentJobs: Int
+    let runningJobs: Int
+    let capabilities: [String]
+    let tags: [String]
+
+    var isOnline: Bool {
+        state == "online"
+    }
+
+    var memoryUsagePercent: Double {
+        guard memoryMB > 0 else { return 0 }
+        return Double(memoryUsedMB) / Double(memoryMB) * 100
+    }
+
+    var diskUsagePercent: Double {
+        guard diskTotalMB > 0 else { return 0 }
+        return Double(diskTotalMB - diskFreeMB) / Double(diskTotalMB) * 100
+    }
+
+    var shortOS: String {
+        if os.lowercased().contains("windows") { return "Windows" }
+        if os.lowercased().contains("darwin") { return "macOS" }
+        if os.lowercased().contains("ubuntu") { return "Ubuntu" }
+        return os.isEmpty ? "未知系统" : os
+    }
+}
+
+struct LocalService: Identifiable, Hashable {
+    let id: String
+    let nodeID: String
+    let nodeName: String
+    let serviceID: String
+    let name: String
+    let status: String
+    let nodeState: String
+
+    var isAvailable: Bool {
+        status == "available" && nodeState == "online"
+    }
+
+    var statusTitle: String {
+        if isAvailable { return "可用" }
+        if nodeState != "online" { return "节点离线" }
+        return "不可用"
+    }
+
+    var businessStatusTitle: String {
+        if isAvailable { return "可聊天" }
+        if nodeState != "online" { return "电脑离线" }
+        return "Codex 未启动"
+    }
+
+    var businessSubtitle: String {
+        if isAvailable { return "可以连接这台电脑上的 Codex" }
+        if nodeState != "online" { return "这台电脑暂时不能使用" }
+        return "请先在这台电脑上启动 Codex"
+    }
+}
+
+struct BridgeSessionInfo: Hashable {
+    let id: String
+    let token: String
+    let workerConnected: Bool
+}
+
+struct CodexChatMessage: Identifiable, Hashable {
+    let id = UUID()
+    let role: String
+    var text: String
+    var isStreaming: Bool = false
+
+    var isUser: Bool {
+        role == "user"
+    }
+
+    var isSystem: Bool {
+        role == "system"
+    }
+}
+
+struct AgentTaskItem: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let state: String
+    let priority: String
+    let owner: String
+    let nodeID: String
+    let updatedAt: String
+    let labels: [String]
+    let errorMessage: String?
+
+    var stateTitle: String {
+        switch state {
+        case "assigned": return "排队"
+        case "in_progress": return "执行中"
+        case "done": return "完成"
+        case "failed": return "失败"
+        case "blocked": return "阻塞"
+        case "cancelled": return "取消"
+        default: return state.isEmpty ? "未知" : state
+        }
+    }
+
+    var shortUpdatedAt: String {
+        String(updatedAt.prefix(19)).replacingOccurrences(of: "T", with: " ")
+    }
+}
+
+enum ReadinessState: Hashable {
+    case ok
+    case pending
+    case warning
+
+    var title: String {
+        switch self {
+        case .ok: return "正常"
+        case .pending: return "待连接"
+        case .warning: return "需处理"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .ok: return "checkmark.circle.fill"
+        case .pending: return "circle.dashed"
+        case .warning: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .ok: return .green
+        case .pending: return .gray
+        case .warning: return .orange
+        }
+    }
+}
+
+struct ReadinessStep: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let detail: String
+    let state: ReadinessState
+}
+
+enum AppTab: String, CaseIterable, Identifiable {
+    case dashboard
+    case codex
+    case nodes
+    case tasks
+    case settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dashboard: return "总览"
+        case .codex: return "Codex"
+        case .nodes: return "节点"
+        case .tasks: return "任务"
+        case .settings: return "设置"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .dashboard: return "square.grid.2x2.fill"
+        case .codex: return "bolt.horizontal.circle.fill"
+        case .nodes: return "server.rack"
+        case .tasks: return "list.bullet.rectangle.fill"
+        case .settings: return "gearshape.fill"
+        }
+    }
+}
+
+@MainActor
+final class AgentGridMobileModel: ObservableObject {
+    @Published var hubURL: String {
+        didSet { UserDefaults.standard.set(hubURL, forKey: "agentgrid.hubURL") }
+    }
+
+    @Published var email: String {
+        didSet { UserDefaults.standard.set(email, forKey: "agentgrid.email") }
+    }
+
+    @Published var password = ""
+
+    @Published var token: String {
+        didSet { UserDefaults.standard.set(token, forKey: "agentgrid.token") }
+    }
+
+    @Published var nodes: [AgentNode] = []
+    @Published var services: [LocalService] = []
+    @Published var tasks: [AgentTaskItem] = []
+    @Published var selectedServiceID = ""
+    @Published var requestMethod = "GET"
+    @Published var requestPath = "/healthz"
+    @Published var requestBody = "{\n  \"hello\": \"agentgrid-mobile\"\n}"
+    @Published var hubState = "未连接"
+    @Published var activityText = "等待操作"
+    @Published var rawResponseText = ""
+    @Published var lastSessionID = ""
+    @Published var isLoading = false
+    @Published var codexConnected = false
+    @Published var codexThreadID = ""
+    @Published var codexChatInput = ""
+    @Published var codexMessages: [CodexChatMessage] = []
+
+    private let defaultHubURL = "http://chenqi.tminos.com:20080/agentgrid"
+    private let codexWorkingDirectory = "/Users/a1/Desktop/ai-task-scheduler"
+    private let demoEmail = "mobile@agentgrid.local"
+    private let demoPassword = "AgentGridMobile2026!"
+    private var codexBridgeTask: URLSessionWebSocketTask?
+    private var codexReceiveTask: Task<Void, Never>?
+    private var codexRequestID = 1
+    private var codexPendingMethods: [Int: String] = [:]
+    private var currentAssistantMessageID: UUID?
+    private var userSelectedServiceID = false
+
+    func selectService(_ service: LocalService) {
+        selectedServiceID = service.id
+        userSelectedServiceID = true
+        disconnectCodexChat(message: "已选择 \(service.nodeName)")
+    }
+
+    init() {
+        hubURL = UserDefaults.standard.string(forKey: "agentgrid.hubURL") ?? defaultHubURL
+        email = UserDefaults.standard.string(forKey: "agentgrid.email") ?? ""
+        token = UserDefaults.standard.string(forKey: "agentgrid.token") ?? ""
+    }
+
+    var isAuthenticated: Bool {
+        !token.isEmpty
+    }
+
+    var selectedService: LocalService? {
+        services.first { $0.id == selectedServiceID }
+    }
+
+    var onlineNodes: [AgentNode] {
+        nodes.filter(\.isOnline)
+    }
+
+    var availableServices: [LocalService] {
+        services.filter(\.isAvailable)
+    }
+
+    var selectedServiceSummary: String {
+        guard let service = selectedService else {
+            return "还没有发现可连接的 Codex 服务"
+        }
+        return "\(service.nodeName) / \(service.statusTitle)"
+    }
+
+    var compactActivityText: String {
+        let trimmed = activityText
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count > 72 {
+            return String(trimmed.prefix(72)) + "..."
+        }
+        return trimmed.isEmpty ? "等待操作" : trimmed
+    }
+
+    var totalOnlineCores: Int {
+        onlineNodes.reduce(0) { $0 + $1.cpuCores }
+    }
+
+    var totalOnlineMemoryMB: Int {
+        onlineNodes.reduce(0) { $0 + $1.memoryMB }
+    }
+
+    var windowsDesktopNodes: Int {
+        nodes.filter { $0.shortOS == "Windows" && $0.capabilities.contains("desktop") }.count
+    }
+
+    var runningTasks: [AgentTaskItem] {
+        tasks.filter { $0.state == "in_progress" }
+    }
+
+    var failedTasks: [AgentTaskItem] {
+        tasks.filter { $0.state == "failed" }
+    }
+
+    var doneTasks: [AgentTaskItem] {
+        tasks.filter { $0.state == "done" }
+    }
+
+    var activeTaskCount: Int {
+        tasks.filter { $0.state == "assigned" || $0.state == "in_progress" }.count
+    }
+
+    var systemHealthTitle: String {
+        if hubState != "在线" { return "Hub 未连接" }
+        if onlineNodes.isEmpty { return "没有在线节点" }
+        if availableServices.isEmpty { return "Codex 服务不可用" }
+        if !failedTasks.isEmpty { return "有任务失败" }
+        return "系统可用"
+    }
+
+    var systemHealthColor: Color {
+        if hubState != "在线" || onlineNodes.isEmpty || availableServices.isEmpty { return .orange }
+        if !failedTasks.isEmpty { return .red }
+        return .green
+    }
+
+    var primaryCodexActionTitle: String {
+        codexConnected ? "继续和 Codex 聊天" : "连接 Mac Codex"
+    }
+
+    var codexBusinessStatusTitle: String {
+        if codexConnected { return "可以聊天" }
+        guard let service = selectedService else { return "请选择一台工作电脑" }
+        if service.isAvailable { return "准备就绪" }
+        if service.nodeState != "online" { return "电脑不在线" }
+        return "Codex 未启动"
+    }
+
+    var codexBusinessStatusDetail: String {
+        if codexConnected {
+            return "手机已经接到 \(selectedService?.nodeName ?? "工作电脑")，可以直接和 Codex 对话。"
+        }
+        guard let service = selectedService else {
+            return "还没有发现可以连接的工作电脑。请确认 Mac 上的 AgentGrid Worker 和 Codex 都在运行。"
+        }
+        if service.isAvailable {
+            return "将连接 \(service.nodeName)，让手机通过 AgentGrid 使用这台电脑上的 Codex。"
+        }
+        if service.nodeState != "online" {
+            return "\(service.nodeName) 当前不在线，不能发起聊天。"
+        }
+        return "\(service.nodeName) 在线，但 Codex 服务不可用。请在这台电脑上启动 Codex。"
+    }
+
+    var codexBusinessStatusColor: Color {
+        if codexConnected { return .green }
+        if selectedService?.isAvailable == true { return AppTheme.accent }
+        return .orange
+    }
+
+    var codexReadinessSteps: [ReadinessStep] {
+        let service = selectedService
+        return [
+            ReadinessStep(
+                id: "hub",
+                title: "Hub 入口",
+                detail: hubState == "在线" ? "中心服务在线" : "中心服务未确认",
+                state: hubState == "在线" ? .ok : .warning
+            ),
+            ReadinessStep(
+                id: "auth",
+                title: "移动账号",
+                detail: isAuthenticated ? "已登录" : "连接时会自动登录测试账号",
+                state: isAuthenticated ? .ok : .pending
+            ),
+            ReadinessStep(
+                id: "node",
+                title: "目标节点",
+                detail: service?.nodeName ?? "未发现 Codex 节点",
+                state: service == nil ? .warning : (service?.nodeState == "online" ? .ok : .warning)
+            ),
+            ReadinessStep(
+                id: "service",
+                title: "Codex 服务",
+                detail: service?.statusTitle ?? "未发现服务",
+                state: service?.isAvailable == true ? .ok : .warning
+            ),
+            ReadinessStep(
+                id: "bridge",
+                title: "桥接通道",
+                detail: codexConnected ? "聊天通道已建立" : "等待连接",
+                state: codexConnected ? .ok : .pending
+            ),
+        ]
+    }
+
+    func refreshAll() async {
+        await run(successMessage: "集群状态已刷新") {
+            try await loadHealth()
+            try await loadNodes()
+            try await loadServices()
+            try await loadTasks()
+        }
+    }
+
+    func login() async {
+        guard !email.isEmpty, !password.isEmpty else {
+            activityText = "请输入邮箱和密码"
+            return
+        }
+        await run(successMessage: "Hub 登录成功") {
+            try await loginWith(email: email, password: password)
+            try await loadServices()
+        }
+    }
+
+    func logout() {
+        token = ""
+        password = ""
+        lastSessionID = ""
+        activityText = "已退出登录"
+        rawResponseText = ""
+    }
+
+    func loadHealthOnly() async {
+        await run(successMessage: "Hub 连接正常") {
+            try await loadHealth()
+        }
+    }
+
+    func testCodexHealth() async {
+        requestMethod = "GET"
+        requestPath = "/healthz"
+        await sendBridgeRequest(successMessage: "Codex 服务连接成功")
+    }
+
+    func connectCodexChat() async {
+        if isLoading {
+            activityText = "正在处理，请稍等"
+            return
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        if services.isEmpty {
+            activityText = "正在刷新 Codex 服务..."
+            appendSystemMessage("正在刷新 Hub 上可用的 Codex 服务。")
+            do {
+                try await loadHealth()
+                try await loadServices()
+            } catch {
+                let message = readableError(error)
+                activityText = message
+                appendSystemMessage(message)
+                return
+            }
+        }
+
+        if !isAuthenticated {
+            activityText = "正在登录移动控制台账号..."
+            appendSystemMessage("正在登录 Hub，登录后才能创建 Codex 桥接会话。")
+            do {
+                email = demoEmail
+                try await loginWith(email: demoEmail, password: demoPassword)
+                try await loadServices()
+                appendSystemMessage("Hub 登录成功。")
+            } catch {
+                let message = readableError(error)
+                activityText = message
+                appendSystemMessage(message)
+                return
+            }
+        }
+
+        guard let service = selectedService else {
+            activityText = "没有找到 Codex 服务"
+            appendSystemMessage("没有找到可连接的 Codex 服务，请确认 Mac Worker 在线。")
+            return
+        }
+        guard service.isAvailable else {
+            activityText = "\(service.nodeName) 的 Codex 服务不可用"
+            appendSystemMessage("\(service.nodeName) 的 Codex 服务不可用，请先刷新或检查 Mac 上 Codex 是否启动。")
+            return
+        }
+
+        disconnectCodexChat(message: nil)
+        activityText = "正在连接 Codex..."
+        appendSystemMessage("正在通过 AgentGrid 连接 \(service.nodeName) 上的 Codex。")
+
+        do {
+            let bridgeSession = try await createBridgeSession(service: service)
+            let sessionID = bridgeSession.id
+            let bridgeToken = bridgeSession.token
+            lastSessionID = sessionID
+
+            let url = try bridgeURL(sessionID: sessionID, token: bridgeToken)
+            let task = URLSession.shared.webSocketTask(with: url)
+            codexBridgeTask = task
+            task.resume()
+            codexReceiveTask = Task { await receiveCodexBridgeMessages(task: task) }
+            try await sendBridgeEnvelope([
+                "type": "bridge.websocket.open",
+                "path": "/",
+            ])
+        } catch {
+            let message = readableError(error)
+            activityText = message
+            appendSystemMessage(message)
+        }
+    }
+
+    func disconnectCodexChat(message: String? = "Codex 连接已断开") {
+        if codexBridgeTask != nil {
+            Task {
+                try? await sendBridgeEnvelope(["type": "bridge.websocket.close"])
+            }
+        }
+        codexReceiveTask?.cancel()
+        codexBridgeTask?.cancel(with: .normalClosure, reason: nil)
+        codexReceiveTask = nil
+        codexBridgeTask = nil
+        codexConnected = false
+        codexThreadID = ""
+        codexPendingMethods.removeAll()
+        currentAssistantMessageID = nil
+        isLoading = false
+        if let message {
+            activityText = message
+            appendSystemMessage(message)
+        }
+    }
+
+    func sendCodexChatMessage() async {
+        let text = codexChatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard codexConnected, !codexThreadID.isEmpty else {
+            activityText = "请先连接 Codex"
+            appendSystemMessage("请先点“连接 Codex”，再发送消息。")
+            return
+        }
+        codexChatInput = ""
+        codexMessages.append(CodexChatMessage(role: "user", text: text))
+        let assistant = CodexChatMessage(role: "assistant", text: "", isStreaming: true)
+        currentAssistantMessageID = assistant.id
+        codexMessages.append(assistant)
+        activityText = "Codex 正在回复..."
+
+        do {
+            _ = try await sendCodexRPC(
+                method: "turn/start",
+                params: [
+                    "threadId": codexThreadID,
+                    "input": [
+                        [
+                            "type": "text",
+                            "text": text,
+                            "text_elements": [],
+                        ],
+                    ],
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": [
+                        "type": "readOnly",
+                        "networkAccess": false,
+                    ],
+                ]
+            )
+        } catch {
+            activityText = readableError(error)
+            finishCurrentAssistantMessage(fallback: readableError(error))
+        }
+    }
+
+    private func loadHealth() async throws {
+        let result = try await request(path: "/api/health", method: "GET")
+        if (result["ok"] as? Bool) == true {
+            hubState = "在线"
+        } else {
+            hubState = "异常"
+        }
+        rawResponseText = pretty(result)
+    }
+
+    private func loginWith(email: String, password: String) async throws {
+        let result = try await request(
+            path: "/api/auth/login",
+            method: "POST",
+            body: [
+                "email": email,
+                "password": password,
+            ]
+        )
+        token = result["token"] as? String ?? ""
+        rawResponseText = pretty(result)
+    }
+
+    private func loadNodes() async throws {
+        let result = try await request(path: "/api/nodes", method: "GET")
+        let items = result["items"] as? [[String: Any]] ?? []
+        nodes = items.compactMap(Self.parseNode).sorted {
+            if $0.isOnline != $1.isOnline { return $0.isOnline && !$1.isOnline }
+            return $0.name.localizedCompare($1.name) == .orderedAscending
+        }
+        rawResponseText = pretty(result)
+    }
+
+    private func loadServices() async throws {
+        let result = try await request(path: "/api/local-services", method: "GET")
+        let items = result["items"] as? [[String: Any]] ?? []
+        services = items.compactMap(Self.parseService).sorted {
+            if $0.isAvailable != $1.isAvailable { return $0.isAvailable && !$1.isAvailable }
+            if $0.nodeID != $1.nodeID {
+                if $0.nodeID == "local-mac" { return true }
+                if $1.nodeID == "local-mac" { return false }
+            }
+            return $0.nodeName.localizedCompare($1.nodeName) == .orderedAscending
+        }
+        if selectedServiceID.isEmpty || !services.contains(where: { $0.id == selectedServiceID }) {
+            selectedServiceID = preferredCodexService()?.id ?? services.first?.id ?? ""
+            userSelectedServiceID = false
+        } else if !userSelectedServiceID,
+                  let preferred = preferredCodexService(),
+                  selectedService?.isAvailable != true {
+            selectedServiceID = preferred.id
+        }
+        rawResponseText = pretty(result)
+    }
+
+    private func loadTasks() async throws {
+        let result = try await request(path: "/api/tasks?limit=20", method: "GET")
+        let items = result["items"] as? [[String: Any]] ?? []
+        tasks = items.compactMap(Self.parseTask)
+        rawResponseText = pretty(result)
+    }
+
+    private func preferredCodexService() -> LocalService? {
+        services.first { $0.nodeID == "local-mac" && $0.isAvailable }
+            ?? services.first(where: \.isAvailable)
+    }
+
+    private func sendBridgeRequest(successMessage: String) async {
+        guard let service = selectedService else {
+            activityText = "请选择一个 Codex 服务"
+            return
+        }
+        guard service.isAvailable else {
+            activityText = "\(service.nodeName) 的 Codex 服务不可用"
+            return
+        }
+        guard isAuthenticated else {
+            activityText = "请先登录 Hub"
+            return
+        }
+
+        await run(successMessage: successMessage) {
+            let bridgeSession = try await createBridgeSession(service: service)
+            let sessionID = bridgeSession.id
+            let bridgeToken = bridgeSession.token
+            lastSessionID = sessionID
+
+            let url = try bridgeURL(sessionID: sessionID, token: bridgeToken)
+            let response = try await sendBridgeMessage(url: url)
+            rawResponseText = pretty(response)
+        }
+    }
+
+    private func run(successMessage: String, _ operation: () async throws -> Void) async {
+        isLoading = true
+        activityText = "正在处理..."
+        defer { isLoading = false }
+        do {
+            try await operation()
+            activityText = successMessage
+        } catch {
+            let message = readableError(error)
+            activityText = message
+            rawResponseText = message
+        }
+    }
+
+    private func baseURL() throws -> URL {
+        let trimmed = hubURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        guard let url = URL(string: trimmed) else {
+            throw AgentGridError.invalidURL(hubURL)
+        }
+        return url
+    }
+
+    private func request(
+        path: String,
+        method: String,
+        body: [String: Any]? = nil
+    ) async throws -> [String: Any] {
+        let url = try apiURL(path)
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "accept")
+        if isAuthenticated {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+        }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw AgentGridError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw AgentGridError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "", url.absoluteString)
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AgentGridError.invalidResponse
+        }
+        return json
+    }
+
+    private func apiURL(_ path: String) throws -> URL {
+        let root = try baseURL()
+        var components = URLComponents(url: root, resolvingAgainstBaseURL: false)
+        let rootPath = root.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var childPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let questionMarkIndex = childPath.firstIndex(of: "?") {
+            components?.query = String(childPath[childPath.index(after: questionMarkIndex)...])
+            childPath = String(childPath[..<questionMarkIndex])
+        } else {
+            components?.query = nil
+        }
+        let joined = [rootPath, childPath].filter { !$0.isEmpty }.joined(separator: "/")
+        components?.path = "/" + joined
+        components?.fragment = nil
+        guard let url = components?.url else {
+            throw AgentGridError.invalidURL(path)
+        }
+        return url
+    }
+
+    private func createBridgeSession(service: LocalService) async throws -> BridgeSessionInfo {
+        let sessionResult = try await request(
+            path: "/api/bridge-sessions",
+            method: "POST",
+            body: [
+                "node_id": service.nodeID,
+                "service_id": service.serviceID,
+            ]
+        )
+        let item = sessionResult["item"] as? [String: Any] ?? [:]
+        let metadata = item["metadata"] as? [String: Any] ?? [:]
+        let spec = item["spec"] as? [String: Any] ?? [:]
+        let status = item["status"] as? [String: Any] ?? [:]
+        let sessionID = metadata["id"] as? String ?? ""
+        let bridgeToken = spec["token"] as? String ?? ""
+        let workerConnected = status["worker_connected"] as? Bool ?? false
+        guard !sessionID.isEmpty, !bridgeToken.isEmpty else {
+            throw AgentGridError.invalidResponse
+        }
+        guard workerConnected else {
+            throw AgentGridError.bridgeWorkerDisconnected(service.nodeName)
+        }
+        return BridgeSessionInfo(id: sessionID, token: bridgeToken, workerConnected: workerConnected)
+    }
+
+    private func bridgeURL(sessionID: String, token: String) throws -> URL {
+        let root = try baseURL()
+        guard var components = URLComponents(
+            url: root.appendingPathComponent("api/bridge-sessions/\(sessionID)/ws"),
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw AgentGridError.invalidURL(sessionID)
+        }
+        components.scheme = root.scheme == "https" ? "wss" : "ws"
+        components.queryItems = [URLQueryItem(name: "token", value: token)]
+        guard let url = components.url else {
+            throw AgentGridError.invalidURL(sessionID)
+        }
+        return url
+    }
+
+    private func sendBridgeMessage(url: URL) async throws -> [String: Any] {
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.resume()
+        defer { task.cancel(with: .normalClosure, reason: nil) }
+
+        var headers: [String: String] = [:]
+        var body: Any = NSNull()
+        if requestMethod != "GET" {
+            headers["content-type"] = "application/json"
+            body = parseRequestBody()
+        }
+
+        let message: [String: Any] = [
+            "type": "bridge.request",
+            "method": requestMethod,
+            "path": requestPath.isEmpty ? "/" : requestPath,
+            "headers": headers,
+            "body": body,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: message)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw AgentGridError.invalidResponse
+        }
+        try await task.send(.string(text))
+
+        while true {
+            let incoming = try await task.receive()
+            let data: Data
+            switch incoming {
+            case .data(let payload):
+                data = payload
+            case .string(let text):
+                data = Data(text.utf8)
+            @unknown default:
+                continue
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            if (json["type"] as? String) == "bridge.ready" {
+                continue
+            }
+            return json
+        }
+    }
+
+    private func receiveCodexBridgeMessages(task: URLSessionWebSocketTask) async {
+        while !Task.isCancelled {
+            do {
+                let incoming = try await task.receive()
+                let data: Data
+                switch incoming {
+                case .data(let payload):
+                    data = payload
+                case .string(let text):
+                    data = Data(text.utf8)
+                @unknown default:
+                    continue
+                }
+                guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    continue
+                }
+                await handleCodexBridgeEnvelope(envelope)
+            } catch {
+                if !Task.isCancelled {
+                    disconnectCodexChat(message: "Codex 连接中断：\(error.localizedDescription)")
+                }
+                return
+            }
+        }
+    }
+
+    private func handleCodexBridgeEnvelope(_ envelope: [String: Any]) async {
+        let type = envelope["type"] as? String ?? ""
+        switch type {
+        case "bridge.ready":
+            return
+        case "bridge.websocket.ready":
+            do {
+                _ = try await sendCodexRPC(
+                    method: "initialize",
+                    params: [
+                        "clientInfo": [
+                            "name": "agentgrid-mobile",
+                            "title": "AgentGrid Mobile",
+                            "version": "0.1.0",
+                        ],
+                        "capabilities": [
+                            "experimentalApi": true,
+                            "requestAttestation": false,
+                            "optOutNotificationMethods": [],
+                        ],
+                    ]
+                )
+            } catch {
+                disconnectCodexChat(message: readableError(error))
+            }
+        case "bridge.websocket.message":
+            guard let body = envelope["body"] as? String,
+                  let data = body.data(using: .utf8),
+                  let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                return
+            }
+            await handleCodexJSONRPC(message)
+        case "bridge.websocket.closed":
+            disconnectCodexChat(message: "Codex 连接已关闭")
+        case "bridge.error":
+            disconnectCodexChat(message: envelope["message"] as? String ?? "Codex 桥接失败")
+        default:
+            return
+        }
+    }
+
+    private func handleCodexJSONRPC(_ message: [String: Any]) async {
+        if let error = message["error"] as? [String: Any] {
+            let text = error["message"] as? String ?? "Codex 请求失败"
+            activityText = text
+            finishCurrentAssistantMessage(fallback: text)
+            return
+        }
+
+        if let id = message["id"] as? Int {
+            let method = codexPendingMethods.removeValue(forKey: id)
+            if method == "initialize" {
+                do {
+                    try await sendCodexNotification(method: "initialized")
+                    _ = try await sendCodexRPC(
+                        method: "thread/start",
+                        params: [
+                            "cwd": codexWorkingDirectory,
+                            "approvalPolicy": "never",
+                            "sandbox": "read-only",
+                            "ephemeral": true,
+                            "threadSource": "user",
+                            "baseInstructions": "你正在通过 AgentGrid Mobile 与用户对话。请用中文简洁回复；除非用户明确要求，不要执行工具。",
+                        ]
+                    )
+                } catch {
+                    disconnectCodexChat(message: readableError(error))
+                }
+                return
+            }
+            if method == "thread/start" {
+                let result = message["result"] as? [String: Any] ?? [:]
+                let thread = result["thread"] as? [String: Any] ?? [:]
+                codexThreadID = thread["id"] as? String ?? ""
+                codexConnected = !codexThreadID.isEmpty
+                isLoading = false
+                activityText = codexConnected ? "Codex 已连接" : "Codex 线程创建失败"
+                if codexConnected {
+                    appendSystemMessage("Codex 已连接，可以开始聊天。")
+                }
+                return
+            }
+        }
+
+        guard let method = message["method"] as? String else { return }
+        let params = message["params"] as? [String: Any] ?? [:]
+        switch method {
+        case "item/agentMessage/delta":
+            appendAssistantDelta(params["delta"] as? String ?? "")
+        case "item/completed":
+            if let item = params["item"] as? [String: Any],
+               item["type"] as? String == "agentMessage",
+               let text = item["text"] as? String {
+                finishCurrentAssistantMessage(fallback: text)
+            }
+        case "turn/completed":
+            activityText = "Codex 回复完成"
+            finishCurrentAssistantMessage(fallback: nil)
+        case "thread/status/changed":
+            return
+        default:
+            return
+        }
+    }
+
+    private func sendCodexRPC(method: String, params: [String: Any]) async throws -> Int {
+        let id = codexRequestID
+        codexRequestID += 1
+        codexPendingMethods[id] = method
+        try await sendBridgeEnvelope([
+            "type": "bridge.websocket.message",
+            "body": [
+                "id": id,
+                "method": method,
+                "params": params,
+            ],
+        ])
+        return id
+    }
+
+    private func sendCodexNotification(method: String, params: [String: Any]? = nil) async throws {
+        var body: [String: Any] = ["method": method]
+        if let params {
+            body["params"] = params
+        }
+        try await sendBridgeEnvelope([
+            "type": "bridge.websocket.message",
+            "body": body,
+        ])
+    }
+
+    private func sendBridgeEnvelope(_ envelope: [String: Any]) async throws {
+        guard let task = codexBridgeTask else {
+            throw AgentGridError.invalidResponse
+        }
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw AgentGridError.invalidResponse
+        }
+        try await task.send(.string(text))
+    }
+
+    private func appendSystemMessage(_ text: String) {
+        guard !text.isEmpty else { return }
+        codexMessages.append(CodexChatMessage(role: "system", text: text))
+    }
+
+    private func appendAssistantDelta(_ delta: String) {
+        guard !delta.isEmpty else { return }
+        if let id = currentAssistantMessageID,
+           let index = codexMessages.firstIndex(where: { $0.id == id }) {
+            codexMessages[index].text += delta
+        } else {
+            let message = CodexChatMessage(role: "assistant", text: delta, isStreaming: true)
+            currentAssistantMessageID = message.id
+            codexMessages.append(message)
+        }
+    }
+
+    private func finishCurrentAssistantMessage(fallback: String?) {
+        if let id = currentAssistantMessageID,
+           let index = codexMessages.firstIndex(where: { $0.id == id }) {
+            if codexMessages[index].text.isEmpty, let fallback {
+                codexMessages[index].text = fallback
+            }
+            codexMessages[index].isStreaming = false
+        } else if let fallback, !fallback.isEmpty {
+            codexMessages.append(CodexChatMessage(role: "assistant", text: fallback))
+        }
+        currentAssistantMessageID = nil
+    }
+
+    private func parseRequestBody() -> Any {
+        let data = Data(requestBody.utf8)
+        if let json = try? JSONSerialization.jsonObject(with: data) {
+            return json
+        }
+        return requestBody
+    }
+
+    private static func parseNode(_ item: [String: Any]) -> AgentNode? {
+        let metadata = item["metadata"] as? [String: Any] ?? [:]
+        let spec = item["spec"] as? [String: Any] ?? [:]
+        let status = item["status"] as? [String: Any] ?? [:]
+        let id = metadata["id"] as? String ?? ""
+        guard !id.isEmpty else { return nil }
+        return AgentNode(
+            id: id,
+            name: metadata["name"] as? String ?? id,
+            os: spec["os"] as? String ?? "",
+            address: spec["address"] as? String ?? "",
+            state: status["state"] as? String ?? "unknown",
+            cpuCores: spec["cpu_cores"] as? Int ?? 0,
+            cpuUsagePercent: spec["cpu_usage_percent"] as? Double ?? 0,
+            memoryMB: spec["memory_mb"] as? Int ?? 0,
+            memoryUsedMB: spec["memory_used_mb"] as? Int ?? 0,
+            diskTotalMB: spec["disk_total_mb"] as? Int ?? 0,
+            diskFreeMB: spec["disk_free_mb"] as? Int ?? 0,
+            maxConcurrentJobs: spec["max_concurrent_jobs"] as? Int ?? 0,
+            runningJobs: status["running_jobs"] as? Int ?? 0,
+            capabilities: spec["capabilities"] as? [String] ?? [],
+            tags: spec["tags"] as? [String] ?? []
+        )
+    }
+
+    private static func parseService(_ item: [String: Any]) -> LocalService? {
+        let metadata = item["metadata"] as? [String: Any] ?? [:]
+        let spec = item["spec"] as? [String: Any] ?? [:]
+        let status = item["status"] as? [String: Any] ?? [:]
+        let nodeID = metadata["node_id"] as? String ?? ""
+        let serviceID = spec["id"] as? String ?? ""
+        guard !nodeID.isEmpty, !serviceID.isEmpty else { return nil }
+        return LocalService(
+            id: "\(nodeID):\(serviceID)",
+            nodeID: nodeID,
+            nodeName: metadata["node_name"] as? String ?? nodeID,
+            serviceID: serviceID,
+            name: spec["name"] as? String ?? serviceID,
+            status: spec["status"] as? String ?? "unknown",
+            nodeState: status["node_state"] as? String ?? "unknown"
+        )
+    }
+
+    private static func parseTask(_ item: [String: Any]) -> AgentTaskItem? {
+        let metadata = item["metadata"] as? [String: Any] ?? [:]
+        let spec = item["spec"] as? [String: Any] ?? [:]
+        let status = item["status"] as? [String: Any] ?? [:]
+        let id = metadata["id"] as? String ?? ""
+        guard !id.isEmpty else { return nil }
+        let error = status["error"] as? [String: Any]
+        return AgentTaskItem(
+            id: id,
+            title: spec["title"] as? String ?? id,
+            state: status["state"] as? String ?? "unknown",
+            priority: spec["priority"] as? String ?? "normal",
+            owner: spec["owner"] as? String ?? "",
+            nodeID: status["leased_by_node_id"] as? String ?? "",
+            updatedAt: metadata["updated_at"] as? String ?? "",
+            labels: spec["labels"] as? [String] ?? [],
+            errorMessage: error?["message"] as? String
+        )
+    }
+
+    private func pretty(_ value: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+        else {
+            return String(describing: value)
+        }
+        return String(data: data, encoding: .utf8) ?? String(describing: value)
+    }
+
+    private func readableError(_ error: Error) -> String {
+        if let agentGridError = error as? AgentGridError {
+            return agentGridError.errorDescription ?? "请求失败"
+        }
+        return error.localizedDescription
+    }
+}
+
+enum AgentGridError: LocalizedError {
+    case invalidURL(String)
+    case invalidResponse
+    case http(Int, String, String)
+    case bridgeWorkerDisconnected(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL(let value):
+            return "无效地址：\(value)"
+        case .invalidResponse:
+            return "Hub 返回内容无法解析"
+        case .bridgeWorkerDisconnected(let nodeName):
+            return "\(nodeName) 在线，但本地服务桥接通道没有连接。请重启这个节点的 AgentGrid Worker 后再试。"
+        case .http(let status, let body, let url):
+            let title = shortHTTPMessage(status)
+            let bodySummary = summarizeHTTPBody(body)
+            if status == 502 || bodyLooksLikeHTML(body) {
+                return title
+            }
+            if bodySummary.isEmpty {
+                return "\(title)\n\(url)"
+            }
+            return "\(title)\n\(url)\n\(bodySummary)"
+        }
+    }
+
+    private func shortHTTPMessage(_ status: Int) -> String {
+        switch status {
+        case 401:
+            return "登录已失效或账号密码不正确"
+        case 403:
+            return "没有权限访问这个接口"
+        case 404:
+            return "接口不存在，请检查 Hub 地址"
+        case 502:
+            return "Hub 入口返回 502，请检查 Nginx 代理或 Hub 服务"
+        case 503:
+            return "Hub 服务暂时不可用"
+        default:
+            return "请求失败（HTTP \(status)）"
+        }
+    }
+
+    private func summarizeHTTPBody(_ body: String) -> String {
+        var text = body
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.lowercased().contains("bad gateway") {
+            text = "服务器网关错误"
+        }
+        if text.count > 180 {
+            return String(text.prefix(180)) + "..."
+        }
+        return text
+    }
+
+    private func bodyLooksLikeHTML(_ body: String) -> Bool {
+        let lower = body.lowercased()
+        return lower.contains("<html") || lower.contains("<!doctype") || lower.contains("<body")
+    }
+}
+
+struct ContentView: View {
+    @StateObject private var model = AgentGridMobileModel()
+    @State private var selectedTab: AppTab = .dashboard
+
+    var body: some View {
+        TabView(selection: $selectedTab) {
+            DashboardView(model: model, selectedTab: $selectedTab)
+                .tabItem { Label(AppTab.dashboard.title, systemImage: AppTab.dashboard.icon) }
+                .tag(AppTab.dashboard)
+
+            CodexBridgeView(model: model)
+                .tabItem { Label(AppTab.codex.title, systemImage: AppTab.codex.icon) }
+                .tag(AppTab.codex)
+
+            NodesView(model: model)
+                .tabItem { Label(AppTab.nodes.title, systemImage: AppTab.nodes.icon) }
+                .tag(AppTab.nodes)
+
+            TasksView(model: model)
+                .tabItem { Label(AppTab.tasks.title, systemImage: AppTab.tasks.icon) }
+                .tag(AppTab.tasks)
+
+            SettingsView(model: model)
+                .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.icon) }
+                .tag(AppTab.settings)
+        }
+        .task {
+            if model.nodes.isEmpty {
+                await model.refreshAll()
+            }
+        }
+    }
+}
+
+struct DashboardView: View {
+    @ObservedObject var model: AgentGridMobileModel
+    @Binding var selectedTab: AppTab
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HeaderBlock(
+                        title: "AgentGrid",
+                        subtitle: "AI 真实机器调度控制台",
+                        icon: "point.3.connected.trianglepath.dotted"
+                    )
+
+                    MobileCommandCenterCard(model: model) {
+                        selectedTab = .codex
+                        Task { await model.connectCodexChat() }
+                    }
+
+                    SystemHealthCard(model: model)
+
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                        MetricCard(title: "在线节点", value: "\(model.onlineNodes.count)", subtitle: "共 \(model.nodes.count) 台")
+                        MetricCard(title: "CPU 核心", value: "\(model.totalOnlineCores)", subtitle: "在线总算力")
+                        MetricCard(title: "内存", value: formatMB(model.totalOnlineMemoryMB), subtitle: "在线总容量")
+                        MetricCard(title: "运行任务", value: "\(model.runningTasks.count)", subtitle: "失败 \(model.failedTasks.count)")
+                    }
+
+                    ActionPanel(
+                        model: model,
+                        openCodex: {
+                            selectedTab = .codex
+                            Task { await model.connectCodexChat() }
+                        },
+                        openTasks: {
+                            selectedTab = .tasks
+                        }
+                    )
+
+                    SectionCard(title: "能力入口", icon: "rectangle.3.group.fill") {
+                        VStack(spacing: 10) {
+                            CapabilityTile(icon: "bolt.horizontal.circle", title: "Codex Bridge", value: model.selectedServiceSummary)
+                            CapabilityTile(icon: "server.rack", title: "节点算力", value: "\(model.onlineNodes.count) 台在线，\(model.totalOnlineCores) 核")
+                            CapabilityTile(icon: "list.bullet.rectangle", title: "最近任务", value: "\(model.tasks.count) 条记录，\(model.failedTasks.count) 条失败")
+                        }
+                    }
+                }
+                .padding(18)
+            }
+            .background(AppTheme.background.ignoresSafeArea())
+            .navigationBarHidden(true)
+        }
+    }
+}
+
+struct MobileCommandCenterCard: View {
+    @ObservedObject var model: AgentGridMobileModel
+    let connectCodex: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(model.codexConnected ? Color.green.opacity(0.14) : AppTheme.accent.opacity(0.14))
+                        .frame(width: 54, height: 54)
+                    Image(systemName: model.codexConnected ? "bubble.left.and.bubble.right.fill" : "iphone.and.arrow.forward")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(model.codexConnected ? .green : AppTheme.accent)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.codexConnected ? "手机已接入 Codex" : "把手机接到 Mac Codex")
+                        .font(.title3.weight(.bold))
+                    Text(model.codexConnected ? "现在可以通过 AgentGrid 和本机 Codex 对话。" : "AgentGrid 会通过 Hub 找到 Mac 节点，再建立安全桥接通道。")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                StatusPill(title: model.hubState == "在线" ? "Hub 在线" : "Hub 未确认", color: model.hubState == "在线" ? .green : .orange)
+                StatusPill(title: "\(model.availableServices.count) 个 Codex 服务", color: model.availableServices.isEmpty ? .orange : .green)
+            }
+
+            Button(action: connectCodex) {
+                WideButtonLabel(title: model.primaryCodexActionTitle, icon: "bolt.horizontal.circle.fill")
+            }
+            .buttonStyle(FilledButtonStyle())
+            .disabled(model.isLoading)
+        }
+        .padding(18)
+        .background(
+            LinearGradient(
+                colors: [AppTheme.card, AppTheme.accent.opacity(0.08)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(AppTheme.accent.opacity(0.12), lineWidth: 1)
+        )
+        .cornerRadius(18)
+    }
+}
+
+struct SystemHealthCard: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        SectionCard(title: "系统状态", icon: "checkmark.seal.fill") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    if model.isLoading {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "circle.fill")
+                            .font(.caption)
+                            .foregroundColor(model.systemHealthColor)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.systemHealthTitle)
+                            .font(.title3.weight(.semibold))
+                        Text(model.compactActivityText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    StatusPill(title: "Hub \(model.hubState)", color: model.hubState == "在线" ? .green : .orange)
+                }
+
+                HStack(spacing: 8) {
+                    StatusPill(title: "\(model.onlineNodes.count) 节点", color: .blue)
+                    StatusPill(title: "\(model.availableServices.count) Codex", color: model.availableServices.isEmpty ? .orange : .green)
+                    StatusPill(title: "\(model.failedTasks.count) 失败", color: model.failedTasks.isEmpty ? .gray : .red)
+                }
+            }
+        }
+    }
+}
+
+struct ActionPanel: View {
+    @ObservedObject var model: AgentGridMobileModel
+    let openCodex: () -> Void
+    let openTasks: () -> Void
+
+    var body: some View {
+        SectionCard(title: "快捷操作", icon: "bolt.fill") {
+            VStack(spacing: 10) {
+                Button {
+                    Task { await model.refreshAll() }
+                } label: {
+                    WideButtonLabel(title: "刷新集群状态", icon: "arrow.clockwise")
+                }
+                .buttonStyle(FilledButtonStyle())
+                .disabled(model.isLoading)
+
+                Button {
+                    openCodex()
+                } label: {
+                    WideButtonLabel(title: model.primaryCodexActionTitle, icon: "bolt.horizontal.circle.fill")
+                }
+                .buttonStyle(SoftButtonStyle())
+                .disabled(model.isLoading)
+
+                Button {
+                    openTasks()
+                } label: {
+                    WideButtonLabel(title: "查看最近任务", icon: "list.bullet.rectangle.fill")
+                }
+                .buttonStyle(SoftButtonStyle())
+            }
+        }
+    }
+}
+
+struct NodesView: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 12) {
+                    HeaderBlock(title: "节点", subtitle: "\(model.onlineNodes.count) 台在线", icon: "server.rack")
+
+                    SectionCard(title: "节点概况", icon: "chart.bar.xaxis") {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                            MetricCard(title: "在线", value: "\(model.onlineNodes.count)", subtitle: "可接任务")
+                            MetricCard(title: "离线", value: "\(max(model.nodes.count - model.onlineNodes.count, 0))", subtitle: "不可调度")
+                            MetricCard(title: "桌面节点", value: "\(model.windowsDesktopNodes)", subtitle: "可截图 / 操作")
+                            MetricCard(title: "Codex 服务", value: "\(model.availableServices.count)", subtitle: "可桥接")
+                        }
+                    }
+
+                    ForEach(model.nodes) { node in
+                        NodeCard(node: node)
+                    }
+
+                    if model.nodes.isEmpty {
+                        EmptyStateView(title: "暂无节点", icon: "server.rack")
+                    }
+                }
+                .padding(18)
+            }
+            .refreshable {
+                await model.refreshAll()
+            }
+            .background(AppTheme.background.ignoresSafeArea())
+            .navigationBarHidden(true)
+        }
+    }
+}
+
+struct TasksView: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 12) {
+                    HeaderBlock(title: "任务", subtitle: "\(model.tasks.count) 条最近记录", icon: "list.bullet.rectangle.fill")
+
+                    SectionCard(title: "任务状态", icon: "chart.bar.fill") {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                            MetricCard(title: "活跃", value: "\(model.activeTaskCount)", subtitle: "排队或执行中")
+                            MetricCard(title: "完成", value: "\(model.doneTasks.count)", subtitle: "最近成功")
+                            MetricCard(title: "失败", value: "\(model.failedTasks.count)", subtitle: "需要排查")
+                            MetricCard(title: "总数", value: "\(model.tasks.count)", subtitle: "最近记录")
+                        }
+                    }
+
+                    if model.tasks.isEmpty {
+                        EmptyStateView(title: "暂无任务记录", icon: "list.bullet.rectangle")
+                    } else {
+                        ForEach(model.tasks) { task in
+                            TaskCard(task: task)
+                        }
+                    }
+                }
+                .padding(18)
+            }
+            .refreshable {
+                await model.refreshAll()
+            }
+            .background(AppTheme.background.ignoresSafeArea())
+            .navigationBarHidden(true)
+        }
+    }
+}
+
+struct CodexBridgeView: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HeaderBlock(
+                        title: "Codex",
+                        subtitle: model.codexConnected ? "正在使用远程工作电脑" : "选择一台电脑开始聊天",
+                        icon: "bolt.horizontal.circle.fill"
+                    )
+
+                    CodexWorkstationCard(model: model)
+
+                    CodexServicePickerCard(model: model)
+
+                    CodexUseCasesCard()
+
+                    CodexChatCard(model: model)
+                }
+                .padding(18)
+            }
+            .refreshable {
+                await model.refreshAll()
+            }
+            .background(AppTheme.background.ignoresSafeArea())
+            .navigationBarHidden(true)
+        }
+    }
+}
+
+struct CodexWorkstationCard: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(model.codexBusinessStatusColor.opacity(0.13))
+                        .frame(width: 56, height: 56)
+                    Image(systemName: model.codexConnected ? "checkmark.bubble.fill" : "macbook.and.iphone")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(model.codexBusinessStatusColor)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.codexBusinessStatusTitle)
+                        .font(.title3.weight(.bold))
+                    Text(model.codexBusinessStatusDetail)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if model.isLoading || model.activityText != "等待操作" {
+                HStack(spacing: 8) {
+                    if model.isLoading {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundColor(model.codexBusinessStatusColor)
+                    }
+                    Text(model.compactActivityText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(10)
+                .background(AppTheme.field)
+                .cornerRadius(12)
+            }
+
+            VStack(spacing: 10) {
+                Button {
+                    Task { await model.connectCodexChat() }
+                } label: {
+                    WideButtonLabel(title: model.codexConnected ? "重新连接这台电脑" : "连接并开始聊天", icon: "bolt.horizontal.circle.fill")
+                }
+                .buttonStyle(FilledButtonStyle())
+                .disabled(model.isLoading || model.selectedService?.isAvailable != true)
+
+                if model.codexConnected {
+                    Button {
+                        model.disconnectCodexChat()
+                    } label: {
+                        WideButtonLabel(title: "结束本次聊天", icon: "xmark.circle")
+                    }
+                    .buttonStyle(SoftButtonStyle())
+                }
+            }
+        }
+        .padding(18)
+        .background(AppTheme.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(model.codexBusinessStatusColor.opacity(0.16), lineWidth: 1)
+        )
+        .cornerRadius(18)
+    }
+}
+
+struct CodexServicePickerCard: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        SectionCard(title: "工作电脑", icon: "desktopcomputer") {
+            VStack(spacing: 10) {
+                if model.services.isEmpty {
+                    EmptyStateView(title: "还没有发现可用电脑，请先刷新", icon: "desktopcomputer")
+                } else {
+                    ForEach(model.services) { service in
+                        Button {
+                            model.selectService(service)
+                        } label: {
+                            ServiceRow(service: service, selected: service.id == model.selectedServiceID)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CodexUseCasesCard: View {
+    private let useCases = [
+        ("问项目进展", "让 Codex 总结当前 AgentGrid 状态", "chart.line.uptrend.xyaxis"),
+        ("查代码问题", "让 Codex 查看本机项目并给出建议", "curlybraces"),
+        ("规划下一步", "让 Codex 给出可落地的优化任务", "checklist"),
+    ]
+
+    var body: some View {
+        SectionCard(title: "可以做什么", icon: "sparkles") {
+            VStack(spacing: 10) {
+                ForEach(useCases, id: \.0) { item in
+                    CapabilityTile(icon: item.2, title: item.0, value: item.1)
+                }
+            }
+        }
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HeaderBlock(title: "设置", subtitle: model.isAuthenticated ? "已登录" : "未登录", icon: "gearshape.fill")
+
+                    SectionCard(title: "Hub", icon: "server.rack") {
+                        VStack(spacing: 12) {
+                            LabeledField(title: "地址") {
+                                TextField("Hub URL", text: $model.hubURL)
+                                    .textInputAutocapitalization(.never)
+                                    .keyboardType(.URL)
+                                    .disableAutocorrection(true)
+                            }
+
+                            Button {
+                                Task { await model.loadHealthOnly() }
+                            } label: {
+                                WideButtonLabel(title: "测试 Hub", icon: "checkmark.seal.fill")
+                            }
+                            .buttonStyle(SoftButtonStyle())
+                            .disabled(model.isLoading)
+                        }
+                    }
+
+                    SectionCard(title: "账号", icon: "person.crop.circle.fill") {
+                        VStack(spacing: 12) {
+                            LabeledField(title: "邮箱") {
+                                TextField("邮箱", text: $model.email)
+                                    .textInputAutocapitalization(.never)
+                                    .keyboardType(.emailAddress)
+                                    .disableAutocorrection(true)
+                            }
+                            LabeledField(title: "密码") {
+                                SecureField("密码", text: $model.password)
+                            }
+
+                            HStack {
+                                Button {
+                                    Task { await model.login() }
+                                } label: {
+                                    Label("登录", systemImage: "person.crop.circle.badge.checkmark")
+                                }
+                                .buttonStyle(FilledButtonStyle())
+                                .disabled(model.isLoading)
+
+                                Button {
+                                    model.logout()
+                                } label: {
+                                    Label("退出", systemImage: "rectangle.portrait.and.arrow.right")
+                                }
+                                .buttonStyle(SoftButtonStyle())
+                                .disabled(!model.isAuthenticated)
+                            }
+                        }
+                    }
+
+                    ResultCard(model: model)
+                }
+                .padding(18)
+            }
+            .background(AppTheme.background.ignoresSafeArea())
+            .navigationBarHidden(true)
+        }
+    }
+}
+
+struct HeaderBlock: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(AppTheme.accent.opacity(0.13))
+                    .frame(width: 58, height: 58)
+                Image(systemName: icon)
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundColor(AppTheme.accent)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 34, weight: .bold))
+                    .foregroundColor(.primary)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+    }
+}
+
+struct StatusBanner: View {
+    let title: String
+    let subtitle: String
+    let loading: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if loading {
+                ProgressView()
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(AppTheme.card)
+        .cornerRadius(16)
+    }
+}
+
+struct MetricCard: View {
+    let title: String
+    let value: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 28, weight: .bold))
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(AppTheme.card)
+        .cornerRadius(16)
+    }
+}
+
+struct SectionCard<Content: View>: View {
+    let title: String
+    let icon: String
+    let content: Content
+
+    init(title: String, icon: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Image(systemName: icon)
+                    .foregroundColor(AppTheme.accent)
+                Text(title)
+                    .font(.headline)
+                Spacer()
+            }
+            content
+        }
+        .padding(16)
+        .background(AppTheme.card)
+        .cornerRadius(16)
+    }
+}
+
+struct NodeCard: View {
+    let node: AgentNode
+
+    var body: some View {
+        SectionCard(title: node.name, icon: iconForNode(node)) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    StatusPill(title: node.isOnline ? "在线" : node.state, color: node.isOnline ? .green : .gray)
+                    StatusPill(title: node.shortOS, color: .blue)
+                    Spacer()
+                    Text("\(node.runningJobs)/\(node.maxConcurrentJobs) 槽")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.secondary)
+                }
+
+                CapabilityTile(icon: "network", title: "主机地址", value: node.address.isEmpty ? "未上报" : node.address)
+
+                ResourceBar(title: "CPU", value: node.cpuUsagePercent, trailing: "\(node.cpuCores) 核")
+                ResourceBar(title: "内存", value: node.memoryUsagePercent, trailing: "\(formatMB(node.memoryUsedMB)) / \(formatMB(node.memoryMB))")
+                ResourceBar(title: "硬盘", value: node.diskUsagePercent, trailing: "\(formatMB(node.diskTotalMB - node.diskFreeMB)) / \(formatMB(node.diskTotalMB))")
+
+                FlowTags(values: node.capabilities.prefix(8).map { $0 })
+            }
+        }
+    }
+}
+
+struct ServiceRow: View {
+    let service: LocalService
+    let selected: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: service.isAvailable ? "checkmark.circle.fill" : "circle.dashed")
+                .font(.title3)
+                .foregroundColor(service.isAvailable ? .green : .gray)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(service.nodeName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text(service.businessSubtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            StatusPill(title: service.businessStatusTitle, color: service.isAvailable ? .green : .orange)
+            if selected {
+                Image(systemName: "checkmark")
+                    .foregroundColor(AppTheme.accent)
+            }
+        }
+        .padding(12)
+        .background(selected ? AppTheme.accent.opacity(0.10) : AppTheme.field)
+        .cornerRadius(14)
+    }
+}
+
+struct TaskCard: View {
+    let task: AgentTaskItem
+
+    var body: some View {
+        SectionCard(title: task.title, icon: iconForTask(task)) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    StatusPill(title: task.stateTitle, color: colorForTaskState(task.state))
+                    StatusPill(title: task.priority, color: .blue)
+                    Spacer()
+                    Text(task.shortUpdatedAt)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                if !task.nodeID.isEmpty {
+                    CapabilityTile(icon: "server.rack", title: "执行节点", value: task.nodeID)
+                }
+
+                if let error = task.errorMessage, !error.isEmpty {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(Color.red.opacity(0.08))
+                        .cornerRadius(12)
+                }
+
+                if task.labels.isEmpty {
+                    Text("没有任务标签")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    FlowTags(values: task.labels.prefix(6).map { $0 })
+                }
+            }
+        }
+    }
+}
+
+struct ResultCard: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        SectionCard(title: "结果", icon: "doc.text.magnifyingglass") {
+            VStack(alignment: .leading, spacing: 10) {
+                if !model.lastSessionID.isEmpty {
+                    Text("Session \(model.lastSessionID)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Text(model.rawResponseText.isEmpty ? model.activityText : model.rawResponseText)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundColor(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(AppTheme.field)
+                    .cornerRadius(12)
+            }
+        }
+    }
+}
+
+struct CodexChatCard: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    var body: some View {
+        SectionCard(title: "聊天", icon: "bubble.left.and.bubble.right.fill") {
+            VStack(spacing: 12) {
+                if model.codexConnected {
+                    QuickPromptBar(model: model)
+                }
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            if model.codexMessages.isEmpty {
+                                EmptyStateView(
+                                    title: model.codexConnected ? "可以开始和 Mac 上的 Codex 聊天" : "连接后可以直接和 Mac 上的 Codex 聊天",
+                                    icon: "bubble.left"
+                                )
+                            } else {
+                                ForEach(model.codexMessages) { message in
+                                    ChatBubble(message: message)
+                                        .id(message.id)
+                                }
+                            }
+                        }
+                    }
+                    .frame(minHeight: 260, maxHeight: 420)
+                    .onChange(of: model.codexMessages) { messages in
+                        guard let last = messages.last else { return }
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                }
+
+                HStack(alignment: .bottom, spacing: 10) {
+                    TextEditor(text: $model.codexChatInput)
+                        .font(.subheadline)
+                        .frame(minHeight: 42, maxHeight: 100)
+                        .padding(8)
+                        .background(AppTheme.field)
+                        .cornerRadius(14)
+                        .overlay(alignment: .topLeading) {
+                            if model.codexChatInput.isEmpty {
+                                Text(model.codexConnected ? "输入要问 Codex 的内容" : "先连接 Codex")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 16)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+
+                    Button {
+                        Task { await model.sendCodexChatMessage() }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 34, weight: .semibold))
+                    }
+                    .foregroundColor(AppTheme.accent)
+                    .disabled(!model.codexConnected || model.codexChatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+struct QuickPromptBar: View {
+    @ObservedObject var model: AgentGridMobileModel
+
+    private let prompts = [
+        "总结 AgentGrid 当前进展",
+        "检查本机项目状态",
+        "规划下一步最有价值优化",
+    ]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(prompts, id: \.self) { prompt in
+                    Button {
+                        model.codexChatInput = prompt
+                    } label: {
+                        Text(prompt)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(AppTheme.accent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(AppTheme.accent.opacity(0.10))
+                            .cornerRadius(999)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+struct ChatBubble: View {
+    let message: CodexChatMessage
+
+    var body: some View {
+        HStack {
+            if message.isUser {
+                Spacer(minLength: 42)
+            }
+
+            VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
+                Text(messageTitle)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(.secondary)
+                Text(message.text.isEmpty ? "..." : message.text)
+                    .font(.subheadline)
+                    .foregroundColor(message.isUser ? .white : .primary)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(backgroundColor)
+                    .cornerRadius(16)
+                if message.isStreaming {
+                    Text("正在输入...")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if !message.isUser {
+                Spacer(minLength: 42)
+            }
+        }
+    }
+
+    private var messageTitle: String {
+        if message.isUser { return "你" }
+        if message.isSystem { return "系统" }
+        return "Codex"
+    }
+
+    private var backgroundColor: Color {
+        if message.isUser { return AppTheme.accent }
+        if message.isSystem { return Color.orange.opacity(0.14) }
+        return AppTheme.field
+    }
+}
+
+struct MethodPicker: View {
+    @Binding var selection: String
+    private let methods = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
+    var body: some View {
+        Picker("方法", selection: $selection) {
+            ForEach(methods, id: \.self) { method in
+                Text(method).tag(method)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+}
+
+struct LabeledField<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.secondary)
+            content
+                .padding(12)
+                .background(AppTheme.field)
+                .cornerRadius(12)
+        }
+    }
+}
+
+struct ResourceBar: View {
+    let title: String
+    let value: Double
+    let trailing: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(trailing)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            ProgressView(value: min(max(value, 0), 100), total: 100)
+                .tint(progressColor(value))
+        }
+    }
+}
+
+struct FlowTags: View {
+    let values: [String]
+
+    var body: some View {
+        FlexibleWrap(values: values) { value in
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(AppTheme.field)
+                .cornerRadius(999)
+        }
+    }
+}
+
+struct FlexibleWrap<Data: RandomAccessCollection, Content: View>: View where Data.Element: Hashable {
+    let values: Data
+    let content: (Data.Element) -> Content
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], alignment: .leading, spacing: 8) {
+            ForEach(Array(values), id: \.self) { value in
+                content(value)
+            }
+        }
+    }
+}
+
+struct CapabilityTile: View {
+    let icon: String
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.headline)
+                .foregroundColor(AppTheme.accent)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(value)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(AppTheme.field)
+        .cornerRadius(14)
+    }
+}
+
+struct WideButtonLabel: View {
+    let title: String
+    let icon: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: icon)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Spacer()
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct StatusPill: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.12))
+            .cornerRadius(999)
+    }
+}
+
+struct EmptyStateView: View {
+    let title: String
+    let icon: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundColor(.secondary)
+            Text(title)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(18)
+        .background(AppTheme.field)
+        .cornerRadius(14)
+    }
+}
+
+struct FilledButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity)
+            .background(configuration.isPressed ? AppTheme.accent.opacity(0.75) : AppTheme.accent)
+            .cornerRadius(14)
+    }
+}
+
+struct SoftButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(AppTheme.accent)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity)
+            .background(configuration.isPressed ? AppTheme.accent.opacity(0.18) : AppTheme.accent.opacity(0.10))
+            .cornerRadius(14)
+    }
+}
+
+enum AppTheme {
+    static let accent = Color(red: 0.04, green: 0.36, blue: 0.92)
+    static let background = Color(.systemGroupedBackground)
+    static let card = Color(.systemBackground)
+    static let field = Color(.secondarySystemGroupedBackground)
+}
+
+func iconForNode(_ node: AgentNode) -> String {
+    if node.capabilities.contains("desktop") { return "display" }
+    if node.shortOS == "Windows" { return "pc" }
+    if node.shortOS == "macOS" { return "macbook" }
+    return "server.rack"
+}
+
+func iconForTask(_ task: AgentTaskItem) -> String {
+    if task.labels.contains("command") { return "terminal" }
+    if task.labels.contains("browser") { return "safari" }
+    if task.labels.contains("desktop") { return "display" }
+    if task.labels.contains("plugin") { return "shippingbox.fill" }
+    return "list.bullet.rectangle"
+}
+
+func progressColor(_ value: Double) -> Color {
+    if value >= 85 { return .red }
+    if value >= 65 { return .orange }
+    return .green
+}
+
+func colorForTaskState(_ state: String) -> Color {
+    switch state {
+    case "done": return .green
+    case "failed": return .red
+    case "in_progress": return .blue
+    case "assigned": return .orange
+    case "blocked": return .purple
+    default: return .gray
+    }
+}
+
+func formatMB(_ value: Int) -> String {
+    if value <= 0 { return "0 GB" }
+    let gb = Double(value) / 1024.0
+    if gb >= 100 {
+        return "\(Int(gb.rounded())) GB"
+    }
+    return String(format: "%.1f GB", gb)
+}

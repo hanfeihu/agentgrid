@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   ApiOutlined,
   AuditOutlined,
+  CheckCircleOutlined,
   CloudServerOutlined,
   DashboardOutlined,
   DatabaseOutlined,
@@ -50,13 +51,59 @@ import {
 import { PageContainer, ProCard, ProLayout } from '@ant-design/pro-components';
 import 'antd/dist/reset.css';
 import './style.css';
+import {
+  apiBase,
+  artifactDownloadUrl,
+  clearStoredAuth,
+  fetchJson,
+  fetchOptionalJson,
+  loadStoredAuth,
+  saveStoredAuth,
+} from './api';
+import {
+  artifactDataUrl,
+  artifactTypeLabel,
+  buildDesktopTimeline,
+  compactJson,
+  desktopOperationLabel,
+  deviceLabel,
+  diskUsedPercent,
+  evidenceLabel,
+  formatBytes,
+  formatMb,
+  formatTime,
+  isImageArtifact,
+  latestByTime,
+  nodeAuthLabel,
+  parseJsonOrDefault,
+  parseTaskInputPayload,
+  percent,
+  previewKind,
+  probeStateColor,
+  probeStateLabel,
+  resultText,
+  riskColor,
+  riskLabel,
+  roleColor,
+  roleLabel,
+  round,
+  routeNode,
+  routeOs,
+  shortHash,
+  splitList,
+  stateLabel,
+  taskOperationLabel,
+  taskStateProgress,
+  taskType,
+  userStatusLabel,
+  verificationColor,
+  verificationLabel,
+  workbenchColor,
+  workbenchLabel,
+  workflowStateColor,
+} from './format';
 
 const { Title, Text } = Typography;
-
-const apiBase = window.location.pathname.startsWith('/agentgrid')
-  ? '/agentgrid/api'
-  : '/api';
-const authStorageKey = 'agentgrid.auth.v1';
 
 const menuRoutes = [
   { path: '/overview', key: 'overview', name: '集群总览', icon: <DashboardOutlined /> },
@@ -228,7 +275,33 @@ function App() {
   const refresh = async () => {
     setLoading(true);
     try {
-      const [bootstrapRes, healthRes, nodeRes, agentRes, taskRes, jobRes, workflowRes, toolRes, nodeToolRes, capabilityRes, runtimeRes, standardRes, workflowTemplateRes, taskTemplateRes, webhookRes, webhookDeliveryRes, provisioningRes, userRes, eventRes, artifactRes, messageRes, auditRes, schedulerRes, diagnosticsRes, settingsRes] = await Promise.all([
+      const [
+        bootstrapRes,
+        healthRes,
+        nodeRes,
+        agentRes,
+        taskRes,
+        jobRes,
+        workflowRes,
+        toolRes,
+        nodeToolRes,
+        capabilityRes,
+        runtimeRes,
+        standardRes,
+        workflowTemplateRes,
+        taskTemplateRes,
+        webhookRes,
+        webhookDeliveryRes,
+        provisioningRes,
+        userRes,
+        eventRes,
+        artifactRes,
+        messageRes,
+        auditRes,
+        schedulerRes,
+        diagnosticsRes,
+        settingsRes,
+      ] = await Promise.all([
         fetchJson('/bootstrap'),
         fetchJson('/health'),
         fetchJson('/nodes'),
@@ -245,15 +318,15 @@ function App() {
         fetchJson('/task-templates'),
         fetchJson('/webhooks'),
         fetchJson('/webhooks/deliveries'),
-        fetchJson('/node-provisioning/plans'),
-        fetchJson('/users'),
+        fetchOptionalJson('/node-provisioning/plans'),
+        fetchOptionalJson('/users'),
         fetchJson('/events?limit=200'),
         fetchJson('/artifacts'),
         fetchJson('/messages?limit=80'),
         fetchJson('/audit-events'),
         fetchJson('/scheduler-config'),
         fetchJson('/diagnostics'),
-        fetchJson('/settings'),
+        fetchOptionalJson('/settings'),
       ]);
       setBootstrap(bootstrapRes);
       setHealth(healthRes);
@@ -345,9 +418,27 @@ function App() {
         logo={false}
         layout="side"
         navTheme="light"
-        siderWidth={220}
+        siderWidth={256}
         fixSiderbar
         fixedHeader
+        className="agentgrid-console"
+        token={{
+          header: {
+            colorBgHeader: '#ffffff',
+            heightLayoutHeader: 68,
+          },
+          sider: {
+            colorMenuBackground: '#ffffff',
+            colorBgMenuItemHover: '#f3f6fb',
+            colorBgMenuItemSelected: '#eaf3ff',
+            colorTextMenu: '#374151',
+            colorTextMenuSelected: '#1677ff',
+            colorTextMenuActive: '#1677ff',
+          },
+          pageContainer: {
+            colorBgPageContainer: '#f5f7fb',
+          },
+        }}
         route={{ path: '/', routes: menuRoutes }}
         location={{ pathname: `/${active}` }}
         menuItemRender={(item, dom) => (
@@ -360,13 +451,14 @@ function App() {
             <div className="brand-mark">AG</div>
             <div>
               <div className="brand-name">AgentGrid</div>
-              <div className="brand-sub">中心服务器总控台</div>
+              <div className="brand-sub">AI 机器调度总控台</div>
             </div>
           </div>
         )}
       >
         <PageContainer
           title={pageNames[active] || 'AgentGrid 总控台'}
+          breadcrumbRender={false}
           ghost={false}
           className="page-container"
           extra={[
@@ -435,41 +527,67 @@ function App() {
 }
 
 function Overview({ health, nodes, onlineNodes, offlineNodes, agents, tasks, workflows, messages }) {
+  const runningTasks = tasks.filter((task) => ['assigned', 'todo', 'in_progress', 'stopping'].includes(task.status?.state)).length;
+  const doneTasks = tasks.filter((task) => task.status?.state === 'done').length;
+  const latestTask = latestByTime(tasks, (task) => task.metadata?.created_at || task.metadata?.updated_at);
+  const verifiedMessages = messages.filter((item) => ['task.completed', 'test.passed', 'node_tool.probe.passed'].includes(item.spec?.type)).length;
+
   return (
-    <Space direction="vertical" size={16} className="full">
+    <Space direction="vertical" size={16} className="full overview-shell">
+      <section className="overview-band">
+        <div className="overview-copy">
+          <Text className="eyebrow">AgentGrid Hub</Text>
+          <Title level={2}>AI 操作真实机器和工位的调度层</Title>
+          <Text type="secondary">
+            统一发现节点、工具、桌面、设备和证据，把结构化任务派到最合适的机器，并留下可审计的执行记录。
+          </Text>
+        </div>
+        <div className="overview-pulse">
+          <Badge status={onlineNodes.length ? 'processing' : 'default'} text={onlineNodes.length ? '集群在线' : '等待节点'} />
+          <Text type="secondary">{formatTime(health.time) || '等待 Hub 同步'}</Text>
+        </div>
+      </section>
       <Row gutter={[16, 16]}>
-        <Col xs={24} md={12} xl={6}><Metric title="节点总数" value={nodes.length} prefix={<CloudServerOutlined />} /></Col>
-        <Col xs={24} md={12} xl={6}><Metric title="在线节点" value={onlineNodes.length} suffix={offlineNodes ? `离线 ${offlineNodes}` : '全部在线'} /></Col>
-        <Col xs={24} md={12} xl={6}><Metric title="任务数量" value={tasks.length} prefix={<DatabaseOutlined />} /></Col>
-        <Col xs={24} md={12} xl={6}><Metric title="工作流" value={workflows.length} prefix={<ForkOutlined />} /></Col>
+        <Col xs={24} md={12} xl={6}>
+          <Metric title="节点总数" value={nodes.length} suffix={offlineNodes ? `离线 ${offlineNodes}` : '全部在线'} prefix={<CloudServerOutlined />} tone="blue" />
+        </Col>
+        <Col xs={24} md={12} xl={6}>
+          <Metric title="在线节点" value={onlineNodes.length} suffix="可接任务" prefix={<CheckCircleOutlined />} tone="green" />
+        </Col>
+        <Col xs={24} md={12} xl={6}>
+          <Metric title="任务运行" value={runningTasks} suffix={`完成 ${doneTasks}`} prefix={<DatabaseOutlined />} tone="amber" />
+        </Col>
+        <Col xs={24} md={12} xl={6}>
+          <Metric title="工作流" value={workflows.length} suffix={`证据 ${verifiedMessages}`} prefix={<ForkOutlined />} tone="violet" />
+        </Col>
       </Row>
       <Row gutter={[16, 16]}>
-        <Col xs={24} xl={16}>
-          <ProCard title="节点资源" bordered>
+        <Col xs={24} xl={15}>
+          <ProCard title="节点资源" bordered extra={<Tag color="blue">{nodes.length} 台机器</Tag>}>
             <NodeResourceList nodes={nodes} />
           </ProCard>
         </Col>
-        <Col xs={24} xl={8}>
-          <ProCard title="中心服务器" bordered>
-            <Space direction="vertical">
-              <Text>服务：{health.service || '-'}</Text>
-              <Text>运行时：{health.runtime || '-'}</Text>
-              <Text>入口：{window.location.origin}/agentgrid</Text>
-            </Space>
-          </ProCard>
+        <Col xs={24} xl={9}>
+          <Space direction="vertical" size={16} className="full">
+            <PlacementSnapshot task={latestTask} />
+            <HubStatus health={health} agents={agents} />
+          </Space>
         </Col>
       </Row>
-      <ProCard title="最近消息" bordered>
+      <ProCard title="最近消息流" bordered extra={<Tag>{messages.length} 条</Tag>}>
         <MessageList messages={messages.slice(0, 8)} />
       </ProCard>
     </Space>
   );
 }
 
-function Metric(props) {
+function Metric({ prefix, tone = 'blue', ...props }) {
   return (
-    <Card className="metric">
-      <Statistic {...props} />
+    <Card className={`metric metric-${tone}`}>
+      <div className="metric-content">
+        <Statistic {...props} />
+        {prefix && <div className="metric-icon">{prefix}</div>}
+      </div>
     </Card>
   );
 }
@@ -718,44 +836,48 @@ function NodeConfigModal({ node, onClose, onDone }) {
 }
 
 function NodeResourceList({ nodes }) {
+  if (!nodes.length) {
+    return <div className="empty-panel">暂无节点。安装 Worker 后，这里会显示 CPU、内存、硬盘和可用能力。</div>;
+  }
+
   return (
-    <Space direction="vertical" className="full" size={12}>
+    <div className="node-resource-list">
       {nodes.map((node) => (
-        <Card key={node.metadata.id} size="small" className="node-resource-card">
-          <div className="node-resource-grid">
-            <div className="node-summary">
+        <div key={node.metadata.id} className={`node-resource-row node-state-${node.status.state || 'unknown'}`}>
+          <div className="node-summary">
+            <div className="node-status-line">
               <Text strong className="node-title">{node.metadata.name}</Text>
               <Badge status={node.status.state === 'online' ? 'success' : 'default'} text={stateLabel(node.status.state)} />
-              <Text type="secondary" className="node-meta">{node.spec.os} · {node.spec.address || '-'}</Text>
             </div>
-            <div>
-              <ResourceMeter
-                title="CPU"
-                value={`${round(node.spec.cpu_usage_percent)}%`}
-                detail={`${node.spec.cpu_cores || 0} 核心`}
-                percent={round(node.spec.cpu_usage_percent)}
-              />
-            </div>
-            <div>
-              <ResourceMeter
-                title="内存"
-                value={`${percent(node.spec.memory_used_mb, node.spec.memory_mb)}%`}
-                detail={`${formatMb(node.spec.memory_used_mb)} / ${formatMb(node.spec.memory_mb)}`}
-                percent={percent(node.spec.memory_used_mb, node.spec.memory_mb)}
-              />
-            </div>
-            <div>
-              <ResourceMeter
-                title="硬盘"
-                value={`${diskUsedPercent(node)}%`}
-                detail={`${formatMb((node.spec.disk_total_mb || 0) - (node.spec.disk_free_mb || 0))} / ${formatMb(node.spec.disk_total_mb)}`}
-                percent={diskUsedPercent(node)}
-              />
+            <Text type="secondary" className="node-meta">
+              {node.spec.os || '-'} · {node.spec.cpu_cores || 0} 核 · {node.spec.address || '-'}
+            </Text>
+            <div className="node-badges">
+              {(node.spec.capabilities || []).slice(0, 4).map((item) => <Tag key={item}>{item}</Tag>)}
+              {(node.spec.capabilities || []).length > 4 && <Tag>+{node.spec.capabilities.length - 4}</Tag>}
             </div>
           </div>
-        </Card>
+          <ResourceMeter
+            title="CPU"
+            value={`${round(node.spec.cpu_usage_percent)}%`}
+            detail={`${node.spec.cpu_cores || 0} 核心`}
+            percent={round(node.spec.cpu_usage_percent)}
+          />
+          <ResourceMeter
+            title="内存"
+            value={`${percent(node.spec.memory_used_mb, node.spec.memory_mb)}%`}
+            detail={`${formatMb(node.spec.memory_used_mb)} / ${formatMb(node.spec.memory_mb)}`}
+            percent={percent(node.spec.memory_used_mb, node.spec.memory_mb)}
+          />
+          <ResourceMeter
+            title="硬盘"
+            value={`${diskUsedPercent(node)}%`}
+            detail={`${formatMb((node.spec.disk_total_mb || 0) - (node.spec.disk_free_mb || 0))} / ${formatMb(node.spec.disk_total_mb)}`}
+            percent={diskUsedPercent(node)}
+          />
+        </div>
       ))}
-    </Space>
+    </div>
   );
 }
 
@@ -769,6 +891,58 @@ function ResourceMeter({ title, value, detail, percent: valuePercent }) {
       <Progress percent={valuePercent} size="small" showInfo={false} />
       <Text type="secondary" className="resource-meter-detail">{detail}</Text>
     </div>
+  );
+}
+
+function PlacementSnapshot({ task }) {
+  const inputPayload = parseTaskInputPayload(task);
+  const selectedNode = task ? (task.status?.leased_by_node_id || routeNode(task) || '-') : '-';
+  const progress = taskStateProgress(task?.status?.state);
+  const scheduler = task?.status?.result?.scheduler || task?.status?.error?.scheduler;
+  const reason = scheduler?.reason || task?.status?.blocked_reason || (task ? '等待 Worker 回写调度原因' : '暂无任务');
+
+  return (
+    <ProCard title="调度快照" bordered className="decision-card">
+      <Space direction="vertical" size={14} className="full">
+        <DescriptionsList
+          rows={[
+            ['任务', task?.spec?.title || '暂无任务'],
+            ['工具', taskOperationLabel(inputPayload)],
+            ['节点', selectedNode],
+            ['原因', reason],
+          ]}
+        />
+        <Progress percent={progress} showInfo={false} strokeColor="#1677ff" />
+        <Text type="secondary">
+          状态 {stateLabel(task?.status?.state)} · 评分 {scheduler?.score ?? '-'}
+        </Text>
+      </Space>
+    </ProCard>
+  );
+}
+
+function HubStatus({ health, agents }) {
+  return (
+    <ProCard title="中心服务器" bordered className="hub-status-card">
+      <div className="hub-status-grid">
+        <div>
+          <Text type="secondary">服务</Text>
+          <Text strong>{health.service || '-'}</Text>
+        </div>
+        <div>
+          <Text type="secondary">运行时</Text>
+          <Text strong>{health.runtime || 'Rust Hub'}</Text>
+        </div>
+        <div>
+          <Text type="secondary">AI 员工</Text>
+          <Text strong>{agents.length}</Text>
+        </div>
+        <div>
+          <Text type="secondary">入口</Text>
+          <Text copyable className="hub-url">{window.location.origin}/agentgrid</Text>
+        </div>
+      </div>
+    </ProCard>
   );
 }
 
@@ -4408,20 +4582,26 @@ function resultTextPath(taskType) {
 }
 
 function MessageList({ messages }) {
+  if (!messages.length) {
+    return <div className="empty-panel">暂无消息。任务、节点、Probe 和证据事件会出现在这里。</div>;
+  }
+
   return (
-    <Space direction="vertical" className="full">
+    <div className="message-list">
       {messages.map((item) => (
-        <Card key={item.metadata.id} size="small">
-          <Space direction="vertical" size={2}>
-            <Text strong>{item.spec.subject}</Text>
-            <Text>{item.spec.summary}</Text>
-            <Text type="secondary">
-              {`${item.metadata.from} -> ${(item.metadata.to || []).join(', ')} · ${item.spec.type}`}
+        <div key={item.metadata.id} className="message-item">
+          <span className="message-dot" />
+          <div className="message-main">
+            <Text strong className="message-subject">{item.spec.subject}</Text>
+            <Text className="message-summary">{item.spec.summary}</Text>
+            <Text type="secondary" className="message-meta">
+              {`${item.metadata.from} -> ${(item.metadata.to || []).join(', ') || '-'} · ${formatTime(item.metadata.created_at)}`}
             </Text>
-          </Space>
-        </Card>
+          </div>
+          <Tag className="message-kind">{item.spec.type}</Tag>
+        </div>
       ))}
-    </Space>
+    </div>
   );
 }
 
@@ -4488,223 +4668,10 @@ function SubmitHttp({ onDone }) {
   );
 }
 
-async function fetchJson(path, options) {
-  const token = loadStoredAuth()?.token;
-  const headers = new Headers(options?.headers || {});
-  if (token && !headers.has('authorization')) {
-    headers.set('authorization', `Bearer ${token}`);
-  }
-  const response = await fetch(`${apiBase}${path}`, { ...(options || {}), headers });
-  const data = await response.json();
-  if (!response.ok || data.ok === false) {
-    throw new Error(data.error?.message || response.statusText);
-  }
-  return data;
-}
-
-function loadStoredAuth() {
-  try {
-    const raw = window.localStorage.getItem(authStorageKey);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveStoredAuth(session) {
-  try {
-    window.localStorage.setItem(authStorageKey, JSON.stringify(session));
-  } catch {
-    // Ignore storage failures; the in-memory session still works for this page.
-  }
-}
-
-function clearStoredAuth() {
-  try {
-    window.localStorage.removeItem(authStorageKey);
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-function percent(value, total) {
-  if (!total) return 0;
-  return Math.max(0, Math.min(100, Math.round((value / total) * 100)));
-}
-
-function round(value) {
-  return Math.max(0, Math.min(100, Math.round(value || 0)));
-}
-
-function formatMb(value) {
-  const mb = Number(value || 0);
-  if (mb >= 1024 * 1024) return `${(mb / 1024 / 1024).toFixed(1)} TB`;
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${Math.round(mb)} MB`;
-}
-
-function diskUsedPercent(node) {
-  return 100 - percent(node.spec.disk_free_mb, node.spec.disk_total_mb);
-}
-
-function resultText(value) {
-  if (!value) return '-';
-  if (typeof value === 'string') return value;
-  if (value.text) return value.text;
-  if (value.body) return typeof value.body === 'string' ? value.body : JSON.stringify(value.body, null, 2);
-  return JSON.stringify(value, null, 2);
-}
-
-function parseTaskInputPayload(task) {
-  const raw = task?.spec?.inputs?.[0];
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function taskOperationLabel(payload) {
-  if (!payload) return '-';
-  if (payload.type === 'desktop') return `desktop.${payload.operation || 'unknown'}`;
-  if (payload.type === 'command') return `command.run ${payload.program || ''}`.trim();
-  if (payload.type === 'file') return `file.${payload.operation || 'unknown'}`;
-  if (payload.type === 'http_request') return `${payload.method || 'GET'} ${payload.url || ''}`.trim();
-  return payload.type || '-';
-}
-
-function desktopOperationLabel(value) {
-  return {
-    screenshot: '截图',
-    click: '点击',
-    type_text: '输入文本',
-    key: '按键',
-    event: '事件',
-    result: '结果',
-  }[value] || value || '-';
-}
-
-function buildDesktopTimeline({ task, inputPayload, result, error, artifacts, events }) {
-  const isDesktop = inputPayload?.type === 'desktop' || result?.type === 'desktop_result';
-  if (!isDesktop) return [];
-  const rows = [];
-  if (inputPayload?.type === 'desktop') {
-    rows.push({
-      id: `${task.metadata.id}-input`,
-      time: task.metadata.created_at,
-      kind: inputPayload.operation || 'event',
-      node: task.status.leased_by_node_id,
-      summary: desktopInputSummary(inputPayload),
-      raw: inputPayload,
-    });
-  }
-  for (const event of events || []) {
-    if (!String(event.spec?.type || '').startsWith('task.')) continue;
-    rows.push({
-      id: event.metadata.id,
-      time: event.metadata.created_at,
-      kind: 'event',
-      node: task.status.leased_by_node_id,
-      summary: event.spec.summary || event.spec.type,
-      raw: event.spec.payload || event.spec,
-    });
-  }
-  for (const artifact of artifacts || []) {
-    if (!isImageArtifact(artifact)) continue;
-    rows.push({
-      id: artifact.metadata.id,
-      time: artifact.metadata.created_at,
-      kind: 'screenshot',
-      node: artifact.spec.node_id,
-      summary: `${artifact.spec.name} · ${formatBytes(artifact.spec.size_bytes)}`,
-      artifact,
-      raw: artifact.spec.metadata || artifact.spec,
-    });
-  }
-  if (result) {
-    rows.push({
-      id: `${task.metadata.id}-result`,
-      time: task.status.completed_at || task.metadata.updated_at,
-      kind: result.operation || 'result',
-      node: task.status.leased_by_node_id,
-      summary: result.message || '桌面任务已完成',
-      raw: result,
-    });
-  } else if (error) {
-    rows.push({
-      id: `${task.metadata.id}-error`,
-      time: task.metadata.updated_at,
-      kind: 'result',
-      node: task.status.leased_by_node_id,
-      summary: error.message || '桌面任务失败',
-      raw: error,
-    });
-  }
-  return rows.sort((left, right) => new Date(left.time || 0) - new Date(right.time || 0));
-}
-
-function desktopInputSummary(payload) {
-  if (!payload) return '-';
-  if (payload.operation === 'screenshot') return `截取当前屏幕${payload.path ? `，保存到 ${payload.path}` : ''}`;
-  if (payload.operation === 'click') return `点击坐标 (${payload.x}, ${payload.y})，按钮 ${payload.button || 'left'}`;
-  if (payload.operation === 'type_text') return `向前台窗口输入 ${String(payload.text || '').length} 个字符`;
-  if (payload.operation === 'key') return `发送按键 ${[...(payload.modifiers || []), payload.key].join('+')}`;
-  return JSON.stringify(payload);
-}
-
-function compactJson(value) {
-  if (value === undefined || value === null) return '-';
-  if (typeof value === 'string') return value.length > 80 ? `${value.slice(0, 80)}...` : value;
-  return JSON.stringify(value);
-}
-
 function VerificationTag({ verification }) {
   if (!verification) return <Tag>未配置</Tag>;
   const state = verification.state || (verification.passed ? 'passed' : 'failed');
   return <Tag color={verificationColor(state)}>{verificationLabel(state)}</Tag>;
-}
-
-function verificationLabel(value) {
-  return {
-    passed: '通过',
-    failed: '失败',
-    skipped: '跳过',
-  }[value] || '未配置';
-}
-
-function verificationColor(value) {
-  return {
-    passed: 'green',
-    failed: 'red',
-    skipped: 'default',
-  }[value] || 'default';
-}
-
-function artifactDownloadUrl(artifact) {
-  return `${apiBase}/artifacts/${artifact.metadata.id}/download`;
-}
-
-function isImageArtifact(artifact) {
-  return Boolean(
-    artifact?.spec?.content_base64 &&
-      (artifact.spec.content_type || '').startsWith('image/')
-  );
-}
-
-function previewKind(artifact) {
-  if ((artifact?.spec?.content_type || '').startsWith('image/')) return 'image';
-  if ((artifact?.spec?.content_type || '').startsWith('text/')) return 'text';
-  return 'download';
-}
-
-function shortHash(value) {
-  if (!value) return '-';
-  return `${value.slice(0, 10)}...${value.slice(-6)}`;
-}
-
-function artifactDataUrl(artifact) {
-  return `data:${artifact.spec.content_type};base64,${artifact.spec.content_base64}`;
 }
 
 function ArtifactPreview({ artifact, onClose }) {
@@ -4723,212 +4690,6 @@ function ArtifactPreview({ artifact, onClose }) {
       )}
     </Modal>
   );
-}
-
-function artifactTypeLabel(value) {
-  return {
-    file: '文件',
-    log: '日志',
-    screenshot: '截图',
-    browser_text: '页面文本',
-  }[value] || value || '-';
-}
-
-function workbenchLabel(value) {
-  return {
-    hardware_bench: '硬件工位',
-    desktop_bench: '桌面工位',
-    compute_bench: '计算工位',
-    all: '全部',
-  }[value] || value || '-';
-}
-
-function workbenchColor(value) {
-  return {
-    hardware_bench: 'volcano',
-    desktop_bench: 'blue',
-    compute_bench: 'green',
-  }[value] || 'default';
-}
-
-function deviceLabel(value) {
-  return {
-    desktop: '桌面',
-    browser: '浏览器',
-    filesystem: '文件系统',
-    plugin_runtime: '插件运行时',
-    serial: '串口',
-    flasher: '烧录器',
-    test_rig: '测试工装',
-  }[value] || value || '-';
-}
-
-function evidenceLabel(value) {
-  return {
-    screenshot: '截图',
-    stdout_log: 'stdout 日志',
-    stderr_log: 'stderr 日志',
-    serial_log: '串口日志',
-    file_artifact: '文件产物',
-    test_report: '测试报告',
-    operation_timeline: '操作时间线',
-    page_text: '页面文本',
-    downloaded_file: '下载文件',
-    plugin_result: '插件结果',
-    directory_listing: '目录列表',
-  }[value] || value || '-';
-}
-
-function riskLabel(value) {
-  return {
-    high: '高',
-    medium: '中',
-    low: '低',
-  }[value] || value || '-';
-}
-
-function riskColor(value) {
-  return {
-    high: 'red',
-    medium: 'orange',
-    low: 'green',
-  }[value] || 'default';
-}
-
-function roleLabel(value) {
-  return {
-    super_admin: '超级管理员',
-    admin: '管理员',
-    member: '成员',
-  }[value] || value || '-';
-}
-
-function roleColor(value) {
-  return {
-    super_admin: 'red',
-    admin: 'blue',
-    member: 'default',
-  }[value] || 'default';
-}
-
-function userStatusLabel(value) {
-  return {
-    active: '启用',
-    disabled: '停用',
-    pending: '待验证',
-  }[value] || value || '-';
-}
-
-function probeStateLabel(value) {
-  return {
-    verified: '已验证',
-    failed: '失败',
-    pending: '等待',
-    unsupported: '不支持',
-    expired: '过期',
-    declared_unverified: '未验证',
-  }[value] || value || '未验证';
-}
-
-function probeStateColor(value) {
-  return {
-    verified: 'green',
-    failed: 'red',
-    pending: 'blue',
-    unsupported: 'default',
-    expired: 'orange',
-    declared_unverified: 'default',
-  }[value] || 'default';
-}
-
-function formatBytes(value) {
-  const bytes = Number(value || 0);
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
-function stateLabel(value) {
-  return {
-    online: '在线',
-    unknown: '未知',
-    offline: '离线',
-    draft: '草稿',
-    running: '运行中',
-    pending: '等待依赖',
-    ready: '等待调度',
-    assigned: '已分配',
-    todo: '待处理',
-    in_progress: '执行中',
-    review: '待审查',
-    done: '完成',
-    failed: '失败',
-    cancelled: '已取消',
-    stopping: '停止中',
-    stopped: '已停止',
-    blocked: '阻塞',
-  }[value] || value || '-';
-}
-
-function nodeAuthLabel(value) {
-  return {
-    legacy: '旧节点兼容',
-    pending: '待管理员授权',
-    bound: '已绑定',
-    rejected: '已拒绝',
-  }[value] || value || '-';
-}
-
-function workflowStateColor(value) {
-  return {
-    draft: 'default',
-    pending: 'default',
-    ready: 'blue',
-    running: 'processing',
-    in_progress: 'processing',
-    done: 'green',
-    failed: 'red',
-    cancelled: 'orange',
-    stopped: 'orange',
-  }[value] || 'default';
-}
-
-function formatTime(value) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', { hour12: false });
-}
-
-function splitList(value) {
-  if (Array.isArray(value)) return value;
-  return String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function parseJsonOrDefault(value, fallback) {
-  try {
-    if (!value) return fallback;
-    return JSON.parse(value);
-  } catch (_) {
-    return fallback;
-  }
-}
-
-function taskType(task) {
-  const labels = task.spec.labels || [];
-  return labels.find((label) => ['http_request', 'command', 'file', 'git', 'docker', 'browser', 'session', 'agentmessage'].includes(label)) || '-';
-}
-
-function routeNode(task) {
-  return (task.spec.labels || []).find((label) => label.startsWith('node:'))?.slice(5);
-}
-
-function routeOs(task) {
-  return (task.spec.labels || []).find((label) => label.startsWith('os:'))?.slice(3);
 }
 
 createRoot(document.getElementById('root')).render(<App />);

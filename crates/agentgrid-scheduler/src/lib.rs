@@ -19,6 +19,7 @@ pub fn choose_node(job: &Job, nodes: &[Node]) -> ScheduleDecision {
     let mut candidates: Vec<&Node> = nodes
         .iter()
         .filter(|node| node.status == NodeState::Online)
+        .filter(|node| node.running_jobs < node.max_concurrent_jobs)
         .filter(|node| {
             job.spec
                 .requirements
@@ -246,6 +247,74 @@ mod tests {
         assert_eq!(decision.candidates[0].node_id, "target-windows");
     }
 
+    #[test]
+    fn excludes_explicitly_avoided_nodes() {
+        let job = job_with_requirements(JobRequirements {
+            avoid_node_ids: vec!["fast-but-unsafe".to_string()],
+            ..JobRequirements::default()
+        });
+        let nodes = vec![
+            node("fast-but-unsafe", NodeState::Online, 32, 65536, 512, 1, 0),
+            node("safe-node", NodeState::Online, 8, 8192, 1000, 20, 1),
+        ];
+
+        let decision = choose_node(&job, &nodes);
+
+        assert_eq!(decision.node_id.as_deref(), Some("safe-node"));
+        assert!(decision
+            .candidates
+            .iter()
+            .all(|candidate| candidate.node_id != "fast-but-unsafe"));
+    }
+
+    #[test]
+    fn preferred_node_reduces_score_without_overriding_hard_constraints() {
+        let job = job_with_requirements(JobRequirements {
+            preferred_node_ids: vec!["preferred".to_string()],
+            capabilities: vec!["http".to_string()],
+            ..JobRequirements::default()
+        });
+        let nodes = vec![
+            node("preferred", NodeState::Online, 8, 8192, 2200, 22, 1),
+            node(
+                "slightly-lower-load",
+                NodeState::Online,
+                8,
+                8192,
+                2000,
+                20,
+                1,
+            ),
+            node_with_capabilities("preferred-without-http", NodeState::Online, vec!["browser"]),
+        ];
+
+        let decision = choose_node(&job, &nodes);
+
+        assert_eq!(decision.node_id.as_deref(), Some("preferred"));
+        assert!(decision
+            .candidates
+            .iter()
+            .all(|candidate| candidate.node_id != "preferred-without-http"));
+    }
+
+    #[test]
+    fn excludes_full_nodes_without_available_slots() {
+        let job = job_with_requirements(JobRequirements::default());
+        let nodes = vec![
+            node("full-node", NodeState::Online, 8, 8192, 1000, 10, 8),
+            node("open-node", NodeState::Online, 8, 8192, 3000, 30, 7),
+        ];
+
+        let decision = choose_node(&job, &nodes);
+
+        assert_eq!(decision.node_id.as_deref(), Some("open-node"));
+        assert_eq!(decision.candidates[0].available_slots, 1);
+        assert!(decision
+            .candidates
+            .iter()
+            .all(|candidate| candidate.node_id != "full-node"));
+    }
+
     fn job_with_requirements(requirements: JobRequirements) -> Job {
         Job {
             api_version: "agentmessage/v1".to_string(),
@@ -305,5 +374,11 @@ mod tests {
             status,
             last_heartbeat_at: Utc::now(),
         }
+    }
+
+    fn node_with_capabilities(id: &str, status: NodeState, capabilities: Vec<&str>) -> Node {
+        let mut node = node(id, status, 8, 8192, 1000, 10, 1);
+        node.capabilities = capabilities.into_iter().map(ToString::to_string).collect();
+        node
     }
 }

@@ -1351,6 +1351,17 @@ The response includes:
 - `compatible`: whether this binary can run on the node.
 - `compatibility.required_glibc`: minimum glibc for Linux targets.
 - `update_available`: true only when hash differs and compatibility passes.
+- `sha256`: hash of the published Worker binary.
+- `signature_algorithm`, `signature`, `signing_key_id`, `signing_public_key`: Worker update signature metadata. AgentGrid uses Ed25519 for signed updates.
+- `signature_required`: when true, Worker must verify the update signature before replacing itself.
+
+Worker update signing v1:
+
+- Publish the Worker binary at `web/downloads/<target>/agentgrid-worker` or `agentgrid-worker.exe`.
+- Publish `*.sha256` beside it for compatibility.
+- Publish `agentgrid-worker(.exe).ed25519.sig` beside it when signing is enabled. The signature is base64 Ed25519 over the raw Worker binary bytes.
+- Configure Hub with `AGENTGRID_WORKER_UPDATE_PUBLIC_KEY=<base64 ed25519 public key>` and optional `AGENTGRID_WORKER_UPDATE_KEY_ID`.
+- Set `AGENTGRID_WORKER_UPDATE_SIGNATURE_REQUIRED=true` on Hub or start Worker with `--require-update-signature` to reject unsigned updates.
 
 Known Linux compatibility targets:
 

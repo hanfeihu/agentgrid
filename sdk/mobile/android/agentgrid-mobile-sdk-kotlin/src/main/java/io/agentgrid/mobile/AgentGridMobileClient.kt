@@ -31,6 +31,28 @@ class AgentGridMobileClient(
 
     suspend fun tools(): JSONObject = get("/api/tools")
 
+    suspend fun localServices(): JSONObject = get("/api/local-services")
+
+    suspend fun createBridgeSession(
+        nodeId: String,
+        serviceId: String = "codex.local",
+    ): JSONObject = post(
+        "/api/bridge-sessions",
+        JSONObject()
+            .put("node_id", nodeId)
+            .put("service_id", serviceId),
+    )
+
+    fun bridgeWebSocketUrl(sessionId: String, token: String? = null): String {
+        val wsBase = when {
+            baseUrl.startsWith("https://") -> "wss://${baseUrl.removePrefix("https://")}"
+            baseUrl.startsWith("http://") -> "ws://${baseUrl.removePrefix("http://")}"
+            else -> baseUrl
+        }
+        val suffix = token?.let { "?token=$it" }.orEmpty()
+        return "$wsBase/api/bridge-sessions/$sessionId/ws$suffix"
+    }
+
     suspend fun submitTask(request: JSONObject): JSONObject =
         post("/api/agent-runtime/tasks", request)
 
@@ -55,10 +77,10 @@ class AgentGridMobileClient(
         request: JSONObject = JSONObject(),
     ): JSONObject = post("/api/task-templates/$templateId/start", request)
 
-    private suspend fun get(path: String): JSONObject =
+    suspend fun get(path: String): JSONObject =
         request(path = path, method = "GET", body = null)
 
-    private suspend fun post(path: String, body: JSONObject): JSONObject =
+    suspend fun post(path: String, body: JSONObject): JSONObject =
         request(path = path, method = "POST", body = body)
 
     private suspend fun request(
@@ -105,7 +127,6 @@ class AgentGridMobileClient(
     }
 
     companion object {
-        const val DEFAULT_HUB_URL = "https://hub.example.com/agentgrid"
+        const val DEFAULT_HUB_URL = "http://chenqi.tminos.com:20080/agentgrid"
     }
 }
-

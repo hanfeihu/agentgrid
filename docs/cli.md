@@ -212,6 +212,34 @@ agentgrid runtime submit \
 agentgrid runtime get --id task_xxx
 ```
 
+## Node Port Bridge
+
+Bridge a local port on node B to a local port on node A:
+
+```bash
+agentgrid bridge-port \
+  --source-node a-node \
+  --target-node b-node \
+  --target-port 8080 \
+  --source-port 18080 \
+  --purpose "let node A browser access node B web debug page"
+```
+
+Equivalent resource commands:
+
+```bash
+agentgrid port-bridges create \
+  --source-node a-node \
+  --target-node b-node \
+  --target-port 8080 \
+  --source-port 18080
+agentgrid port-bridges
+agentgrid port-bridges get --id pbridge_xxx
+agentgrid port-bridges close --id pbridge_xxx
+```
+
+Open the returned `Source URL` from node A.
+
 ## Webhooks
 
 ```bash
@@ -223,4 +251,3 @@ agentgrid webhooks create \
   --event task.failed
 agentgrid webhooks deliveries
 ```
-

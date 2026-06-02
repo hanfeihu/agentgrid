@@ -7,41 +7,45 @@ body,
 }
 
 body {
-  background: #f6f8fb;
+  background: #f5f7fb;
+  color: #111827;
+  text-rendering: optimizeLegibility;
 }
 
 .pro-brand {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
-  min-height: 64px;
-  padding: 10px 16px;
-  border-bottom: 1px solid #edf0f5;
+  min-height: 76px;
+  padding: 16px 22px 15px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
 }
 
 .brand-mark {
   display: grid;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: 42px;
+  height: 42px;
   place-items: center;
   border-radius: 8px;
   background: #1677ff;
   color: #fff;
-  font-size: 13px;
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.22);
+  font-size: 15px;
   font-weight: 700;
 }
 
 .brand-name {
   color: #111827;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
   line-height: 1.2;
 }
 
 .brand-sub {
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 11px;
+  color: #6b7280;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -53,16 +57,65 @@ body {
   min-height: calc(100vh - 56px);
 }
 
+.agentgrid-console {
+  min-height: 100vh;
+  background: #f5f7fb;
+}
+
+.agentgrid-console .ant-layout {
+  background: #f5f7fb;
+}
+
+.agentgrid-console .ant-pro-layout-bg-list {
+  background: #f5f7fb !important;
+}
+
+.agentgrid-console .ant-pro-sider,
+.agentgrid-console .ant-layout-sider {
+  border-right: 1px solid #e5e7eb;
+  background: #ffffff !important;
+  box-shadow: none;
+}
+
+.agentgrid-console .ant-pro-sider .ant-layout-sider-children,
+.agentgrid-console .ant-layout-sider-children {
+  background: #ffffff;
+}
+
+.agentgrid-console .ant-pro-global-header {
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.agentgrid-console .ant-pro-layout-container {
+  background: #f5f7fb;
+}
+
 .page-container .ant-page-header {
-  padding-block: 18px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
+  padding: 18px 40px 16px;
+}
+
+.page-container .ant-page-header-heading {
+  align-items: center;
+}
+
+.page-container .ant-page-header-heading-title {
+  color: #111827;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .page-container .ant-pro-page-container-children-container {
-  padding-block-start: 12px;
+  padding: 24px 40px 36px;
 }
 
 .menu-link {
   width: 100%;
+  height: 100%;
   padding: 0;
   border: 0;
   background: transparent;
@@ -76,7 +129,72 @@ body {
 }
 
 .metric {
-  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  min-height: 116px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.035);
+}
+
+.metric .ant-card-body {
+  height: 100%;
+  padding: 20px;
+}
+
+.metric-content {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.metric .ant-statistic-title {
+  margin-bottom: 10px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.metric .ant-statistic-content {
+  color: #111827;
+  font-size: 36px;
+  font-weight: 750;
+  line-height: 1.1;
+}
+
+.metric .ant-statistic-content-suffix {
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  vertical-align: baseline;
+}
+
+.metric-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 8px;
+  background: #eaf3ff;
+  color: #1677ff;
+  font-size: 18px;
+}
+
+.metric-green .metric-icon {
+  background: #ecfdf5;
+  color: #16a34a;
+}
+
+.metric-amber .metric-icon {
+  background: #fff7ed;
+  color: #d97706;
+}
+
+.metric-violet .metric-icon {
+  background: #f5f3ff;
+  color: #7c3aed;
 }
 
 .header-time {
@@ -86,16 +204,85 @@ body {
   white-space: nowrap;
 }
 
-.ant-pro-sider .ant-layout-sider-children {
+.agentgrid-console .ant-pro-sider .ant-layout-sider-children {
   overflow-x: hidden;
 }
 
-.ant-pro-sider .ant-menu-item {
-  margin-block: 3px;
+.agentgrid-console .ant-pro-sider .ant-menu {
+  border-inline-end: 0 !important;
+  padding: 12px 0 18px;
+  background: #ffffff;
 }
 
-.ant-pro-sider .ant-menu-title-content {
+.agentgrid-console .ant-pro-sider .ant-menu-item {
+  width: calc(100% - 28px);
+  height: 38px;
+  margin: 4px 14px;
+  border-radius: 7px;
+  color: #374151;
+}
+
+.agentgrid-console .ant-pro-sider .ant-menu-item:hover {
+  background: #f3f6fb;
+  color: #111827;
+}
+
+.agentgrid-console .ant-pro-sider .ant-menu-item-selected {
+  background: #eaf3ff !important;
+  color: #1677ff !important;
+  font-weight: 700;
+}
+
+.agentgrid-console .ant-pro-sider .ant-menu-item .anticon {
+  color: inherit;
+  font-size: 16px;
+}
+
+.agentgrid-console .ant-pro-sider .ant-menu-title-content {
   font-size: 14px;
+}
+
+.agentgrid-console .ant-pro-card {
+  border-radius: 8px;
+}
+
+.agentgrid-console .ant-pro-card-bordered {
+  border-color: #e5e7eb;
+}
+
+.agentgrid-console .ant-pro-card-header {
+  padding-block: 16px 10px;
+}
+
+.agentgrid-console .ant-pro-card-title {
+  color: #111827;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.agentgrid-console .ant-table-wrapper .ant-table {
+  color: #111827;
+}
+
+.agentgrid-console .ant-table-wrapper .ant-table-thead > tr > th {
+  border-color: #e5e7eb;
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agentgrid-console .ant-table-wrapper .ant-table-tbody > tr > td {
+  border-color: #eef2f7;
+}
+
+.agentgrid-console .ant-tag {
+  border-radius: 999px;
+  margin-inline-end: 4px;
+}
+
+.agentgrid-console .ant-btn {
+  border-radius: 6px;
 }
 
 .nodes-table .ant-table {
@@ -108,6 +295,58 @@ body {
 
 .nodes-table .ant-table-cell {
   vertical-align: middle;
+}
+
+.overview-shell {
+  display: grid;
+}
+
+.overview-band {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+  padding: 24px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(22, 119, 255, 0.08), transparent 42%),
+    linear-gradient(135deg, #ffffff, #f9fafb);
+}
+
+.overview-copy {
+  display: grid;
+  gap: 8px;
+  max-width: 780px;
+}
+
+.overview-copy .ant-typography {
+  margin: 0;
+}
+
+.overview-copy h2.ant-typography {
+  color: #111827;
+  font-size: 28px;
+  line-height: 1.24;
+}
+
+.eyebrow {
+  color: #1677ff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.overview-pulse {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+  min-width: 190px;
+  padding: 14px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
 }
 
 .node-identity {
@@ -182,6 +421,17 @@ body {
   display: block;
   max-width: 100%;
   height: auto;
+}
+
+.empty-panel {
+  display: grid;
+  min-height: 128px;
+  place-items: center;
+  border: 1px dashed #d1d5db;
+  border-radius: 8px;
+  background: #f9fafb;
+  color: #6b7280;
+  text-align: center;
 }
 
 .live-log {
@@ -304,24 +554,49 @@ body {
   font-size: 12px;
 }
 
+.node-resource-list {
+  display: grid;
+  gap: 12px;
+}
+
+.node-resource-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.1fr) repeat(3, minmax(120px, 0.75fr));
+  gap: 18px;
+  align-items: center;
+  min-width: 0;
+  min-height: 86px;
+  padding: 15px 16px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.node-resource-row.node-state-online {
+  border-color: #dbeafe;
+  background: #ffffff;
+}
+
+.node-resource-row.node-state-offline,
+.node-resource-row.node-state-unknown {
+  opacity: 0.72;
+}
+
 .resource-meter {
   min-width: 0;
-}
-
-.node-resource-card .ant-card-body {
-  padding: 14px 16px;
-}
-
-.node-resource-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 1.35fr) repeat(3, minmax(150px, 1fr));
-  gap: 20px;
-  align-items: center;
+  overflow: hidden;
 }
 
 .node-summary {
   display: grid;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.node-status-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -337,19 +612,113 @@ body {
   white-space: nowrap;
 }
 
+.node-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.node-badges .ant-tag {
+  margin-inline-end: 0;
+}
+
 .resource-meter-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 4px;
+  min-width: 0;
+}
+
+.resource-meter-head .ant-typography {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .resource-meter-detail {
   display: block;
   margin-top: 2px;
+  overflow: hidden;
   font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.decision-card .ant-pro-card-body,
+.hub-status-card .ant-pro-card-body {
+  min-height: 196px;
+}
+
+.decision-card .desc-list {
+  gap: 9px;
+}
+
+.decision-card .desc-row {
+  grid-template-columns: 54px minmax(0, 1fr);
+}
+
+.hub-status-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.hub-status-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hub-url {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.message-list {
+  display: grid;
+  gap: 10px;
+}
+
+.message-item {
+  display: grid;
+  grid-template-columns: 11px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.message-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: #1677ff;
+  box-shadow: 0 0 0 4px #eaf3ff;
+}
+
+.message-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.message-subject,
+.message-summary,
+.message-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-kind {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .desc-list {
@@ -421,7 +790,42 @@ body {
 }
 
 @media (max-width: 1180px) {
-  .node-resource-grid {
+  .node-resource-row {
     grid-template-columns: 1fr;
+  }
+
+  .overview-band {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-pulse {
+    justify-items: start;
+  }
+}
+
+@media (max-width: 768px) {
+  .page-container .ant-page-header {
+    padding: 16px 18px 14px;
+  }
+
+  .page-container .ant-pro-page-container-children-container {
+    padding: 16px 18px 28px;
+  }
+
+  .overview-band {
+    padding: 18px;
+  }
+
+  .overview-copy h2.ant-typography {
+    font-size: 22px;
+  }
+
+  .message-item {
+    grid-template-columns: 11px minmax(0, 1fr);
+  }
+
+  .message-kind {
+    grid-column: 2;
+    max-width: 100%;
   }
 }

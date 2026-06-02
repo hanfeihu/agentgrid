@@ -19,6 +19,10 @@ flowchart LR
   Hub <--> W1["Worker: Linux"]
   Hub <--> W2["Worker: Windows"]
   Hub <--> W3["Worker: macOS"]
+  Mobile["Mobile Console"] --> Hub
+  Mobile -. "Bridge Session" .-> Hub
+  Hub <-. "Node Service Bridge" .-> W3
+  W3 -. "127.0.0.1:8390" .-> Codex["codex.local"]
   W2 --> Desktop["Desktop Helper"]
   W1 --> Plugins["Plugins / Tools"]
   W2 --> Plugins
@@ -38,6 +42,64 @@ flowchart LR
 7. Worker 执行内置任务类型或插件工具。
 8. 输出、证据、产物、指标和审计事件回写 Hub。
 9. Web、CLI、SDK、MCP、Webhook、事件流都读取同一份状态。
+
+## 节点本地服务桥接
+
+AgentGrid 可以把节点本机的指定本地服务，通过 Hub 暴露给已登录的
+Web/Mobile 控制台。这个能力不是任意端口转发。Worker 必须先在心跳里声明
+本地服务，Hub 校验通过后才会创建短时 Bridge Session。
+
+第一版内置服务是 `codex.local`：
+
+```text
+手机/网页客户端 -> Hub Bridge Session -> Worker 桥接 WebSocket -> 该节点的 127.0.0.1:8390
+```
+
+规则：
+
+- `codex.local` 必须由 Worker 心跳注册。
+- 节点必须在线。
+- 服务必须上报 `status: "available"`。
+- 允许的地址固定为 `127.0.0.1:8390`。
+- 客户端发送结构化 WebSocket 消息，不做裸 TCP 转发。
+
+这样手机或 Web 控制台就能和某台真实工作站上的 Codex 通讯，同时不需要把
+工作站的本地端口暴露到公网或内网入口。
+
+## 节点端口桥接
+
+节点端口桥接是 AgentGrid 内核能力，用于把一个节点上的本地端口临时映射到
+另一个节点的本地端口。典型场景是：A 节点需要用浏览器访问 B 节点上的 Web
+调试页，但 B 节点不暴露公网或内网入口。
+
+```text
+A 节点浏览器 -> A Worker 监听 127.0.0.1:18080
+  -> Hub PortBridge Session
+  -> B Worker
+  -> B 节点 127.0.0.1:8080
+```
+
+规则：
+
+- Worker 主动连接 Hub，节点不需要开放入站端口。
+- v1 只支持 TCP。
+- A 节点监听地址固定为 `127.0.0.1`。
+- B 节点目标地址允许 `127.0.0.1`、`localhost` 或私有 IP。
+- Hub 负责创建会话、下发指令、审计、关闭会话。
+- Worker 负责真实监听、连接目标端口和双向转发字节流。
+
+CLI 示例：
+
+```bash
+agentgrid bridge-port \
+  --source-node a-node \
+  --target-node b-node \
+  --target-port 8080 \
+  --source-port 18080 \
+  --purpose "让 A 节点浏览器访问 B 节点 Web 调试页"
+```
+
+返回的 `Source URL` 可以在 A 节点本机浏览器访问。
 
 ## 核心模块
 
@@ -73,4 +135,3 @@ flowchart LR
 - 不假设每个节点能力一样。
 
 AgentGrid 是这些系统下面的结构化运行时：它知道真实机器能做什么、任务该去哪里、证据是什么、时间线上发生了什么。
-

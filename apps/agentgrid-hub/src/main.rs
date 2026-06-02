@@ -20,7 +20,7 @@ use axum::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    http::{header, HeaderMap, StatusCode},
+    http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
     Json,
 };
@@ -33,11 +33,16 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use crate::{jobs::JobQuery, messages::EventQuery, tasks::TaskQuery, workflows::WorkflowQuery};
+use security::{
+    agent_token_hash, bearer_token_from_headers, email_code_hash, generate_email_code,
+    generate_node_join_token, generate_session_token, hash_user_password, node_join_token_hash,
+    password_hash_needs_upgrade, session_token_hash, sha256_hex, token_hint, verify_user_password,
+};
 
 mod agents;
 mod artifacts;
@@ -48,6 +53,7 @@ mod messages;
 mod nodes;
 mod routes;
 mod runtime_standard;
+mod security;
 mod settings;
 mod tasks;
 mod tools;
@@ -57,6 +63,7 @@ mod workflows;
 const API_VERSION: &str = "agentmessage.io/v1";
 const AGENTGRID_BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT_ID: &str = "agentgrid";
+const DEFAULT_ORGANIZATION_ID: &str = "org_agentgrid_default";
 const HEARTBEAT_UNKNOWN_AFTER_SECONDS: i64 = 30;
 const HEARTBEAT_OFFLINE_AFTER_SECONDS: i64 = 120;
 const HIGH_LOAD_SCORE_LIMIT: f64 = 82.0;
@@ -80,12 +87,56 @@ struct AppState {
     db_path: Arc<PathBuf>,
     web_dir: Arc<PathBuf>,
     terminal: Arc<TerminalHub>,
+    bridge: Arc<BridgeHub>,
+    port_bridge: Arc<PortBridgeHub>,
 }
 
 #[derive(Default)]
 struct TerminalHub {
     workers: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
     clients: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
+}
+
+#[derive(Default)]
+struct BridgeHub {
+    workers: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
+    clients: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
+    sessions: Mutex<HashMap<String, BridgeSession>>,
+}
+
+#[derive(Clone)]
+struct BridgeSession {
+    node_id: String,
+    service_id: String,
+    created_by: Option<String>,
+    created_at: String,
+    expires_at: String,
+    token_hash: String,
+}
+
+#[derive(Default)]
+struct PortBridgeHub {
+    sessions: Mutex<HashMap<String, PortBridgeSession>>,
+}
+
+#[derive(Clone)]
+struct PortBridgeSession {
+    id: String,
+    source_node_id: String,
+    target_node_id: String,
+    source_bind_host: String,
+    source_bind_port: u16,
+    target_host: String,
+    target_port: u16,
+    protocol: String,
+    state: String,
+    purpose: String,
+    created_by: String,
+    created_at: String,
+    expires_at: String,
+    source_connected: bool,
+    target_connected: bool,
+    last_error: Option<String>,
 }
 
 #[tokio::main]
@@ -99,6 +150,8 @@ async fn main() -> anyhow::Result<()> {
         db_path: Arc::new(cli.db),
         web_dir: Arc::new(cli.web_dir),
         terminal: Arc::new(TerminalHub::default()),
+        bridge: Arc::new(BridgeHub::default()),
+        port_bridge: Arc::new(PortBridgeHub::default()),
     };
     start_node_tool_probe_loop(state.clone());
     start_job_recovery_loop(state.clone());
@@ -209,6 +262,26 @@ struct TerminalWorkerQuery {
     node_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct BridgeWorkerQuery {
+    node_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeClientQuery {
+    token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeSessionPath {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PortBridgePath {
+    id: String,
+}
+
 async fn terminal_client_ws(
     State(state): State<AppState>,
     Query(query): Query<TerminalClientQuery>,
@@ -223,6 +296,728 @@ async fn terminal_worker_ws(
     ws: WebSocketUpgrade,
 ) -> Response {
     ws.on_upgrade(move |socket| handle_terminal_worker(socket, state, query.node_id))
+}
+
+async fn list_local_services(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let nodes = store(&state)?.list_nodes()?;
+    let mut items = Vec::new();
+    for node in nodes {
+        let node_id = node
+            .pointer("/metadata/id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let node_name = node
+            .pointer("/metadata/name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let node_state = node
+            .pointer("/status/state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        for service in node
+            .pointer("/spec/local_services")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let service_id = service
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if service_id.is_empty() {
+                continue;
+            }
+            items.push(json!({
+                "api_version": "agentgrid.bridge/v1",
+                "kind": "LocalService",
+                "metadata": {
+                    "id": format!("{node_id}:{service_id}"),
+                    "node_id": node_id,
+                    "node_name": node_name
+                },
+                "spec": service,
+                "status": {
+                    "node_state": node_state
+                }
+            }));
+        }
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "items": items
+    })))
+}
+
+async fn create_bridge_session(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let store = store(&state)?;
+    let user = store.require_user_session(bearer_token_from_headers(&headers).as_deref())?;
+    let node_id = required_string(&input, "node_id")?;
+    let service_id = string_or(&input, "service_id", "codex.local");
+    validate_bridge_service(&store, &node_id, &service_id)?;
+    let session_id = new_id("bridge");
+    let token = generate_session_token();
+    let created_at = now();
+    let expires_at = (Utc::now() + chrono::Duration::minutes(10))
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let created_by = user
+        .pointer("/spec/email")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    state.bridge.sessions.lock().await.insert(
+        session_id.clone(),
+        BridgeSession {
+            node_id: node_id.clone(),
+            service_id: service_id.clone(),
+            created_by: created_by.clone(),
+            created_at: created_at.clone(),
+            expires_at: expires_at.clone(),
+            token_hash: session_token_hash(&token),
+        },
+    );
+    let has_worker = state.bridge.workers.lock().await.contains_key(&node_id);
+    store.audit(
+        "bridge.session.created",
+        created_by.as_deref().unwrap_or("mobile-client"),
+        Some(&node_id),
+        "本地服务桥接会话已创建",
+        json!({
+            "session_id": session_id,
+            "node_id": node_id,
+            "service_id": service_id,
+            "worker_connected": has_worker
+        }),
+    )?;
+    Ok(Json(json!({
+        "ok": true,
+        "item": {
+            "api_version": "agentgrid.bridge/v1",
+            "kind": "BridgeSession",
+            "metadata": {
+                "id": session_id,
+                "created_at": created_at,
+                "expires_at": expires_at,
+                "created_by": created_by
+            },
+            "spec": {
+                "node_id": node_id,
+                "service_id": service_id,
+                "transport": "websocket",
+                "client_ws_path": format!("/api/bridge-sessions/{session_id}/ws"),
+                "token": token
+            },
+            "status": {
+                "worker_connected": has_worker
+            }
+        }
+    })))
+}
+
+async fn list_port_bridges(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let sessions = state.port_bridge.sessions.lock().await;
+    let mut items = sessions
+        .values()
+        .cloned()
+        .map(port_bridge_session_json)
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right
+            .pointer("/metadata/created_at")
+            .and_then(Value::as_str)
+            .cmp(&left.pointer("/metadata/created_at").and_then(Value::as_str))
+    });
+    Ok(Json(json!({ "ok": true, "items": items })))
+}
+
+async fn get_port_bridge(
+    State(state): State<AppState>,
+    axum::extract::Path(path): axum::extract::Path<PortBridgePath>,
+) -> Result<Json<Value>, ApiError> {
+    let session = state
+        .port_bridge
+        .sessions
+        .lock()
+        .await
+        .get(&path.id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("Port bridge not found"))?;
+    Ok(Json(
+        json!({ "ok": true, "item": port_bridge_session_json(session) }),
+    ))
+}
+
+async fn create_port_bridge(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let store = store(&state)?;
+    let created_by = store
+        .require_user_session(bearer_token_from_headers(&headers).as_deref())
+        .ok()
+        .and_then(|user| {
+            user.pointer("/spec/email")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| {
+            optional_string(&input, "created_by").unwrap_or_else(|| "agentgrid-cli".to_string())
+        });
+    let source_node_id = required_string(&input, "source_node_id")?;
+    let target_node_id = required_string(&input, "target_node_id")?;
+    validate_port_bridge_node(&store, &source_node_id)?;
+    validate_port_bridge_node(&store, &target_node_id)?;
+    let source_bind_host = string_or(&input, "source_bind_host", "127.0.0.1");
+    if source_bind_host != "127.0.0.1" {
+        return Err(ApiError::bad_request(
+            "source_bind_host must be 127.0.0.1 in v1",
+        ));
+    }
+    let target_host = string_or(&input, "target_host", "127.0.0.1");
+    if !is_allowed_port_bridge_target_host(&target_host) {
+        return Err(ApiError::bad_request(
+            "target_host must be 127.0.0.1, localhost, or a private IP in v1",
+        ));
+    }
+    let source_bind_port = optional_u16(&input, "source_bind_port")?.unwrap_or(0);
+    let target_port = optional_u16(&input, "target_port")?
+        .ok_or_else(|| ApiError::bad_request("target_port is required"))?;
+    if target_port == 0 {
+        return Err(ApiError::bad_request("target_port must be greater than 0"));
+    }
+    let protocol = string_or(&input, "protocol", "tcp").to_ascii_lowercase();
+    if protocol != "tcp" {
+        return Err(ApiError::bad_request(
+            "only tcp port bridges are supported in v1",
+        ));
+    }
+    let ttl_seconds = optional_i64(&input, "ttl_seconds")?
+        .unwrap_or(1800)
+        .clamp(30, 86_400);
+    let purpose = optional_string(&input, "purpose").unwrap_or_else(|| {
+        format!("{source_node_id} local port -> {target_node_id}:{target_port}")
+    });
+    let id = new_id("pbridge");
+    let created_at = now();
+    let expires_at = (Utc::now() + chrono::Duration::seconds(ttl_seconds))
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let has_source_worker = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .contains_key(&source_node_id);
+    let has_target_worker = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .contains_key(&target_node_id);
+    let initial_state = if has_source_worker && has_target_worker {
+        "starting"
+    } else {
+        "waiting_for_worker"
+    };
+    let session = PortBridgeSession {
+        id: id.clone(),
+        source_node_id: source_node_id.clone(),
+        target_node_id: target_node_id.clone(),
+        source_bind_host: source_bind_host.clone(),
+        source_bind_port,
+        target_host: target_host.clone(),
+        target_port,
+        protocol: protocol.clone(),
+        state: initial_state.to_string(),
+        purpose: purpose.clone(),
+        created_by: created_by.clone(),
+        created_at: created_at.clone(),
+        expires_at: expires_at.clone(),
+        source_connected: has_source_worker,
+        target_connected: has_target_worker,
+        last_error: None,
+    };
+    state
+        .port_bridge
+        .sessions
+        .lock()
+        .await
+        .insert(id.clone(), session.clone());
+    store.audit(
+        "port_bridge.created",
+        &created_by,
+        Some(&source_node_id),
+        "节点端口桥接会话已创建",
+        json!({
+            "id": id,
+            "source_node_id": source_node_id,
+            "target_node_id": target_node_id,
+            "source_bind_host": source_bind_host,
+            "source_bind_port": source_bind_port,
+            "target_host": target_host,
+            "target_port": target_port,
+            "protocol": protocol,
+            "ttl_seconds": ttl_seconds,
+            "source_worker_connected": has_source_worker,
+            "target_worker_connected": has_target_worker,
+            "purpose": purpose
+        }),
+    )?;
+    send_port_bridge_start(&state, &session).await;
+    let current = state
+        .port_bridge
+        .sessions
+        .lock()
+        .await
+        .get(&id)
+        .cloned()
+        .unwrap_or(session);
+    Ok(Json(
+        json!({ "ok": true, "item": port_bridge_session_json(current) }),
+    ))
+}
+
+async fn close_port_bridge(
+    State(state): State<AppState>,
+    axum::extract::Path(path): axum::extract::Path<PortBridgePath>,
+) -> Result<Json<Value>, ApiError> {
+    let mut session = state
+        .port_bridge
+        .sessions
+        .lock()
+        .await
+        .get(&path.id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("Port bridge not found"))?;
+    session.state = "closed".to_string();
+    state
+        .port_bridge
+        .sessions
+        .lock()
+        .await
+        .insert(path.id.clone(), session.clone());
+    send_port_bridge_close(&state, &session).await;
+    Ok(Json(
+        json!({ "ok": true, "item": port_bridge_session_json(session) }),
+    ))
+}
+
+async fn send_port_bridge_start(state: &AppState, session: &PortBridgeSession) {
+    let source_message = json!({
+        "type": "port_bridge.start_source",
+        "bridge_id": session.id,
+        "source_node_id": session.source_node_id,
+        "target_node_id": session.target_node_id,
+        "source_bind_host": session.source_bind_host,
+        "source_bind_port": session.source_bind_port,
+        "target_host": session.target_host,
+        "target_port": session.target_port,
+        "protocol": session.protocol,
+        "expires_at": session.expires_at
+    })
+    .to_string();
+    let target_message = json!({
+        "type": "port_bridge.prepare_target",
+        "bridge_id": session.id,
+        "source_node_id": session.source_node_id,
+        "target_node_id": session.target_node_id,
+        "target_host": session.target_host,
+        "target_port": session.target_port,
+        "protocol": session.protocol,
+        "expires_at": session.expires_at
+    })
+    .to_string();
+    if let Some(worker) = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .get(&session.source_node_id)
+        .cloned()
+    {
+        let _ = worker.send(source_message);
+    }
+    if let Some(worker) = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .get(&session.target_node_id)
+        .cloned()
+    {
+        let _ = worker.send(target_message);
+    }
+}
+
+async fn send_port_bridge_close(state: &AppState, session: &PortBridgeSession) {
+    let message = json!({
+        "type": "port_bridge.close",
+        "bridge_id": session.id
+    })
+    .to_string();
+    if let Some(worker) = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .get(&session.source_node_id)
+        .cloned()
+    {
+        let _ = worker.send(message.clone());
+    }
+    if let Some(worker) = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .get(&session.target_node_id)
+        .cloned()
+    {
+        let _ = worker.send(message);
+    }
+}
+
+async fn bridge_client_ws(
+    State(state): State<AppState>,
+    axum::extract::Path(path): axum::extract::Path<BridgeSessionPath>,
+    Query(query): Query<BridgeClientQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_bridge_client(socket, state, path.session_id, query.token))
+}
+
+async fn bridge_worker_ws(
+    State(state): State<AppState>,
+    Query(query): Query<BridgeWorkerQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_bridge_worker(socket, state, query.node_id))
+}
+
+fn validate_bridge_service(store: &Store, node_id: &str, service_id: &str) -> Result<(), ApiError> {
+    if service_id != "codex.local" {
+        return Err(ApiError::bad_request(
+            "only registered codex.local bridge service is supported in v1",
+        ));
+    }
+    let node = store
+        .get_node(node_id)?
+        .ok_or_else(|| ApiError::not_found("Node not found"))?;
+    if node.pointer("/status/state").and_then(Value::as_str) != Some("online") {
+        return Err(ApiError::bad_request("node is not online"));
+    }
+    let Some(services) = node
+        .pointer("/spec/local_services")
+        .and_then(Value::as_array)
+    else {
+        return Err(ApiError::bad_request("node has no local services"));
+    };
+    let Some(service) = services.iter().find(|item| {
+        item.get("id").and_then(Value::as_str) == Some(service_id)
+            && item.get("status").and_then(Value::as_str) == Some("available")
+    }) else {
+        return Err(ApiError::bad_request(
+            "codex.local is not available on node",
+        ));
+    };
+    if service.get("host").and_then(Value::as_str) != Some("127.0.0.1")
+        || service.get("port").and_then(Value::as_u64) != Some(8390)
+    {
+        return Err(ApiError::bad_request(
+            "codex.local must be bound to 127.0.0.1:8390",
+        ));
+    }
+    Ok(())
+}
+
+async fn handle_bridge_client(
+    socket: WebSocket,
+    state: AppState,
+    session_id: String,
+    token: Option<String>,
+) {
+    let Some(session) = state.bridge.sessions.lock().await.get(&session_id).cloned() else {
+        return;
+    };
+    let token_valid =
+        token.as_deref().map(session_token_hash).as_deref() == Some(session.token_hash.as_str());
+    let expires_at = chrono::DateTime::parse_from_rfc3339(&session.expires_at)
+        .map(|value| value.with_timezone(&Utc))
+        .ok();
+    if !token_valid || expires_at.is_some_and(|expires_at| expires_at < Utc::now()) {
+        return;
+    }
+    let (mut sink, mut stream) = socket.split();
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    state
+        .bridge
+        .clients
+        .lock()
+        .await
+        .insert(session_id.clone(), tx);
+
+    let open_message = json!({
+        "type": "bridge.open",
+        "session_id": session_id,
+        "node_id": session.node_id,
+        "service_id": session.service_id,
+        "created_by": session.created_by,
+        "created_at": session.created_at,
+        "expires_at": session.expires_at
+    })
+    .to_string();
+    if let Some(worker) = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .get(&session.node_id)
+        .cloned()
+    {
+        let _ = worker.send(open_message);
+    } else {
+        let _ = sink
+            .send(WsMessage::Text(
+                json!({
+                    "type": "bridge.error",
+                    "session_id": session_id,
+                    "message": "节点没有连接本地服务桥接通道"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await;
+    }
+
+    let send_task = tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            if sink.send(WsMessage::Text(message.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(Ok(message)) = stream.next().await {
+        match message {
+            WsMessage::Text(text) => {
+                let value = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| {
+                    json!({
+                        "type": "bridge.request",
+                        "body": text.to_string()
+                    })
+                });
+                let message_type = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("bridge.request");
+                let forwarded = if message_type.starts_with("bridge.websocket.") {
+                    let mut forwarded = value.as_object().cloned().unwrap_or_default();
+                    forwarded.insert("type".to_string(), json!(message_type));
+                    forwarded.insert("session_id".to_string(), json!(session_id));
+                    forwarded.insert("node_id".to_string(), json!(session.node_id));
+                    forwarded.insert("service_id".to_string(), json!(session.service_id));
+                    Value::Object(forwarded)
+                } else {
+                    json!({
+                    "type": message_type,
+                    "session_id": session_id,
+                    "node_id": session.node_id,
+                    "service_id": session.service_id,
+                    "method": value.get("method").and_then(Value::as_str).unwrap_or("POST"),
+                    "path": value.get("path").and_then(Value::as_str).unwrap_or("/"),
+                    "headers": value.get("headers").cloned().unwrap_or_else(|| json!({})),
+                    "body": value.get("body").cloned().unwrap_or(Value::Null)
+                    })
+                }
+                .to_string();
+                if let Some(worker) = state
+                    .bridge
+                    .workers
+                    .lock()
+                    .await
+                    .get(&session.node_id)
+                    .cloned()
+                {
+                    let _ = worker.send(forwarded);
+                }
+            }
+            WsMessage::Close(_) => break,
+            WsMessage::Binary(_) | WsMessage::Ping(_) | WsMessage::Pong(_) => {}
+        }
+    }
+
+    let close_message = json!({
+        "type": "bridge.close",
+        "session_id": session_id,
+        "node_id": session.node_id,
+        "service_id": session.service_id
+    })
+    .to_string();
+    if let Some(worker) = state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .get(&session.node_id)
+        .cloned()
+    {
+        let _ = worker.send(close_message);
+    }
+    state.bridge.clients.lock().await.remove(&session_id);
+    send_task.abort();
+}
+
+async fn handle_bridge_worker(socket: WebSocket, state: AppState, node_id: String) {
+    let (mut sink, mut stream) = socket.split();
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    state
+        .bridge
+        .workers
+        .lock()
+        .await
+        .insert(node_id.clone(), tx);
+    let _ = Store::open(state.db_path.as_ref()).and_then(|store| {
+        store.audit(
+            "bridge.worker.connected",
+            &node_id,
+            Some(&node_id),
+            "Worker 本地服务桥接通道已连接",
+            json!({ "node_id": node_id }),
+        )
+    });
+
+    let send_task = tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            if sink.send(WsMessage::Text(message.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(Ok(message)) = stream.next().await {
+        let WsMessage::Text(text) = message else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|message_type| message_type.starts_with("port_bridge."))
+        {
+            handle_port_bridge_worker_message(&state, &node_id, value).await;
+            continue;
+        }
+        let Some(session_id) = value.get("session_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(client) = state.bridge.clients.lock().await.get(session_id).cloned() {
+            let _ = client.send(value.to_string());
+        }
+    }
+    state.bridge.workers.lock().await.remove(&node_id);
+    send_task.abort();
+}
+
+async fn handle_port_bridge_worker_message(state: &AppState, node_id: &str, value: Value) {
+    let Some(bridge_id) = value.get("bridge_id").and_then(Value::as_str) else {
+        return;
+    };
+    let message_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    let mut sessions = state.port_bridge.sessions.lock().await;
+    let Some(session) = sessions.get_mut(bridge_id) else {
+        return;
+    };
+    match message_type {
+        "port_bridge.source_ready" => {
+            session.source_bind_port = value
+                .get("source_bind_port")
+                .and_then(Value::as_u64)
+                .and_then(|value| u16::try_from(value).ok())
+                .unwrap_or(session.source_bind_port);
+            session.source_connected = true;
+            if session.target_connected {
+                session.state = "active".to_string();
+            } else {
+                session.state = "source_ready".to_string();
+            }
+        }
+        "port_bridge.target_ready" => {
+            session.target_connected = true;
+            if session.source_connected {
+                session.state = "active".to_string();
+            } else {
+                session.state = "target_ready".to_string();
+            }
+        }
+        "port_bridge.closed" => {
+            session.state = "closed".to_string();
+        }
+        "port_bridge.error" => {
+            session.state = "failed".to_string();
+            session.last_error = value
+                .get("message")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .or_else(|| Some(format!("worker {node_id} reported port bridge error")));
+        }
+        _ => {}
+    }
+    drop(sessions);
+
+    match message_type {
+        "port_bridge.open_target" => {
+            if let Some(target) = state
+                .port_bridge
+                .sessions
+                .lock()
+                .await
+                .get(bridge_id)
+                .cloned()
+            {
+                let mut forwarded = value.as_object().cloned().unwrap_or_default();
+                forwarded.insert("target_host".to_string(), json!(target.target_host));
+                forwarded.insert("target_port".to_string(), json!(target.target_port));
+                if let Some(worker) = state
+                    .bridge
+                    .workers
+                    .lock()
+                    .await
+                    .get(&target.target_node_id)
+                    .cloned()
+                {
+                    let _ = worker.send(Value::Object(forwarded).to_string());
+                }
+            }
+        }
+        "port_bridge.data" | "port_bridge.close_connection" => {
+            if let Some(session) = state
+                .port_bridge
+                .sessions
+                .lock()
+                .await
+                .get(bridge_id)
+                .cloned()
+            {
+                let destination = if node_id == session.source_node_id {
+                    session.target_node_id
+                } else {
+                    session.source_node_id
+                };
+                if let Some(worker) = state.bridge.workers.lock().await.get(&destination).cloned() {
+                    let _ = worker.send(value.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn handle_terminal_client(socket: WebSocket, state: AppState, node_id: String) {
@@ -462,54 +1257,6 @@ fn normalize_arch(value: &str) -> String {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-fn agent_token_hash(agent_id: &str, token: &str) -> String {
-    sha256_hex(format!("agentgrid-agent-token-v1:{agent_id}:{token}").as_bytes())
-}
-
-fn user_password_hash(email: &str, password: &str) -> String {
-    sha256_hex(format!("agentgrid-user-password-v1:{email}:{password}").as_bytes())
-}
-
-fn session_token_hash(token: &str) -> String {
-    sha256_hex(format!("agentgrid-session-v1:{token}").as_bytes())
-}
-
-fn email_code_hash(email: &str, code: &str) -> String {
-    sha256_hex(format!("agentgrid-email-code-v1:{email}:{code}").as_bytes())
-}
-
-fn node_join_token_hash(node_id: &str, token: &str) -> String {
-    sha256_hex(format!("agentgrid-node-join-token-v1:{node_id}:{token}").as_bytes())
-}
-
-fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    value
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(ToString::to_string)
-}
-
-fn generate_session_token() -> String {
-    format!("ags_{}", Uuid::new_v4().simple())
-}
-
-fn generate_node_join_token() -> String {
-    format!("agj_{}", Uuid::new_v4().simple())
-}
-
-fn generate_email_code() -> String {
-    let value = Uuid::new_v4().as_u128() % 1_000_000;
-    format!("{value:06}")
-}
-
 fn default_smtp_setting() -> Value {
     json!({
         "host": std::env::var("AGENTGRID_SMTP_HOST").unwrap_or_else(|_| "smtp.example.com".to_string()),
@@ -523,17 +1270,6 @@ fn default_smtp_setting() -> Value {
             .map(|value| value != "0" && value.to_lowercase() != "false")
             .unwrap_or(false)
     })
-}
-
-fn token_hint(token: &str) -> String {
-    let chars = token.chars().collect::<Vec<_>>();
-    if chars.len() <= 6 {
-        return "******".to_string();
-    }
-    let tail = chars[chars.len().saturating_sub(4)..]
-        .iter()
-        .collect::<String>();
-    format!("****{tail}")
 }
 
 fn worker_update_compatibility(target: &str, glibc_version: Option<&str>) -> Value {
@@ -691,6 +1427,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 name TEXT NOT NULL,
                 role TEXT NOT NULL,
                 skills_json TEXT NOT NULL,
@@ -756,12 +1493,14 @@ impl Store {
             CREATE TABLE IF NOT EXISTS nodes (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 name TEXT NOT NULL,
                 os TEXT NOT NULL,
                 arch TEXT NOT NULL,
                 address TEXT NOT NULL DEFAULT '',
                 tags_json TEXT NOT NULL,
                 capabilities_json TEXT NOT NULL,
+                local_services_json TEXT NOT NULL DEFAULT '[]',
                 groups_json TEXT NOT NULL DEFAULT '[]',
                 weight REAL NOT NULL DEFAULT 1,
                 max_concurrent_jobs INTEGER NOT NULL DEFAULT 1,
@@ -792,6 +1531,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS agent_messages (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 from_agent_id TEXT NOT NULL,
                 to_agents_json TEXT NOT NULL,
                 message_type TEXT NOT NULL,
@@ -805,6 +1545,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS agent_tasks (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
                 created_by TEXT NOT NULL DEFAULT 'architect-agent',
@@ -843,6 +1584,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS audit_events (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 event_type TEXT NOT NULL,
                 actor TEXT NOT NULL,
                 subject_id TEXT,
@@ -853,6 +1595,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS task_logs (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 task_id TEXT NOT NULL,
                 node_id TEXT NOT NULL,
                 stream TEXT NOT NULL,
@@ -863,6 +1606,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS artifacts (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 task_id TEXT NOT NULL,
                 node_id TEXT,
                 name TEXT NOT NULL,
@@ -877,6 +1621,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS workflows (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 name TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
                 created_by TEXT NOT NULL DEFAULT 'architect-agent',
@@ -893,6 +1638,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS workflow_runs (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 workflow_id TEXT NOT NULL,
                 workflow_node_id TEXT NOT NULL,
                 task_id TEXT,
@@ -908,6 +1654,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
                 created_by TEXT NOT NULL DEFAULT 'agent-runtime',
@@ -935,6 +1682,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS job_attempts (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 job_id TEXT NOT NULL,
                 shard_id TEXT,
                 attempt_number INTEGER NOT NULL,
@@ -953,6 +1701,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS job_shards (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 job_id TEXT NOT NULL,
                 shard_index INTEGER NOT NULL,
                 shard_count INTEGER NOT NULL,
@@ -971,6 +1720,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS job_checkpoints (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 job_id TEXT NOT NULL,
                 attempt_id TEXT,
                 task_id TEXT,
@@ -984,6 +1734,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS ingress_events (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 source TEXT NOT NULL DEFAULT '',
                 target_json TEXT NOT NULL DEFAULT '{}',
                 event_type TEXT NOT NULL,
@@ -998,6 +1749,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS node_provisioning_plans (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 node_id TEXT NOT NULL,
                 node_name TEXT NOT NULL,
                 ssh_host TEXT NOT NULL,
@@ -1019,6 +1771,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS workflow_templates (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 name TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
                 created_by TEXT NOT NULL DEFAULT 'architect-agent',
@@ -1040,6 +1793,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS tool_probes (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 tool_id TEXT NOT NULL,
                 node_id TEXT NOT NULL,
                 task_id TEXT,
@@ -1057,6 +1811,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS node_tools (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 node_id TEXT NOT NULL,
                 tool_id TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -1083,6 +1838,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS task_templates (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 name TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT 'general',
@@ -1098,6 +1854,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS webhook_subscriptions (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 name TEXT NOT NULL,
                 url TEXT NOT NULL,
                 events_json TEXT NOT NULL,
@@ -1110,6 +1867,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS webhook_deliveries (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_agentgrid_default',
                 webhook_id TEXT NOT NULL,
                 event_type TEXT NOT NULL,
                 subject_id TEXT,
@@ -1179,7 +1937,42 @@ impl Store {
             "tool_scope_json",
             "TEXT NOT NULL DEFAULT '{\"mode\":\"declared\",\"tools\":[]}'",
         )?;
+        for table in [
+            "agents",
+            "nodes",
+            "agent_messages",
+            "agent_tasks",
+            "audit_events",
+            "task_logs",
+            "artifacts",
+            "workflows",
+            "workflow_runs",
+            "jobs",
+            "job_attempts",
+            "job_shards",
+            "job_checkpoints",
+            "ingress_events",
+            "node_provisioning_plans",
+            "workflow_templates",
+            "tool_probes",
+            "node_tools",
+            "task_templates",
+            "webhook_subscriptions",
+            "webhook_deliveries",
+        ] {
+            self.ensure_column(
+                table,
+                "organization_id",
+                "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+            )?;
+        }
         self.ensure_column("nodes", "address", "TEXT NOT NULL DEFAULT ''")?;
+        self.ensure_column(
+            "nodes",
+            "organization_id",
+            "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+        )?;
+        self.ensure_column("nodes", "local_services_json", "TEXT NOT NULL DEFAULT '[]'")?;
         self.ensure_column("nodes", "groups_json", "TEXT NOT NULL DEFAULT '[]'")?;
         self.ensure_column("nodes", "weight", "REAL NOT NULL DEFAULT 1")?;
         self.ensure_column("nodes", "max_concurrent_jobs", "INTEGER NOT NULL DEFAULT 1")?;
@@ -1223,6 +2016,36 @@ impl Store {
         self.ensure_column("node_tools", "probe_error_json", "TEXT")?;
         self.ensure_column(
             "agent_tasks",
+            "organization_id",
+            "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+        )?;
+        self.ensure_column(
+            "agent_messages",
+            "organization_id",
+            "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+        )?;
+        self.ensure_column(
+            "audit_events",
+            "organization_id",
+            "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+        )?;
+        self.ensure_column(
+            "artifacts",
+            "organization_id",
+            "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+        )?;
+        self.ensure_column(
+            "node_tools",
+            "organization_id",
+            "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+        )?;
+        self.ensure_column(
+            "tool_probes",
+            "organization_id",
+            "TEXT NOT NULL DEFAULT 'org_agentgrid_default'",
+        )?;
+        self.ensure_column(
+            "agent_tasks",
             "assigned_to_json",
             "TEXT NOT NULL DEFAULT '[]'",
         )?;
@@ -1264,6 +2087,13 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_job_attempts_shard ON job_attempts(shard_id, attempt_number);
             CREATE INDEX IF NOT EXISTS idx_agent_tasks_job_shard ON agent_tasks(job_shard_id);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key ON jobs(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_nodes_org_status ON nodes(project_id, organization_id, status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_org_status ON agent_tasks(project_id, organization_id, status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_org_created ON agent_messages(project_id, organization_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_org_created ON audit_events(project_id, organization_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_artifacts_org_created ON artifacts(project_id, organization_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_node_tools_org_tool ON node_tools(project_id, organization_id, tool_id, node_id);
+            CREATE INDEX IF NOT EXISTS idx_tool_probes_org_tool ON tool_probes(project_id, organization_id, tool_id, node_id);
             ",
         )?;
         self.ensure_column("workflows", "summary", "TEXT NOT NULL DEFAULT ''")?;
@@ -1333,7 +2163,7 @@ impl Store {
                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
                 ",
                 params![
-                    "org_agentgrid_default",
+                    DEFAULT_ORGANIZATION_ID,
                     PROJECT_ID,
                     "AgentGrid 默认组织",
                     "default",
@@ -1426,7 +2256,7 @@ impl Store {
                 org_id,
                 email,
                 name,
-                user_password_hash(&email, &password),
+                hash_user_password(&password)?,
                 now
             ],
         )?;
@@ -1453,8 +2283,16 @@ impl Store {
             .pointer("/credentials/password_hash")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if expected != user_password_hash(&email, &password) {
+        if !verify_user_password(&email, &password, expected)? {
             anyhow::bail!("invalid email or password");
+        }
+        if password_hash_needs_upgrade(expected) {
+            self.update_user_password_hash(
+                user.pointer("/metadata/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                &hash_user_password(&password)?,
+            )?;
         }
         let token = generate_session_token();
         let session_id = new_id("sess");
@@ -1559,7 +2397,7 @@ impl Store {
                 org_id,
                 email,
                 name,
-                user_password_hash(&email, &password),
+                hash_user_password(&password)?,
                 now
             ],
         )?;
@@ -1587,7 +2425,7 @@ impl Store {
             .pointer("/credentials/password_hash")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if expected != user_password_hash(&email, &old_password) {
+        if !verify_user_password(&email, &old_password, expected)? {
             anyhow::bail!("invalid email or password");
         }
         let now = now();
@@ -1597,12 +2435,7 @@ impl Store {
             SET password_hash = ?1, updated_at = ?2
             WHERE project_id = ?3 AND email = ?4
             ",
-            params![
-                user_password_hash(&email, &new_password),
-                now,
-                PROJECT_ID,
-                email
-            ],
+            params![hash_user_password(&new_password)?, now, PROJECT_ID, email],
         )?;
         self.audit(
             "hub.user.password_changed",
@@ -1612,6 +2445,21 @@ impl Store {
             json!({ "email": email }),
         )?;
         Ok(json!({ "ok": true }))
+    }
+
+    fn update_user_password_hash(&self, user_id: &str, password_hash: &str) -> anyhow::Result<()> {
+        if user_id.trim().is_empty() {
+            return Ok(());
+        }
+        self.conn.execute(
+            "
+            UPDATE hub_users
+            SET password_hash = ?1, updated_at = ?2
+            WHERE project_id = ?3 AND id = ?4
+            ",
+            params![password_hash, now(), PROJECT_ID, user_id],
+        )?;
+        Ok(())
     }
 
     fn system_settings(&self) -> anyhow::Result<Value> {
@@ -1812,6 +2660,84 @@ impl Store {
             .map_err(Into::into)
     }
 
+    fn organization_id_from_data(&self, data: &Value) -> anyhow::Result<String> {
+        if let Some(value) = data
+            .get("organization_id")
+            .or_else(|| data.pointer("/metadata/organization_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(value.to_string());
+        }
+        self.default_organization_id()
+    }
+
+    fn organization_id_from_item(&self, item: &Value) -> anyhow::Result<String> {
+        item.pointer("/metadata/organization_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow::anyhow!("organization_id missing"))
+            .or_else(|_| self.default_organization_id())
+    }
+
+    fn organization_id_for_task(&self, task_id: &str) -> anyhow::Result<String> {
+        self.conn
+            .query_row(
+                "SELECT organization_id FROM agent_tasks WHERE project_id = ?1 AND id = ?2",
+                params![PROJECT_ID, task_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(Ok)
+            .unwrap_or_else(|| self.default_organization_id())
+    }
+
+    fn organization_id_for_node(&self, node_id: &str) -> anyhow::Result<String> {
+        self.conn
+            .query_row(
+                "SELECT organization_id FROM nodes WHERE project_id = ?1 AND id = ?2",
+                params![PROJECT_ID, node_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(Ok)
+            .unwrap_or_else(|| self.default_organization_id())
+    }
+
+    fn organization_id_for_subject_or_default(
+        &self,
+        subject_id: Option<&str>,
+        payload: &Value,
+    ) -> anyhow::Result<String> {
+        if let Some(value) = payload
+            .get("organization_id")
+            .or_else(|| payload.pointer("/metadata/organization_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(value.to_string());
+        }
+        let Some(subject_id) = subject_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return self.default_organization_id();
+        };
+        for table in ["agent_tasks", "nodes", "artifacts", "jobs"] {
+            let sql =
+                format!("SELECT organization_id FROM {table} WHERE project_id = ?1 AND id = ?2");
+            if let Some(org_id) = self
+                .conn
+                .query_row(&sql, params![PROJECT_ID, subject_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .optional()?
+            {
+                return Ok(org_id);
+            }
+        }
+        self.default_organization_id()
+    }
+
     fn default_organization(&self) -> anyhow::Result<Value> {
         self.conn
             .query_row(
@@ -1894,16 +2820,17 @@ impl Store {
     }
 
     fn list_users(&self) -> anyhow::Result<Value> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
             "
             SELECT * FROM hub_users
-            WHERE project_id = ?1
+            WHERE project_id = ?1 AND organization_id = ?2
             ORDER BY
               CASE role WHEN 'super_admin' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
               created_at ASC
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID], hub_user_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id], hub_user_row)?;
         let items = collect_values(rows)?
             .into_iter()
             .map(user_public)
@@ -2005,6 +2932,27 @@ impl Store {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    fn require_user_session(&self, token: Option<&str>) -> anyhow::Result<Value> {
+        let token = token
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("unauthorized: missing bearer token"))?;
+        self.user_by_session_token(token)?
+            .ok_or_else(|| anyhow::anyhow!("unauthorized: invalid or expired session"))
+    }
+
+    fn require_admin_session(&self, token: Option<&str>) -> anyhow::Result<Value> {
+        let user = self.require_user_session(token)?;
+        let role = user
+            .pointer("/spec/role")
+            .and_then(Value::as_str)
+            .unwrap_or("member");
+        if matches!(role, "super_admin" | "admin") {
+            return Ok(user);
+        }
+        anyhow::bail!("forbidden: admin role required")
     }
 
     fn consume_email_code(&self, email: &str, code: &str, purpose: &str) -> anyhow::Result<()> {
@@ -2210,10 +3158,11 @@ impl Store {
     }
 
     fn list_nodes(&self) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
-            "SELECT * FROM nodes WHERE project_id = ?1 ORDER BY status ASC, updated_at DESC",
+            "SELECT * FROM nodes WHERE project_id = ?1 AND organization_id = ?2 ORDER BY status ASC, updated_at DESC",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID], node_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id], node_row)?;
         let mut nodes = collect_values(rows)?;
         for node in &mut nodes {
             let Some(node_id) = node.pointer("/metadata/id").and_then(Value::as_str) else {
@@ -2228,23 +3177,28 @@ impl Store {
     }
 
     fn list_tool_probes(&self, limit: u16) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
             "
             SELECT * FROM tool_probes
-            WHERE project_id = ?1
+            WHERE project_id = ?1 AND organization_id = ?2
             ORDER BY updated_at DESC
-            LIMIT ?2
+            LIMIT ?3
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, limit.min(1000)], tool_probe_row)?;
+        let rows = stmt.query_map(
+            params![PROJECT_ID, organization_id, limit.min(1000)],
+            tool_probe_row,
+        )?;
         collect_values(rows)
     }
 
     fn get_tool_probe(&self, tool_id: &str, node_id: &str) -> anyhow::Result<Option<Value>> {
+        let organization_id = self.organization_id_for_node(node_id)?;
         self.conn
             .query_row(
-                "SELECT * FROM tool_probes WHERE project_id = ?1 AND tool_id = ?2 AND node_id = ?3",
-                params![PROJECT_ID, tool_id, node_id],
+                "SELECT * FROM tool_probes WHERE project_id = ?1 AND organization_id = ?2 AND tool_id = ?3 AND node_id = ?4",
+                params![PROJECT_ID, organization_id, tool_id, node_id],
                 tool_probe_row,
             )
             .optional()
@@ -2373,10 +3327,11 @@ impl Store {
         self.conn.execute(
             "
             INSERT INTO tool_probes (
-                id, project_id, tool_id, node_id, task_id, status, support_basis,
+                id, project_id, organization_id, tool_id, node_id, task_id, status, support_basis,
                 started_at, completed_at, expires_at, result_json, error_json, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'runtime_probe', ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'runtime_probe', ?8, ?9, ?10, ?11, ?12, ?13, ?13)
             ON CONFLICT(project_id, tool_id, node_id) DO UPDATE SET
+                organization_id = excluded.organization_id,
                 task_id = COALESCE(excluded.task_id, tool_probes.task_id),
                 status = excluded.status,
                 support_basis = excluded.support_basis,
@@ -2390,6 +3345,7 @@ impl Store {
             params![
                 new_id("probe"),
                 PROJECT_ID,
+                self.organization_id_for_node(node_id)?,
                 tool_id,
                 node_id,
                 task_id,
@@ -2408,25 +3364,28 @@ impl Store {
     fn upsert_node(&self, data: Value) -> anyhow::Result<Value> {
         let now = now();
         let id = string_or(&data, "id", &new_id("node"));
+        let organization_id = self.organization_id_from_data(&data)?;
         let auth = self.authorize_node_heartbeat(&id, &data, &now)?;
         self.conn.execute(
             "
             INSERT INTO nodes (
-                id, project_id, name, os, arch, address, tags_json, capabilities_json,
+                id, project_id, organization_id, name, os, arch, address, tags_json, capabilities_json, local_services_json,
                 groups_json, weight, max_concurrent_jobs,
                 cpu_cores, memory_mb, cpu_usage_percent, memory_used_mb, disk_total_mb, disk_free_mb,
                 running_jobs, worker_version, worker_target, glibc_version,
                 machine_fingerprint, join_token_hash, join_token_hint, auth_status, authorized_at,
                 auto_update_enabled, update_channel,
                 status, created_at, updated_at, last_heartbeat_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?30, ?31)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?32, ?33)
             ON CONFLICT(id) DO UPDATE SET
+                organization_id = nodes.organization_id,
                 name = excluded.name,
                 os = excluded.os,
                 arch = excluded.arch,
                 address = excluded.address,
                 tags_json = excluded.tags_json,
                 capabilities_json = excluded.capabilities_json,
+                local_services_json = excluded.local_services_json,
                 groups_json = excluded.groups_json,
                 weight = excluded.weight,
                 max_concurrent_jobs = excluded.max_concurrent_jobs,
@@ -2457,12 +3416,14 @@ impl Store {
             params![
                 id,
                 PROJECT_ID,
+                organization_id,
                 required_string(&data, "name")?,
                 string_or(&data, "os", "unknown"),
                 string_or(&data, "arch", "unknown"),
                 string_or(&data, "address", ""),
                 serde_json::to_string(&array_field(&data, "tags"))?,
                 serde_json::to_string(&array_field(&data, "capabilities"))?,
+                serde_json::to_string(&json_array_field(&data, "local_services"))?,
                 serde_json::to_string(&array_field(&data, "groups"))?,
                 float_or(&data, "weight", 1.0),
                 number_or(&data, "max_concurrent_jobs", 1),
@@ -2848,11 +3809,12 @@ impl Store {
         self.conn.execute(
             "
             INSERT INTO node_tools (
-                id, project_id, node_id, tool_id, name, version, executor, status, confidence,
+                id, project_id, organization_id, node_id, tool_id, name, version, executor, status, confidence,
                 input_schema_json, output_schema_json, constraints_json, labels_json,
                 default_verify_json, probe_json, probe_state, next_probe_at, metadata_json, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?19)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20)
             ON CONFLICT(project_id, node_id, tool_id) DO UPDATE SET
+                organization_id = excluded.organization_id,
                 name = excluded.name,
                 version = excluded.version,
                 executor = excluded.executor,
@@ -2875,6 +3837,7 @@ impl Store {
             params![
                 id,
                 PROJECT_ID,
+                self.organization_id_for_node(node_id)?,
                 node_id,
                 tool_id,
                 string_or(&data, "name", &tool_id),
@@ -2899,10 +3862,18 @@ impl Store {
     }
 
     fn list_node_tools(&self, node_id: Option<&str>) -> anyhow::Result<Vec<Value>> {
-        let mut sql = "SELECT * FROM node_tools WHERE project_id = ?1".to_string();
-        let mut values = vec![PROJECT_ID.to_string()];
+        let organization_id = node_id
+            .map(|id| self.organization_id_for_node(id))
+            .transpose()?
+            .unwrap_or_else(|| {
+                self.default_organization_id()
+                    .unwrap_or_else(|_| DEFAULT_ORGANIZATION_ID.to_string())
+            });
+        let mut sql =
+            "SELECT * FROM node_tools WHERE project_id = ?1 AND organization_id = ?2".to_string();
+        let mut values = vec![PROJECT_ID.to_string(), organization_id];
         if let Some(node_id) = node_id {
-            sql.push_str(" AND node_id = ?2");
+            sql.push_str(" AND node_id = ?");
             values.push(node_id.to_string());
         }
         sql.push_str(" ORDER BY tool_id ASC, node_id ASC");
@@ -2912,10 +3883,11 @@ impl Store {
     }
 
     fn get_node_tool(&self, node_id: &str, tool_id: &str) -> anyhow::Result<Option<Value>> {
+        let organization_id = self.organization_id_for_node(node_id)?;
         self.conn
             .query_row(
-                "SELECT * FROM node_tools WHERE project_id = ?1 AND node_id = ?2 AND tool_id = ?3",
-                params![PROJECT_ID, node_id, tool_id],
+                "SELECT * FROM node_tools WHERE project_id = ?1 AND organization_id = ?2 AND node_id = ?3 AND tool_id = ?4",
+                params![PROJECT_ID, organization_id, node_id, tool_id],
                 node_tool_row,
             )
             .optional()
@@ -2923,35 +3895,41 @@ impl Store {
     }
 
     fn list_node_tools_by_tool(&self, tool_id: &str) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
             "
             SELECT * FROM node_tools
-            WHERE project_id = ?1 AND tool_id = ?2
+            WHERE project_id = ?1 AND organization_id = ?2 AND tool_id = ?3
             ORDER BY node_id ASC
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, tool_id], node_tool_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id, tool_id], node_tool_row)?;
         collect_values(rows)
     }
 
     fn due_node_tools_for_probe(&self, limit: u16) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
             "
             SELECT * FROM node_tools
             WHERE project_id = ?1
+              AND organization_id = ?2
               AND status = 'available'
               AND probe_json IS NOT NULL
               AND json_extract(probe_json, '$.enabled') IS NOT 0
               AND (
                 next_probe_at IS NULL
-                OR next_probe_at <= ?2
+                OR next_probe_at <= ?3
                 OR probe_state IN ('declared_unverified', 'expired')
               )
             ORDER BY COALESCE(next_probe_at, created_at) ASC
-            LIMIT ?3
+            LIMIT ?4
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, now(), limit.min(100)], node_tool_row)?;
+        let rows = stmt.query_map(
+            params![PROJECT_ID, organization_id, now(), limit.min(100)],
+            node_tool_row,
+        )?;
         collect_values(rows)
     }
 
@@ -3459,26 +4437,29 @@ impl Store {
     }
 
     fn list_messages(&self, limit: u16) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
-            "SELECT * FROM agent_messages WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+            "SELECT * FROM agent_messages WHERE project_id = ?1 AND organization_id = ?2 ORDER BY created_at DESC LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, limit], message_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id, limit], message_row)?;
         collect_values(rows)
     }
 
     fn create_message(&self, data: Value) -> anyhow::Result<Value> {
         let id = string_or(&data, "id", &new_id("msg"));
+        let organization_id = self.organization_id_from_data(&data)?;
         let now = now();
         self.conn.execute(
             "
             INSERT INTO agent_messages (
-                id, project_id, from_agent_id, to_agents_json, message_type, subject,
+                id, project_id, organization_id, from_agent_id, to_agents_json, message_type, subject,
                 summary, priority, requires_ack, payload_json, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ",
             params![
                 id,
                 PROJECT_ID,
+                organization_id,
                 required_string(&data, "from")?,
                 serde_json::to_string(&array_field(&data, "to"))?,
                 required_string(&data, "type")?,
@@ -3491,7 +4472,7 @@ impl Store {
             ],
         )?;
         let item = self
-            .get_message(&id)?
+            .get_message_in_organization(&id, &organization_id)?
             .ok_or_else(|| anyhow::anyhow!("message not found"))?;
         self.audit(
             "message.created",
@@ -3507,11 +4488,15 @@ impl Store {
         Ok(item)
     }
 
-    fn get_message(&self, id: &str) -> anyhow::Result<Option<Value>> {
+    fn get_message_in_organization(
+        &self,
+        id: &str,
+        organization_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
         self.conn
             .query_row(
-                "SELECT * FROM agent_messages WHERE id = ?1",
-                params![id],
+                "SELECT * FROM agent_messages WHERE project_id = ?1 AND organization_id = ?2 AND id = ?3",
+                params![PROJECT_ID, organization_id, id],
                 message_row,
             )
             .optional()
@@ -3519,8 +4504,10 @@ impl Store {
     }
 
     fn list_events(&self, query: EventQuery, limit: u16) -> anyhow::Result<Vec<Value>> {
-        let mut sql = "SELECT * FROM audit_events WHERE project_id = ?1".to_string();
-        let mut values = vec![PROJECT_ID.to_string()];
+        let organization_id = self.default_organization_id()?;
+        let mut sql =
+            "SELECT * FROM audit_events WHERE project_id = ?1 AND organization_id = ?2".to_string();
+        let mut values = vec![PROJECT_ID.to_string(), organization_id];
         let event_type = query.event_type.or(query.type_alias);
         if let Some(event_type) = event_type.filter(|value| !value.trim().is_empty()) {
             sql.push_str(" AND event_type = ?");
@@ -4344,8 +5331,10 @@ impl Store {
 
     fn list_tasks(&self, query: TaskQuery) -> anyhow::Result<Vec<Value>> {
         let limit = query.limit.unwrap_or(100).min(500);
-        let mut sql = "SELECT * FROM agent_tasks WHERE project_id = ?1".to_string();
-        let mut values = vec![PROJECT_ID.to_string()];
+        let organization_id = self.default_organization_id()?;
+        let mut sql =
+            "SELECT * FROM agent_tasks WHERE project_id = ?1 AND organization_id = ?2".to_string();
+        let mut values = vec![PROJECT_ID.to_string(), organization_id];
         if let Some(owner) = query.owner {
             sql.push_str(" AND owner_agent_id = ?");
             values.push(owner);
@@ -4363,10 +5352,19 @@ impl Store {
     }
 
     fn get_task(&self, id: &str) -> anyhow::Result<Option<Value>> {
+        let organization_id = self.default_organization_id()?;
+        self.get_task_in_organization(id, &organization_id)
+    }
+
+    fn get_task_in_organization(
+        &self,
+        id: &str,
+        organization_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
         self.conn
             .query_row(
-                "SELECT * FROM agent_tasks WHERE id = ?1",
-                params![id],
+                "SELECT * FROM agent_tasks WHERE project_id = ?1 AND organization_id = ?2 AND id = ?3",
+                params![PROJECT_ID, organization_id, id],
                 task_row,
             )
             .optional()
@@ -4375,6 +5373,7 @@ impl Store {
 
     fn create_task(&self, data: Value) -> anyhow::Result<TaskOutput> {
         let id = string_or(&data, "id", &new_id("task"));
+        let organization_id = self.organization_id_from_data(&data)?;
         let now = now();
         let owner = optional_string(&data, "owner");
         let mut assigned_to = array_field(&data, "assigned_to");
@@ -4391,16 +5390,17 @@ impl Store {
         self.conn.execute(
             "
             INSERT INTO agent_tasks (
-                id, project_id, title, summary, created_by, owner_agent_id, status, priority,
+                id, project_id, organization_id, title, summary, created_by, owner_agent_id, status, priority,
                 inputs_json, outputs_json, acceptance_criteria_json, progress, blocked_reason,
                 assigned_to_json, labels_json, depends_on_json, due_at, started_at, completed_at,
                 assignment_message_id, last_message_id, correlation_id, workflow_id, workflow_node_id, job_id, job_attempt_id, job_shard_id, verify_json,
                 created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, ?14, ?15, ?16, NULL, NULL, NULL, NULL, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?24)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14, ?15, ?16, ?17, NULL, NULL, NULL, NULL, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?25)
             ",
             params![
                 id,
                 PROJECT_ID,
+                organization_id,
                 required_string(&data, "title")?,
                 string_or(&data, "summary", ""),
                 required_string(&data, "created_by")?,
@@ -4442,6 +5442,7 @@ impl Store {
                 "summary": string_or(&data, "summary", ""),
                 "priority": string_or(&data, "priority", "normal"),
                 "requires_ack": true,
+                "organization_id": organization_id,
                 "payload": { "task_id": id }
             }))?;
             message_id = msg
@@ -4455,7 +5456,7 @@ impl Store {
         }
         Ok(TaskOutput {
             item: self
-                .get_task(&id)?
+                .get_task_in_organization(&id, &organization_id)?
                 .ok_or_else(|| anyhow::anyhow!("task not found"))?,
             message_id,
         })
@@ -6077,6 +7078,7 @@ impl Store {
         let requesting_node = self
             .get_node(&node_id)?
             .ok_or_else(|| anyhow::anyhow!("node not found"))?;
+        let organization_id = self.organization_id_from_item(&requesting_node)?;
         let node_state = requesting_node
             .pointer("/status/state")
             .and_then(Value::as_str)
@@ -6114,12 +7116,13 @@ impl Store {
             "
             SELECT * FROM agent_tasks
             WHERE project_id = ?1
+              AND organization_id = ?2
               AND (
                 status IN ('assigned', 'todo')
-                OR (status = 'in_progress' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?2)
+                OR (status = 'in_progress' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?3)
               )
               AND labels_json LIKE '%\"compute\"%'
-              AND (lease_expires_at IS NULL OR lease_expires_at < ?2)
+              AND (lease_expires_at IS NULL OR lease_expires_at < ?3)
             ORDER BY
               CASE lower(priority)
                 WHEN 'p0' THEN 0
@@ -6135,7 +7138,7 @@ impl Store {
             LIMIT 100
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, now], task_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id, now], task_row)?;
         let mut leased = Vec::new();
         for task in rows {
             let task = task?;
@@ -6308,10 +7311,13 @@ impl Store {
         task: &Value,
     ) -> anyhow::Result<agentgrid_scheduler::ScheduleDecision> {
         let job = task_to_job(task)?;
+        let organization_id = self.organization_id_from_item(task)?;
         let mut stmt = self
             .conn
-            .prepare("SELECT * FROM nodes WHERE project_id = ?1")?;
-        let rows = stmt.query_map(params![PROJECT_ID], |row| node_from_row(row))?;
+            .prepare("SELECT * FROM nodes WHERE project_id = ?1 AND organization_id = ?2")?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id], |row| {
+            node_from_row(row)
+        })?;
         let mut nodes = Vec::new();
         for node in rows {
             let node = node?;
@@ -6531,10 +7537,11 @@ impl Store {
             .get_task(id)?
             .ok_or_else(|| anyhow::anyhow!("task not found"))?;
         let job = task_to_job(&task)?;
+        let organization_id = self.organization_id_from_item(&task)?;
         let mut stmt = self
             .conn
-            .prepare("SELECT * FROM nodes WHERE project_id = ?1")?;
-        let rows = stmt.query_map(params![PROJECT_ID], node_row)?;
+            .prepare("SELECT * FROM nodes WHERE project_id = ?1 AND organization_id = ?2")?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id], node_row)?;
         let raw_node_values = rows.collect::<Result<Vec<_>, _>>()?;
         let has_verified_node = job.spec.requirements.node_id.is_none()
             && raw_node_values.iter().any(|node_value| {
@@ -7955,10 +8962,11 @@ impl Store {
     }
 
     fn list_audit_events(&self, limit: u16) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
-            "SELECT * FROM audit_events WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+            "SELECT * FROM audit_events WHERE project_id = ?1 AND organization_id = ?2 ORDER BY created_at DESC LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, limit], audit_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id, limit], audit_row)?;
         collect_values(rows)
     }
 
@@ -7967,15 +8975,20 @@ impl Store {
         subject_id: &str,
         limit: u16,
     ) -> anyhow::Result<Vec<Value>> {
+        let organization_id =
+            self.organization_id_for_subject_or_default(Some(subject_id), &Value::Null)?;
         let mut stmt = self.conn.prepare(
             "
             SELECT * FROM audit_events
-            WHERE project_id = ?1 AND subject_id = ?2
+            WHERE project_id = ?1 AND organization_id = ?2 AND subject_id = ?3
             ORDER BY created_at ASC
-            LIMIT ?3
+            LIMIT ?4
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, subject_id, limit], audit_row)?;
+        let rows = stmt.query_map(
+            params![PROJECT_ID, organization_id, subject_id, limit],
+            audit_row,
+        )?;
         collect_values(rows)
     }
 
@@ -8185,23 +9198,25 @@ impl Store {
     }
 
     fn list_artifacts(&self, limit: u16) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
             "
             SELECT * FROM artifacts
-            WHERE project_id = ?1
+            WHERE project_id = ?1 AND organization_id = ?2
             ORDER BY created_at DESC
-            LIMIT ?2
+            LIMIT ?3
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, limit], artifact_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id, limit], artifact_row)?;
         collect_values(rows)
     }
 
     fn get_artifact(&self, id: &str) -> anyhow::Result<Option<Value>> {
+        let organization_id = self.default_organization_id()?;
         self.conn
             .query_row(
-                "SELECT * FROM artifacts WHERE id = ?1",
-                params![id],
+                "SELECT * FROM artifacts WHERE project_id = ?1 AND organization_id = ?2 AND id = ?3",
+                params![PROJECT_ID, organization_id, id],
                 artifact_row,
             )
             .optional()
@@ -8209,14 +9224,15 @@ impl Store {
     }
 
     fn list_artifacts_for_task(&self, task_id: &str) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.organization_id_for_task(task_id)?;
         let mut stmt = self.conn.prepare(
             "
             SELECT * FROM artifacts
-            WHERE project_id = ?1 AND task_id = ?2
+            WHERE project_id = ?1 AND organization_id = ?2 AND task_id = ?3
             ORDER BY created_at DESC
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, task_id], artifact_row)?;
+        let rows = stmt.query_map(params![PROJECT_ID, organization_id, task_id], artifact_row)?;
         collect_values(rows)
     }
 
@@ -8341,16 +9357,18 @@ impl Store {
 
     fn insert_artifact(&self, input: ArtifactInput<'_>) -> anyhow::Result<()> {
         let metadata = artifact_v2_metadata(&input);
+        let organization_id = self.organization_id_for_task(input.task_id)?;
         self.conn.execute(
             "
             INSERT INTO artifacts (
-                id, project_id, task_id, node_id, name, artifact_type, content_type,
+                id, project_id, organization_id, task_id, node_id, name, artifact_type, content_type,
                 content_base64, source_path, size_bytes, metadata_json, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ",
             params![
                 new_id("artifact"),
                 PROJECT_ID,
+                organization_id,
                 input.task_id,
                 input.node_id,
                 input.name,
@@ -8374,15 +9392,17 @@ impl Store {
         summary: &str,
         payload: Value,
     ) -> anyhow::Result<()> {
+        let organization_id = self.organization_id_for_subject_or_default(subject_id, &payload)?;
         self.conn.execute(
             "
             INSERT INTO audit_events (
-                id, project_id, event_type, actor, subject_id, summary, payload_json, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                id, project_id, organization_id, event_type, actor, subject_id, summary, payload_json, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ",
             params![
                 new_id("audit"),
                 PROJECT_ID,
+                organization_id,
                 event_type,
                 actor,
                 subject_id,
@@ -9073,7 +10093,7 @@ fn mobile_sdk_standard() -> Value {
         "api_version": "agentgrid.mobile-sdk/v1",
         "kind": "MobileSdkStandard",
         "generated_at": now(),
-        "purpose": "Mobile SDKs are console clients for iOS and Android. They let phones view the AgentGrid cluster, submit structured tasks, inspect execution records, and view artifacts such as screenshots.",
+        "purpose": "Mobile SDKs are console clients for iOS and Android. They let phones view the AgentGrid cluster, submit structured tasks, inspect execution records, view artifacts, and open controlled bridge sessions to registered node-local services such as Codex.",
         "platforms": [
             {
                 "id": "ios",
@@ -9106,7 +10126,7 @@ fn mobile_sdk_standard() -> Value {
                 "natural-language parser"
             ]
         },
-        "default_hub_url": "http://127.0.0.1:20181",
+        "default_hub_url": "http://chenqi.tminos.com:20080/agentgrid",
         "authentication": {
             "current": "No full authorization design is required by this standard version.",
             "reserved_header": "Authorization: Bearer <token>",
@@ -9128,7 +10148,10 @@ fn mobile_sdk_standard() -> Value {
             { "name": "artifacts", "method": "GET", "path": "/api/artifacts", "purpose": "List recent task artifacts." },
             { "name": "artifactDownloadUrl", "method": "LOCAL", "path": "/api/artifacts/{artifact_id}/download", "purpose": "Build absolute artifact URL for image/file viewers." },
             { "name": "taskTemplates", "method": "GET", "path": "/api/task-templates", "purpose": "List reusable task templates." },
-            { "name": "startTaskTemplate", "method": "POST", "path": "/api/task-templates/{template_id}/start", "purpose": "Start a task from a template." }
+            { "name": "startTaskTemplate", "method": "POST", "path": "/api/task-templates/{template_id}/start", "purpose": "Start a task from a template." },
+            { "name": "localServices", "method": "GET", "path": "/api/local-services", "purpose": "List Hub-registered node-local services." },
+            { "name": "createBridgeSession", "method": "POST", "path": "/api/bridge-sessions", "purpose": "Create a session to codex.local or another registered local service." },
+            { "name": "bridgeWebSocketUrl", "method": "LOCAL", "path": "/api/bridge-sessions/{session_id}/ws", "purpose": "Build a WebSocket URL for structured bridge messages." }
         ],
         "recommended_mobile_screens": [
             {
@@ -9160,6 +10183,12 @@ fn mobile_sdk_standard() -> Value {
                 "title": "产物查看",
                 "data": ["executionRecord", "artifacts", "artifactDownloadUrl"],
                 "shows": ["screenshots", "logs", "reports", "downloadable files"]
+            },
+            {
+                "id": "codex_bridge",
+                "title": "Codex Bridge",
+                "data": ["nodes", "localServices", "createBridgeSession", "bridgeWebSocketUrl"],
+                "shows": ["which nodes expose codex.local", "service health", "bridge session state", "structured request/response"]
             }
         ],
         "polling_policy": {
@@ -9170,6 +10199,30 @@ fn mobile_sdk_standard() -> Value {
         },
         "task_submission_rule": "Mobile SDKs submit structured JSON to Agent Runtime. Natural language must be converted by the mobile app or AI client before calling AgentGrid.",
         "artifact_rule": "SDKs should keep artifact ids and use Hub download URLs. Screenshots and files are Hub artifacts, not embedded in mobile task summaries.",
+        "local_service_bridge": {
+            "name": "Node Service Bridge",
+            "v1_scope": "Mobile/Web clients may access only Hub-registered node-local services. v1 includes codex.local on 127.0.0.1:8390.",
+            "not_allowed": [
+                "arbitrary port forwarding",
+                "raw access to private networks",
+                "unauthenticated bridge sessions"
+            ],
+            "message_shape": {
+                "request": {
+                    "type": "bridge.request",
+                    "method": "POST",
+                    "path": "/",
+                    "headers": {},
+                    "body": {}
+                },
+                "response": {
+                    "type": "bridge.response",
+                    "status": 200,
+                    "headers": {},
+                    "body": "string"
+                }
+            }
+        },
         "compatibility_rule": "Mobile SDKs must avoid depending on Worker internals. They only call public Hub APIs listed in this standard."
     })
 }
@@ -13508,6 +14561,7 @@ fn agent_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": row.get::<_, String>("id")?,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "name": row.get::<_, String>("name")?,
             "created_at": row.get::<_, String>("created_at")?,
             "updated_at": row.get::<_, String>("updated_at")?
@@ -13576,6 +14630,7 @@ fn node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": row.get::<_, String>("id")?,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "name": row.get::<_, String>("name")?,
             "created_at": row.get::<_, String>("created_at")?,
             "updated_at": row.get::<_, String>("updated_at")?
@@ -13586,6 +14641,7 @@ fn node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
             "address": row.get::<_, String>("address")?,
             "tags": json_text(row, "tags_json", json!([]))?,
             "capabilities": json_text(row, "capabilities_json", json!([]))?,
+            "local_services": json_text(row, "local_services_json", json!([]))?,
             "groups": json_text(row, "groups_json", json!([]))?,
             "weight": row.get::<_, f64>("weight")?,
             "max_concurrent_jobs": row.get::<_, i64>("max_concurrent_jobs")?,
@@ -13625,6 +14681,7 @@ fn node_tool_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": row.get::<_, String>("id")?,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "node_id": node_id,
             "created_at": row.get::<_, String>("created_at")?,
             "updated_at": row.get::<_, String>("updated_at")?
@@ -13700,6 +14757,7 @@ fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": row.get::<_, String>("id")?,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "from": row.get::<_, String>("from_agent_id")?,
             "to": json_text(row, "to_agents_json", json!([]))?,
             "created_at": row.get::<_, String>("created_at")?
@@ -13722,6 +14780,7 @@ fn audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": row.get::<_, String>("id")?,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "created_at": row.get::<_, String>("created_at")?
         },
         "spec": {
@@ -13981,6 +15040,7 @@ fn webhook_delivery_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": row.get::<_, String>("id")?,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "created_at": row.get::<_, String>("created_at")?
         },
         "spec": {
@@ -14022,6 +15082,7 @@ fn artifact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": id,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "created_at": row.get::<_, String>("created_at")?
         },
         "spec": {
@@ -14047,6 +15108,7 @@ fn tool_probe_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "metadata": {
             "id": row.get::<_, String>("id")?,
             "project_id": row.get::<_, String>("project_id")?,
+            "organization_id": row.get::<_, String>("organization_id")?,
             "tool_id": row.get::<_, String>("tool_id")?,
             "node_id": row.get::<_, String>("node_id")?,
             "task_id": row.get::<_, Option<String>>("task_id")?,
@@ -14127,6 +15189,7 @@ fn task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
             "metadata": {
                 "id": row.get::<_, String>("id")?,
                 "project_id": row.get::<_, String>("project_id")?,
+                "organization_id": row.get::<_, String>("organization_id")?,
                 "created_by": row.get::<_, String>("created_by")?,
                 "assigned_to": json_text(row, "assigned_to_json", json!([]))?,
                 "created_at": row.get::<_, String>("created_at")?,
@@ -15004,6 +16067,98 @@ fn string_or(data: &Value, key: &str, default: &str) -> String {
     optional_string(data, key).unwrap_or_else(|| default.to_string())
 }
 
+fn optional_u16(data: &Value, key: &str) -> anyhow::Result<Option<u16>> {
+    data.get(key)
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("{key} must be a positive integer"))
+                .and_then(|value| {
+                    u16::try_from(value)
+                        .map_err(|_| anyhow::anyhow!("{key} must be between 0 and 65535"))
+                })
+        })
+        .transpose()
+}
+
+fn optional_i64(data: &Value, key: &str) -> anyhow::Result<Option<i64>> {
+    data.get(key)
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_i64()
+                .ok_or_else(|| anyhow::anyhow!("{key} must be an integer"))
+        })
+        .transpose()
+}
+
+fn validate_port_bridge_node(store: &Store, node_id: &str) -> Result<(), ApiError> {
+    let node = store
+        .get_node(node_id)?
+        .ok_or_else(|| ApiError::not_found("Node not found"))?;
+    if node.pointer("/status/state").and_then(Value::as_str) != Some("online") {
+        return Err(ApiError::bad_request("node is not online"));
+    }
+    let supports_bridge = node
+        .pointer("/spec/capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|item| item == "port_bridge" || item == "plugin" || item == "session")
+        });
+    if !supports_bridge {
+        return Err(ApiError::bad_request(
+            "node does not declare port_bridge capability",
+        ));
+    }
+    Ok(())
+}
+
+fn is_allowed_port_bridge_target_host(host: &str) -> bool {
+    if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .ok()
+        .is_some_and(|ip| match ip {
+            std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+            std::net::IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
+        })
+}
+
+fn port_bridge_session_json(session: PortBridgeSession) -> Value {
+    json!({
+        "api_version": "agentgrid.bridge/v1",
+        "kind": "PortBridgeSession",
+        "metadata": {
+            "id": session.id,
+            "created_at": session.created_at,
+            "expires_at": session.expires_at,
+            "created_by": session.created_by
+        },
+        "spec": {
+            "source_node_id": session.source_node_id,
+            "target_node_id": session.target_node_id,
+            "source_bind_host": session.source_bind_host,
+            "source_bind_port": session.source_bind_port,
+            "target_host": session.target_host,
+            "target_port": session.target_port,
+            "protocol": session.protocol,
+            "purpose": session.purpose
+        },
+        "status": {
+            "state": session.state,
+            "source_connected": session.source_connected,
+            "target_connected": session.target_connected,
+            "source_url": format!("http://{}:{}", session.source_bind_host, session.source_bind_port),
+            "last_error": session.last_error
+        }
+    })
+}
+
 fn array_field(data: &Value, key: &str) -> Vec<String> {
     match data.get(key) {
         Some(Value::Array(items)) => items
@@ -15019,6 +16174,13 @@ fn array_field(data: &Value, key: &str) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn json_array_field(data: &Value, key: &str) -> Vec<Value> {
+    data.get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn normalize_agent_node_scope(value: Option<&Value>) -> Value {
@@ -15199,7 +16361,12 @@ impl ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
         let message = error.to_string();
-        let status = if message.contains("not found") {
+        let lower = message.to_ascii_lowercase();
+        let status = if lower.contains("unauthorized") {
+            StatusCode::UNAUTHORIZED
+        } else if lower.contains("forbidden") {
+            StatusCode::FORBIDDEN
+        } else if message.contains("not found") {
             StatusCode::NOT_FOUND
         } else if message.contains("required") || message.contains("unknown task action") {
             StatusCode::BAD_REQUEST
@@ -15210,6 +16377,10 @@ impl From<anyhow::Error> for ApiError {
             status,
             code: if status == StatusCode::INTERNAL_SERVER_ERROR {
                 "internal_error"
+            } else if status == StatusCode::UNAUTHORIZED {
+                "unauthorized"
+            } else if status == StatusCode::FORBIDDEN {
+                "forbidden"
             } else if status == StatusCode::NOT_FOUND {
                 "not_found"
             } else {
@@ -15233,5 +16404,515 @@ impl IntoResponse for ApiError {
             })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod hub_core_tests {
+    use super::*;
+    use crate::security::legacy_user_password_hash;
+    use tempfile::TempDir;
+
+    struct TestStore {
+        _dir: TempDir,
+        store: Store,
+    }
+
+    fn test_store() -> TestStore {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("agentgrid-test.db");
+        let store = Store::open(&db_path).expect("open test store");
+        store.migrate().expect("migrate test store");
+        TestStore { _dir: dir, store }
+    }
+
+    fn heartbeat_payload(
+        node_id: &str,
+        join_token: Option<&str>,
+        machine_fingerprint: &str,
+    ) -> Value {
+        let mut payload = json!({
+            "id": node_id,
+            "name": node_id,
+            "os": "linux",
+            "arch": "x86_64",
+            "address": "127.0.0.1",
+            "tags": ["test"],
+            "capabilities": ["command"],
+            "groups": ["test"],
+            "weight": 1,
+            "max_concurrent_jobs": 1,
+            "cpu_cores": 4,
+            "memory_mb": 8192,
+            "cpu_usage_percent": 5,
+            "memory_used_mb": 1024,
+            "disk_total_mb": 100000,
+            "disk_free_mb": 90000,
+            "running_jobs": 0,
+            "machine_fingerprint": machine_fingerprint,
+            "status": "online"
+        });
+        if let Some(join_token) = join_token {
+            payload["join_token"] = json!(join_token);
+        }
+        payload
+    }
+
+    fn create_command_task(store: &Store, id: &str) -> Value {
+        let payload = json!({
+            "type": "command",
+            "program": "hostname",
+            "args": [],
+            "working_dir": null,
+            "timeout_seconds": 30
+        });
+        store
+            .create_task(json!({
+                "id": id,
+                "title": "Run hostname",
+                "summary": "Lease test command task",
+                "created_by": "test-agent",
+                "owner": "worker-agent",
+                "assigned_to": ["worker-agent"],
+                "priority": "normal",
+                "labels": ["compute", "command"],
+                "inputs": [serde_json::to_string_pretty(&payload).unwrap()],
+                "outputs": ["stdout", "stderr", "exit_code"],
+                "acceptance_criteria": ["task is leased by an eligible node"]
+            }))
+            .expect("create command task")
+            .item
+    }
+
+    fn approve_test_node(store: &Store, node_id: &str, join_token: &str, fingerprint: &str) {
+        store
+            .upsert_node(heartbeat_payload(node_id, Some(join_token), fingerprint))
+            .expect("create pending node join request");
+        let node = store
+            .get_node(node_id)
+            .expect("get node")
+            .expect("node exists");
+        assert_eq!(
+            node.pointer("/spec/auth_status").and_then(Value::as_str),
+            Some("pending")
+        );
+        store
+            .approve_node_join(node_id, "test-super-admin")
+            .expect("approve node");
+        store
+            .upsert_node(heartbeat_payload(node_id, Some(join_token), fingerprint))
+            .expect("heartbeat after approval");
+        let node = store
+            .get_node(node_id)
+            .expect("get approved node")
+            .expect("approved node exists");
+        assert_eq!(
+            node.pointer("/spec/auth_status").and_then(Value::as_str),
+            Some("bound")
+        );
+    }
+
+    #[test]
+    fn super_admin_password_is_argon2_and_login_returns_public_user() {
+        let test = test_store();
+
+        let login = test
+            .store
+            .create_super_admin(json!({
+                "email": "root@example.com",
+                "name": "Root",
+                "password": "super-secret-password"
+            }))
+            .expect("create super admin");
+
+        assert_eq!(login.get("ok").and_then(Value::as_bool), Some(true));
+        assert!(login.get("token").and_then(Value::as_str).is_some());
+        assert!(login
+            .get("user")
+            .and_then(|user| user.get("credentials"))
+            .is_none());
+        let user = test
+            .store
+            .user_by_email("root@example.com")
+            .expect("load user")
+            .expect("user exists");
+        let password_hash = user
+            .pointer("/credentials/password_hash")
+            .and_then(Value::as_str)
+            .expect("password hash");
+        assert!(password_hash.starts_with("$argon2"));
+        assert_eq!(test.store.count_super_admins().unwrap(), 1);
+    }
+
+    #[test]
+    fn legacy_password_hash_is_upgraded_after_successful_login() {
+        let test = test_store();
+        let org_id = test.store.default_organization_id().unwrap();
+        let created_at = now();
+        let legacy_hash = legacy_user_password_hash("legacy@example.com", "old-password");
+        test.store
+            .conn
+            .execute(
+                "
+                INSERT INTO hub_users (
+                    id, project_id, organization_id, email, name, role, password_hash,
+                    status, created_at, updated_at
+                ) VALUES ('user_legacy', ?1, ?2, 'legacy@example.com', 'Legacy', 'member', ?3, 'active', ?4, ?4)
+                ",
+                params![PROJECT_ID, org_id, legacy_hash, created_at],
+            )
+            .unwrap();
+
+        let login = test
+            .store
+            .login_user(json!({
+                "email": "legacy@example.com",
+                "password": "old-password"
+            }))
+            .expect("legacy login");
+
+        assert_eq!(login.get("ok").and_then(Value::as_bool), Some(true));
+        let user = test
+            .store
+            .user_by_email("legacy@example.com")
+            .unwrap()
+            .unwrap();
+        let password_hash = user
+            .pointer("/credentials/password_hash")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(password_hash.starts_with("$argon2"));
+        assert_ne!(password_hash, legacy_hash);
+    }
+
+    #[test]
+    fn admin_session_required_for_management_actions() {
+        let test = test_store();
+        let admin_session = test
+            .store
+            .create_super_admin(json!({
+                "email": "admin@example.com",
+                "name": "Admin",
+                "password": "admin-password"
+            }))
+            .expect("create admin");
+        let admin_token = admin_session.get("token").and_then(Value::as_str).unwrap();
+        let org_id = test.store.default_organization_id().unwrap();
+        let created_at = now();
+        test.store
+            .conn
+            .execute(
+                "
+                INSERT INTO hub_users (
+                    id, project_id, organization_id, email, name, role, password_hash,
+                    status, created_at, updated_at
+                ) VALUES ('user_member', ?1, ?2, 'member@example.com', 'Member', 'member', ?3, 'active', ?4, ?4)
+                ",
+                params![
+                    PROJECT_ID,
+                    org_id,
+                    hash_user_password("member-password").unwrap(),
+                    created_at
+                ],
+            )
+            .unwrap();
+        let member_session = test
+            .store
+            .login_user(json!({
+                "email": "member@example.com",
+                "password": "member-password"
+            }))
+            .expect("member login");
+        let member_token = member_session.get("token").and_then(Value::as_str).unwrap();
+
+        assert!(test.store.require_admin_session(Some(admin_token)).is_ok());
+        assert!(test.store.require_admin_session(None).is_err());
+        let member_error = test
+            .store
+            .require_admin_session(Some(member_token))
+            .unwrap_err()
+            .to_string();
+        assert!(member_error.contains("forbidden"));
+    }
+
+    #[test]
+    fn pending_node_join_request_cannot_lease_tasks_before_approval() {
+        let test = test_store();
+        let node_id = "pending-node";
+        let join_token = "agj_pending_test";
+        let fingerprint = "fingerprint-pending";
+        test.store
+            .upsert_node(heartbeat_payload(node_id, Some(join_token), fingerprint))
+            .expect("pending heartbeat");
+        create_command_task(&test.store, "task_pending_node");
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": node_id,
+                "join_token": join_token,
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["command"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("lease response");
+
+        assert_eq!(
+            lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            lease.pointer("/decision/leased").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(lease
+            .pointer("/decision/reason")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("未经过 Hub 超级管理员授权"));
+    }
+
+    #[test]
+    fn approved_online_node_can_lease_matching_command_task() {
+        let test = test_store();
+        let node_id = "approved-node";
+        let join_token = "agj_approved_test";
+        let fingerprint = "fingerprint-approved";
+        approve_test_node(&test.store, node_id, join_token, fingerprint);
+        create_command_task(&test.store, "task_approved_node");
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": node_id,
+                "join_token": join_token,
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["command"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("lease task");
+
+        let tasks = lease.pointer("/tasks").and_then(Value::as_array).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0]
+                .pointer("/status/leased_by_node_id")
+                .and_then(Value::as_str),
+            Some(node_id)
+        );
+        assert_eq!(
+            tasks[0].pointer("/status/state").and_then(Value::as_str),
+            Some("in_progress")
+        );
+    }
+
+    #[test]
+    fn offline_node_cannot_lease_even_when_authorized() {
+        let test = test_store();
+        let node_id = "offline-node";
+        let join_token = "agj_offline_test";
+        let fingerprint = "fingerprint-offline";
+        approve_test_node(&test.store, node_id, join_token, fingerprint);
+        let stale = (Utc::now() - chrono::Duration::seconds(HEARTBEAT_OFFLINE_AFTER_SECONDS + 5))
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        test.store
+            .conn
+            .execute(
+                "UPDATE nodes SET last_heartbeat_at = ?1, updated_at = ?1 WHERE id = ?2",
+                params![stale, node_id],
+            )
+            .unwrap();
+        create_command_task(&test.store, "task_offline_node");
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": node_id,
+                "join_token": join_token,
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["command"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("offline lease response");
+
+        assert_eq!(
+            lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert!(lease
+            .pointer("/decision/reason")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("offline"));
+    }
+
+    #[test]
+    fn full_node_does_not_receive_new_lease() {
+        let test = test_store();
+        let node_id = "full-node";
+        let join_token = "agj_full_test";
+        let fingerprint = "fingerprint-full";
+        approve_test_node(&test.store, node_id, join_token, fingerprint);
+        test.store
+            .conn
+            .execute(
+                "UPDATE nodes SET running_jobs = max_concurrent_jobs WHERE id = ?1",
+                params![node_id],
+            )
+            .unwrap();
+        create_command_task(&test.store, "task_full_node");
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": node_id,
+                "join_token": join_token,
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["command"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("full node lease response");
+
+        assert_eq!(
+            lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn default_org_queries_and_leases_do_not_cross_organizations() {
+        let test = test_store();
+        let now_value = now();
+        test.store
+            .conn
+            .execute(
+                "
+                INSERT INTO organizations (id, project_id, name, slug, created_at, updated_at)
+                VALUES ('org_other_test', ?1, 'Other Org', 'other-test', ?2, ?2)
+                ",
+                params![PROJECT_ID, now_value],
+            )
+            .unwrap();
+
+        approve_test_node(
+            &test.store,
+            "default-org-node",
+            "agj_default_org",
+            "fingerprint-default-org",
+        );
+        test.store
+            .upsert_node(json!({
+                "id": "other-org-node",
+                "organization_id": "org_other_test",
+                "name": "Other Org Node",
+                "os": "linux",
+                "arch": "x86_64",
+                "address": "other.local",
+                "tags": ["server"],
+                "capabilities": ["command"],
+                "groups": ["default"],
+                "weight": 1,
+                "max_concurrent_jobs": 1,
+                "cpu_cores": 2,
+                "memory_mb": 2048,
+                "status": "online"
+            }))
+            .unwrap();
+
+        let other_task = test
+            .store
+            .create_task(json!({
+                "id": "task_other_org",
+                "organization_id": "org_other_test",
+                "title": "Other org task",
+                "summary": "Must not leak into default org lease",
+                "created_by": "test-agent",
+                "owner": "worker-agent",
+                "assigned_to": ["worker-agent"],
+                "priority": "normal",
+                "labels": ["compute", "command"],
+                "inputs": [serde_json::to_string_pretty(&json!({
+                    "type": "command",
+                    "program": "hostname",
+                    "args": [],
+                    "timeout_seconds": 30
+                })).unwrap()],
+                "outputs": ["stdout"],
+                "acceptance_criteria": ["isolated"]
+            }))
+            .unwrap()
+            .item;
+        assert_eq!(
+            other_task
+                .pointer("/metadata/organization_id")
+                .and_then(Value::as_str),
+            Some("org_other_test")
+        );
+
+        let nodes = test.store.list_nodes().unwrap();
+        assert!(nodes.iter().any(|node| {
+            node.pointer("/metadata/id").and_then(Value::as_str) == Some("default-org-node")
+        }));
+        assert!(!nodes.iter().any(|node| {
+            node.pointer("/metadata/id").and_then(Value::as_str) == Some("other-org-node")
+        }));
+
+        let tasks = test
+            .store
+            .list_tasks(TaskQuery {
+                limit: Some(100),
+                owner: None,
+                state: None,
+            })
+            .unwrap();
+        assert!(!tasks.iter().any(|task| {
+            task.pointer("/metadata/id").and_then(Value::as_str) == Some("task_other_org")
+        }));
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": "default-org-node",
+                "join_token": "agj_default_org",
+                "machine_fingerprint": "fingerprint-default-org",
+                "capabilities": ["command"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("lease response");
+        assert_eq!(
+            lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+        let still_assigned = test
+            .store
+            .conn
+            .query_row(
+                "SELECT status FROM agent_tasks WHERE id = 'task_other_org'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(still_assigned, "assigned");
     }
 }

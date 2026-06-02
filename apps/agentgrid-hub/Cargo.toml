@@ -11,10 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+argon2 = "0.5"
 axum = { workspace = true, features = ["ws"] }
 base64 = "0.22"
 chrono.workspace = true
 clap.workspace = true
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 futures-util = "0.3"
 hmac = "0.12"
 http-body-util = "0.1"
@@ -23,6 +25,7 @@ mime_guess = "2"
 reqwest.workspace = true
 rusqlite.workspace = true
 regex = "1"
+rand_core = { version = "0.6", features = ["getrandom"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
@@ -30,3 +33,6 @@ tokio.workspace = true
 uuid.workspace = true
 agentgrid-protocol = { path = "../../crates/agentgrid-protocol" }
 agentgrid-scheduler = { path = "../../crates/agentgrid-scheduler" }
+
+[dev-dependencies]
+tempfile = "3"

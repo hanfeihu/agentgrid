@@ -137,6 +137,7 @@ cargo run -p agentgrid-cli -- submit-command \
 | --- | --- | --- |
 | 5 分钟快速开始 | [docs/zh-CN/quickstart.md](docs/zh-CN/quickstart.md) | [docs/quickstart.md](docs/quickstart.md) |
 | 愿景和生态 | [docs/zh-CN/vision.md](docs/zh-CN/vision.md) | [docs/vision.md](docs/vision.md) |
+| 成熟度和已知缺口 | [docs/zh-CN/maturity.md](docs/zh-CN/maturity.md) | [docs/maturity.md](docs/maturity.md) |
 | 架构 | [docs/zh-CN/architecture.md](docs/zh-CN/architecture.md) | [docs/architecture.md](docs/architecture.md) |
 | 安装 | [docs/zh-CN/install.md](docs/zh-CN/install.md) | [docs/install.md](docs/install.md) |
 | 部署 | [docs/zh-CN/deployment.md](docs/zh-CN/deployment.md) | [docs/deployment.md](docs/deployment.md) |

@@ -1,7 +1,7 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::State, http::HeaderMap, routing::get, Json, Router};
 use serde_json::Value;
 
-use crate::{store, ApiError, AppState};
+use crate::{bearer_token_from_headers, store, ApiError, AppState};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new().route(
@@ -10,13 +10,21 @@ pub(crate) fn router() -> Router<AppState> {
     )
 }
 
-async fn get_system_settings(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.system_settings()?))
+async fn get_system_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let store = store(&state)?;
+    store.require_admin_session(bearer_token_from_headers(&headers).as_deref())?;
+    Ok(Json(store.system_settings()?))
 }
 
 async fn update_system_settings(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(Json(store(&state)?.update_system_settings(input)?))
+    let store = store(&state)?;
+    store.require_admin_session(bearer_token_from_headers(&headers).as_deref())?;
+    Ok(Json(store.update_system_settings(input)?))
 }
