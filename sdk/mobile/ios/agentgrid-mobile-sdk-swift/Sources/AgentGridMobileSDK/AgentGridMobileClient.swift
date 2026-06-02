@@ -92,7 +92,7 @@ public struct AgentGridMobileClient {
 
     public func bridgeWebSocketURL(sessionID: String, token: String? = nil) throws -> URL {
         guard var components = URLComponents(
-            url: hubURL.appendingPathComponent("api/bridge-sessions/\(sessionID)/ws"),
+            url: try endpointURL("api/bridge-sessions/\(sessionID)/ws"),
             resolvingAgainstBaseURL: false
         ) else {
             throw AgentGridMobileError.invalidURL(sessionID)
@@ -105,6 +105,46 @@ public struct AgentGridMobileClient {
             throw AgentGridMobileError.invalidURL(sessionID)
         }
         return url
+    }
+
+    public func listPortBridges() async throws -> AgentGridJSONObject {
+        try await get("/api/port-bridges")
+    }
+
+    public func createPortBridge(
+        sourceNodeID: String,
+        targetNodeID: String,
+        targetPort: Int,
+        sourceBindPort: Int = 0,
+        targetHost: String = "127.0.0.1",
+        sourceBindHost: String = "127.0.0.1",
+        ttlSeconds: Int = 1800,
+        purpose: String? = nil,
+        createdBy: String = "agentgrid-mobile-sdk"
+    ) async throws -> AgentGridJSONObject {
+        var body: AgentGridJSONObject = [
+            "source_node_id": sourceNodeID,
+            "target_node_id": targetNodeID,
+            "source_bind_host": sourceBindHost,
+            "source_bind_port": sourceBindPort,
+            "target_host": targetHost,
+            "target_port": targetPort,
+            "protocol": "tcp",
+            "ttl_seconds": ttlSeconds,
+            "created_by": createdBy
+        ]
+        if let purpose {
+            body["purpose"] = purpose
+        }
+        return try await post("/api/port-bridges", body: body)
+    }
+
+    public func getPortBridge(_ portBridgeID: String) async throws -> AgentGridJSONObject {
+        try await get("/api/port-bridges/\(portBridgeID)")
+    }
+
+    public func closePortBridge(_ portBridgeID: String) async throws -> AgentGridJSONObject {
+        try await delete("/api/port-bridges/\(portBridgeID)")
     }
 
     public func submitTask(_ request: AgentGridJSONObject) async throws -> AgentGridJSONObject {
@@ -128,7 +168,7 @@ public struct AgentGridMobileClient {
     }
 
     public func artifactDownloadURL(artifactID: String) -> URL {
-        hubURL.appendingPathComponent("api/artifacts/\(artifactID)/download")
+        try! endpointURL("api/artifacts/\(artifactID)/download")
     }
 
     public func taskTemplates() async throws -> AgentGridJSONObject {
@@ -150,14 +190,16 @@ public struct AgentGridMobileClient {
         try await send(path: path, method: "POST", body: body)
     }
 
+    public func delete(_ path: String) async throws -> AgentGridJSONObject {
+        try await send(path: path, method: "DELETE", body: nil)
+    }
+
     private func send(
         path: String,
         method: String,
         body: AgentGridJSONObject?
     ) async throws -> AgentGridJSONObject {
-        guard let url = URL(string: path, relativeTo: hubURL)?.absoluteURL else {
-            throw AgentGridMobileError.invalidURL(path)
-        }
+        let url = try endpointURL(path)
 
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -187,5 +229,19 @@ public struct AgentGridMobileClient {
             throw AgentGridMobileError.apiError(message)
         }
         return object
+    }
+
+    private func endpointURL(_ path: String) throws -> URL {
+        if let url = URL(string: path), url.scheme != nil {
+            return url
+        }
+        let base = hubURL.absoluteString.hasSuffix("/")
+            ? hubURL.absoluteString
+            : "\(hubURL.absoluteString)/"
+        let trimmedPath = path.drop(while: { $0 == "/" })
+        guard let url = URL(string: base + trimmedPath) else {
+            throw AgentGridMobileError.invalidURL(path)
+        }
+        return url
     }
 }

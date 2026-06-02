@@ -12,6 +12,7 @@ Mobile apps use this SDK to:
 - View Hub artifacts such as screenshots, logs, reports, and files.
 - Open controlled bridge sessions to registered node-local services such as
   Codex on `127.0.0.1:8390`.
+- Create and manage node-to-node TCP port bridges through Hub.
 
 Mobile apps must not execute AgentGrid tasks locally. If a phone app needs a
 machine operation, it submits a structured task to Hub and lets Hub schedule an
@@ -127,6 +128,48 @@ scripts/e2e-codex-bridge.sh
 
 The E2E test starts a temporary Hub, Worker, and fake `127.0.0.1:8390`
 service, then verifies `client -> Hub -> Worker -> local service`.
+
+## Node Port Bridge
+
+AgentGrid Mobile SDK v1 also includes Node Port Bridge helpers. This is a Hub
+control-plane feature: the phone asks Hub to create, inspect, or close a bridge.
+The phone does not relay TCP bytes and does not become a Worker.
+
+Use it when a mobile console needs node A to open a loopback port that reaches
+a service visible from node B:
+
+```text
+node A browser/tool -> 127.0.0.1:<source_port>
+  -> AgentGrid Hub PortBridge session
+  -> node B -> <target_host>:<target_port>
+```
+
+Hub endpoints:
+
+```http
+GET /api/port-bridges
+POST /api/port-bridges
+GET /api/port-bridges/{port_bridge_id}
+DELETE /api/port-bridges/{port_bridge_id}
+```
+
+Bridge rules:
+
+- v1 supports TCP only.
+- `source_bind_host` is `127.0.0.1`.
+- `source_bind_port` may be `0`, which lets the source Worker choose a free
+  local port.
+- `target_host` must be loopback, localhost, or a private IP address.
+- Source and target Workers must both keep their Hub bridge WebSocket connected.
+
+SDK methods:
+
+```text
+listPortBridges()
+createPortBridge(sourceNodeID/sourceNodeId, targetNodeID/targetNodeId, targetPort, ...)
+getPortBridge(portBridgeID/portBridgeId)
+closePortBridge(portBridgeID/portBridgeId)
+```
 
 ## Standard
 

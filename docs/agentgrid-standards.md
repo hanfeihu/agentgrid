@@ -507,6 +507,7 @@ Mobile client responsibilities:
 - Poll task status and task events.
 - Read execution records and scheduler reasons.
 - View Hub artifacts such as screenshots, logs, reports, and result files.
+- Create and manage Hub-controlled node-to-node TCP port bridges.
 
 Mobile client non-goals:
 
@@ -540,6 +541,13 @@ Required SDK methods:
 - `artifactDownloadUrl`
 - `taskTemplates`
 - `startTaskTemplate`
+- `localServices`
+- `createBridgeSession`
+- `bridgeWebSocketUrl`
+- `listPortBridges`
+- `createPortBridge`
+- `getPortBridge`
+- `closePortBridge`
 
 Recommended mobile screens:
 
@@ -548,6 +556,8 @@ Recommended mobile screens:
 - Submit task from tool or template.
 - Task timeline.
 - Screenshot/artifact viewer.
+- Codex Bridge.
+- Node Port Bridge.
 
 Polling rule:
 

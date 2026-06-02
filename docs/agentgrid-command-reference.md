@@ -2482,6 +2482,13 @@ Mobile SDK methods:
 - `artifactDownloadUrl(artifactId)`
 - `taskTemplates()`
 - `startTaskTemplate(templateId, request)`
+- `localServices()`
+- `createBridgeSession(nodeId, serviceId)`
+- `bridgeWebSocketUrl(sessionId, token)`
+- `listPortBridges()`
+- `createPortBridge(sourceNodeId, targetNodeId, targetPort, ...)`
+- `getPortBridge(portBridgeId)`
+- `closePortBridge(portBridgeId)`
 
 ## 36. Task Template Store v1
 

@@ -53,6 +53,39 @@ class AgentGridMobileClient(
         return "$wsBase/api/bridge-sessions/$sessionId/ws$suffix"
     }
 
+    suspend fun listPortBridges(): JSONObject = get("/api/port-bridges")
+
+    suspend fun createPortBridge(
+        sourceNodeId: String,
+        targetNodeId: String,
+        targetPort: Int,
+        sourceBindPort: Int = 0,
+        targetHost: String = "127.0.0.1",
+        sourceBindHost: String = "127.0.0.1",
+        ttlSeconds: Int = 1800,
+        purpose: String? = null,
+        createdBy: String = "agentgrid-mobile-sdk",
+    ): JSONObject {
+        val body = JSONObject()
+            .put("source_node_id", sourceNodeId)
+            .put("target_node_id", targetNodeId)
+            .put("source_bind_host", sourceBindHost)
+            .put("source_bind_port", sourceBindPort)
+            .put("target_host", targetHost)
+            .put("target_port", targetPort)
+            .put("protocol", "tcp")
+            .put("ttl_seconds", ttlSeconds)
+            .put("created_by", createdBy)
+        purpose?.let { body.put("purpose", it) }
+        return post("/api/port-bridges", body)
+    }
+
+    suspend fun getPortBridge(portBridgeId: String): JSONObject =
+        get("/api/port-bridges/$portBridgeId")
+
+    suspend fun closePortBridge(portBridgeId: String): JSONObject =
+        delete("/api/port-bridges/$portBridgeId")
+
     suspend fun submitTask(request: JSONObject): JSONObject =
         post("/api/agent-runtime/tasks", request)
 
@@ -82,6 +115,9 @@ class AgentGridMobileClient(
 
     suspend fun post(path: String, body: JSONObject): JSONObject =
         request(path = path, method = "POST", body = body)
+
+    suspend fun delete(path: String): JSONObject =
+        request(path = path, method = "DELETE", body = null)
 
     private suspend fun request(
         path: String,

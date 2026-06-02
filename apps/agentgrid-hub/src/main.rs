@@ -10093,7 +10093,7 @@ fn mobile_sdk_standard() -> Value {
         "api_version": "agentgrid.mobile-sdk/v1",
         "kind": "MobileSdkStandard",
         "generated_at": now(),
-        "purpose": "Mobile SDKs are console clients for iOS and Android. They let phones view the AgentGrid cluster, submit structured tasks, inspect execution records, view artifacts, and open controlled bridge sessions to registered node-local services such as Codex.",
+        "purpose": "Mobile SDKs are console clients for iOS and Android. They let phones view the AgentGrid cluster, submit structured tasks, inspect execution records, view artifacts, open controlled bridge sessions to registered node-local services such as Codex, and create Hub-managed node-to-node port bridges.",
         "platforms": [
             {
                 "id": "ios",
@@ -10116,7 +10116,8 @@ fn mobile_sdk_standard() -> Value {
                 "workbench and node viewer",
                 "structured task submitter",
                 "execution record and artifact viewer",
-                "status polling client"
+                "status polling client",
+                "node port bridge control client"
             ],
             "is_not": [
                 "Worker",
@@ -10151,7 +10152,11 @@ fn mobile_sdk_standard() -> Value {
             { "name": "startTaskTemplate", "method": "POST", "path": "/api/task-templates/{template_id}/start", "purpose": "Start a task from a template." },
             { "name": "localServices", "method": "GET", "path": "/api/local-services", "purpose": "List Hub-registered node-local services." },
             { "name": "createBridgeSession", "method": "POST", "path": "/api/bridge-sessions", "purpose": "Create a session to codex.local or another registered local service." },
-            { "name": "bridgeWebSocketUrl", "method": "LOCAL", "path": "/api/bridge-sessions/{session_id}/ws", "purpose": "Build a WebSocket URL for structured bridge messages." }
+            { "name": "bridgeWebSocketUrl", "method": "LOCAL", "path": "/api/bridge-sessions/{session_id}/ws", "purpose": "Build a WebSocket URL for structured bridge messages." },
+            { "name": "listPortBridges", "method": "GET", "path": "/api/port-bridges", "purpose": "List active Hub-managed node-to-node TCP port bridge sessions." },
+            { "name": "createPortBridge", "method": "POST", "path": "/api/port-bridges", "purpose": "Ask Hub to bridge a source node loopback port to a target node service." },
+            { "name": "getPortBridge", "method": "GET", "path": "/api/port-bridges/{port_bridge_id}", "purpose": "Read a node port bridge state and source URL." },
+            { "name": "closePortBridge", "method": "DELETE", "path": "/api/port-bridges/{port_bridge_id}", "purpose": "Close a node port bridge session." }
         ],
         "recommended_mobile_screens": [
             {
@@ -10189,6 +10194,12 @@ fn mobile_sdk_standard() -> Value {
                 "title": "Codex Bridge",
                 "data": ["nodes", "localServices", "createBridgeSession", "bridgeWebSocketUrl"],
                 "shows": ["which nodes expose codex.local", "service health", "bridge session state", "structured request/response"]
+            },
+            {
+                "id": "node_port_bridge",
+                "title": "节点端口桥接",
+                "data": ["nodes", "listPortBridges", "createPortBridge", "getPortBridge", "closePortBridge"],
+                "shows": ["source node", "target node", "target host/port", "source URL", "state", "close action"]
             }
         ],
         "polling_policy": {
