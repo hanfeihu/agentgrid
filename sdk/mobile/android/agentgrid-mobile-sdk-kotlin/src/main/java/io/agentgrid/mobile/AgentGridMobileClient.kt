@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
 
 class AgentGridApiException(message: String) : Exception(message)
@@ -49,7 +50,9 @@ class AgentGridMobileClient(
             baseUrl.startsWith("http://") -> "ws://${baseUrl.removePrefix("http://")}"
             else -> baseUrl
         }
-        val suffix = token?.let { "?token=$it" }.orEmpty()
+        val suffix = token
+            ?.let { "?token=${URLEncoder.encode(it, Charsets.UTF_8.name())}" }
+            .orEmpty()
         return "$wsBase/api/bridge-sessions/$sessionId/ws$suffix"
     }
 
@@ -101,7 +104,7 @@ class AgentGridMobileClient(
     suspend fun artifacts(): JSONObject = get("/api/artifacts")
 
     fun artifactDownloadUrl(artifactId: String): String =
-        "$baseUrl/api/artifacts/$artifactId/download"
+        endpointUrl("/api/artifacts/$artifactId/download").toString()
 
     suspend fun taskTemplates(): JSONObject = get("/api/task-templates")
 
@@ -124,7 +127,7 @@ class AgentGridMobileClient(
         method: String,
         body: JSONObject?,
     ): JSONObject = withContext(Dispatchers.IO) {
-        val connection = (URL("$baseUrl$path").openConnection() as HttpURLConnection).apply {
+        val connection = (endpointUrl(path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 30_000
             readTimeout = 30_000
@@ -164,5 +167,12 @@ class AgentGridMobileClient(
 
     companion object {
         const val DEFAULT_HUB_URL = "http://chenqi.tminos.com:20080/agentgrid"
+    }
+
+    private fun endpointUrl(path: String): URL {
+        if (path.startsWith("http://") || path.startsWith("https://")) {
+            return URL(path)
+        }
+        return URL("$baseUrl/${path.trimStart('/')}")
     }
 }

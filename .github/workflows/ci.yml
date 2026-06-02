@@ -17,6 +17,10 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: apps/agentgrid-web/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
       - name: Rust format
         run: cargo fmt --all -- --check
       - name: Rust check
@@ -29,5 +33,7 @@ jobs:
         run: npm --prefix apps/agentgrid-web run build
       - name: Schema check
         run: node scripts/validate-agentgrid-schemas.js
+      - name: Android Mobile SDK
+        run: scripts/check-android-mobile-sdk.sh
       - name: Hub Worker CLI e2e
         run: scripts/e2e-hub-worker-cli.sh

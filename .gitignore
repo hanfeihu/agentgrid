@@ -23,6 +23,8 @@
 /sdk/mobile/ios/agentgrid-mobile-sdk-swift/.build/
 /sdk/mobile/android/.gradle/
 /sdk/mobile/android/build/
+/sdk/mobile/android/**/build/
+/sdk/mobile/android/local.properties
 
 # Editor and local environment files
 .idea/
