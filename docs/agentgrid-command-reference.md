@@ -691,6 +691,120 @@ Worker failure endpoint:
 POST /worker/tasks/{task_id}/fail
 ```
 
+## 12.1 Node Port Bridge API
+
+Node Port Bridge lets the Hub ask one Worker node to expose a loopback TCP port
+that forwards traffic to another Worker node's local service.
+
+Business meaning:
+
+```text
+A node opens http://127.0.0.1:<source_port>
+  -> AgentGrid Hub coordinates the bridge
+  -> B node connects to <target_host>:<target_port>
+```
+
+Use this when a tool, browser, IDE, debugger, web console, or local service is
+available only from one node, but another node needs to access it through
+AgentGrid.
+
+Important boundaries:
+
+- v1 supports TCP only.
+- The source Worker binds only to `127.0.0.1`.
+- `source_bind_port` may be `0`; the source Worker then chooses an available port.
+- `target_host` must be `127.0.0.1`, `localhost`, `::1`, or a private/link-local IP.
+- Both source and target nodes must be online.
+- Both nodes must declare `port_bridge`, `plugin`, or `session` capability.
+- Both Workers must keep their outbound Hub bridge WebSocket connected.
+- Child nodes do not need inbound public ports.
+- This is node-to-node access. The client that creates the bridge does not relay TCP bytes.
+
+List active bridges:
+
+```http
+GET /port-bridges
+```
+
+Create a bridge:
+
+```http
+POST /port-bridges
+Content-Type: application/json
+```
+
+```json
+{
+  "source_node_id": "local-mac",
+  "target_node_id": "linux-worker-01",
+  "source_bind_host": "127.0.0.1",
+  "source_bind_port": 18080,
+  "target_host": "127.0.0.1",
+  "target_port": 8080,
+  "protocol": "tcp",
+  "ttl_seconds": 1800,
+  "purpose": "Open B node local web console from A node",
+  "created_by": "agentgrid-cli"
+}
+```
+
+Read one bridge:
+
+```http
+GET /port-bridges/{port_bridge_id}
+```
+
+Close one bridge:
+
+```http
+DELETE /port-bridges/{port_bridge_id}
+```
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "item": {
+    "api_version": "agentgrid.bridge/v1",
+    "kind": "PortBridgeSession",
+    "metadata": {
+      "id": "pbridge_xxx",
+      "created_at": "2026-06-02T00:00:00Z",
+      "expires_at": "2026-06-02T00:30:00Z",
+      "created_by": "agentgrid-cli"
+    },
+    "spec": {
+      "source_node_id": "local-mac",
+      "target_node_id": "linux-worker-01",
+      "source_bind_host": "127.0.0.1",
+      "source_bind_port": 18080,
+      "target_host": "127.0.0.1",
+      "target_port": 8080,
+      "protocol": "tcp",
+      "purpose": "Open B node local web console from A node"
+    },
+    "status": {
+      "state": "ready",
+      "source_connected": true,
+      "target_connected": true,
+      "source_url": "http://127.0.0.1:18080",
+      "last_error": null
+    }
+  }
+}
+```
+
+State meanings:
+
+| State | Meaning |
+| --- | --- |
+| `starting` | Hub accepted the request and is asking Workers to prepare the bridge. |
+| `waiting_for_worker` | One or both Workers are not connected to the Hub bridge channel. |
+| `ready` | The source node can open `status.source_url`. |
+| `closed` | The bridge has been closed manually or by TTL. |
+| `failed` | A Worker reported an error. Read `status.last_error`. |
+
 ## 13. Remote Interactive Terminal
 
 The Web console supports an interactive terminal over WebSocket.
@@ -1069,6 +1183,96 @@ agentgrid send \
   --subject "Task assigned" \
   --summary "Please check the task queue."
 ```
+
+Create a node-to-node port bridge:
+
+```bash
+agentgrid bridge-port \
+  --source-node local-mac \
+  --target-node linux-worker-01 \
+  --target-port 8080 \
+  --source-port 18080 \
+  --purpose "Open linux-worker-01 local web console from local-mac"
+```
+
+Equivalent resource command:
+
+```bash
+agentgrid port-bridges create \
+  --source-node local-mac \
+  --target-node linux-worker-01 \
+  --target-host 127.0.0.1 \
+  --target-port 8080 \
+  --source-port 18080 \
+  --ttl-seconds 1800 \
+  --purpose "Open linux-worker-01 local web console from local-mac"
+```
+
+List active port bridges:
+
+```bash
+agentgrid port-bridges
+```
+
+Get one port bridge:
+
+```bash
+agentgrid port-bridges get --id pbridge_xxx
+```
+
+Close one port bridge:
+
+```bash
+agentgrid port-bridges close --id pbridge_xxx
+```
+
+Text output example:
+
+```text
+Port Bridge ID: pbridge_xxx
+State: ready
+Source Node: local-mac
+Target: linux-worker-01 -> 127.0.0.1:8080
+Source URL: http://127.0.0.1:18080
+
+查看详情: agentgrid port-bridges get --id pbridge_xxx
+关闭桥接: agentgrid port-bridges close --id pbridge_xxx
+```
+
+JSON output:
+
+```bash
+agentgrid bridge-port \
+  --source-node local-mac \
+  --target-node linux-worker-01 \
+  --target-port 8080 \
+  --source-port 18080 \
+  --output json
+```
+
+CLI parameter contract:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--source-node` | required | Node that receives the local loopback port. Open `Source URL` on this node. |
+| `--target-node` | required | Node that can reach the target service. |
+| `--target-port` | required | Target TCP port on the target node side. |
+| `--source-port` | `0` | Local loopback port on the source node. `0` lets Worker choose one. |
+| `--target-host` | `127.0.0.1` | Host/IP reached from the target node. |
+| `--bind-host` | `127.0.0.1` | Source bind host. v1 only allows `127.0.0.1`. |
+| `--ttl-seconds` | `1800` | Auto-expire time, clamped by Hub to 30-86400 seconds. |
+| `--protocol` | `tcp` | v1 only supports `tcp`. |
+| `--purpose` | optional | Human-readable reason for audit and Web console. |
+| `--created-by` | `agentgrid-cli` | Actor recorded in audit if no authenticated user session is present. |
+| `--output` | `text` | Use `json` for machine-readable output. |
+
+AI client rule:
+
+- Use `bridge-port` for one quick bridge.
+- Use `port-bridges create/get/close` when managing bridge lifecycle explicitly.
+- After creation, poll `agentgrid port-bridges get --id pbridge_xxx` until `status.state` is `ready`.
+- Only the source node can use `status.source_url`; opening it on the operator laptop works only when the operator laptop is the source node.
+- Close the bridge when the task is done.
 
 ## 17. Workflow / DAG API
 
@@ -1499,6 +1703,11 @@ Settings include:
 
 Node join authorization:
 
+AgentGrid uses **AgentGrid Node Join Standard v1** for all Worker onboarding.
+The design follows the same idea as the OAuth 2.0 Device Authorization Grant:
+the machine can connect to the Hub, but the human approval happens on another
+browser-capable device.
+
 Workers should start with a stable node id, machine fingerprint, and join token.
 The Hub records first contact as `pending`. Pending nodes may heartbeat, but they
 cannot lease tasks. A super admin must approve the node once in the Web console.
@@ -1507,6 +1716,23 @@ After approval, the Hub binds:
 - `node_id`
 - `machine_fingerprint`
 - `join_token_hash`
+
+Why Linux does not need a browser:
+
+- The installer prints the node id, token hint, and Hub approval URL.
+- The Linux Worker only sends structured heartbeat and join data.
+- The operator opens Hub on their own computer, logs in, checks the machine
+  fingerprint, and approves the node.
+- After approval the same Worker process can lease tasks without re-login.
+
+Recommended headless Linux flow:
+
+1. Admin creates a node provisioning plan in Hub.
+2. Hub generates a one-time `agj_...` join token and systemd service template.
+3. Operator runs the install commands on Linux.
+4. Worker reports `auth_status = pending`.
+5. Admin approves in Hub.
+6. Hub stores only `join_token_hash`, token hint, and machine fingerprint.
 
 Worker flags:
 
@@ -1542,6 +1768,26 @@ Scheduling rule:
 - `auth_status = pending`: can heartbeat, cannot receive tasks.
 - `auth_status = bound`: can receive tasks when online and eligible.
 - `auth_status = legacy`: existing pre-auth nodes remain compatible until re-enrolled.
+
+Node Join Contract:
+
+```json
+{
+  "api_version": "agentgrid.node-join/v1",
+  "kind": "NodeJoinRequest",
+  "node_id": "linux-worker-02",
+  "node_name": "huarui 子节点",
+  "machine_fingerprint": "sha256:stable-machine-id",
+  "join_token": "agj_xxx",
+  "capabilities": ["command", "file", "git"],
+  "system": {
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_cores": 4,
+    "memory_mb": 8192
+  }
+}
+```
 
 ## 23. Workflow Templates
 
