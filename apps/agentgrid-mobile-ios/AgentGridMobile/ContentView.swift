@@ -55,7 +55,7 @@ struct LocalService: Identifiable, Hashable {
 
     var statusTitle: String {
         if isAvailable { return "可用" }
-        if nodeState != "online" { return "节点离线" }
+        if nodeState != "online" { return "电脑离线" }
         return "不可用"
     }
 
@@ -66,7 +66,7 @@ struct LocalService: Identifiable, Hashable {
     }
 
     var businessSubtitle: String {
-        if isAvailable { return "可以连接这台电脑上的 Codex" }
+        if isAvailable { return "可以开始对话" }
         if nodeState != "online" { return "这台电脑暂时不能使用" }
         return "请先在这台电脑上启动 Codex"
     }
@@ -235,7 +235,8 @@ final class AgentGridMobileModel: ObservableObject {
     func selectService(_ service: LocalService) {
         selectedServiceID = service.id
         userSelectedServiceID = true
-        disconnectCodexChat(message: "已选择 \(service.nodeName)")
+        disconnectCodexChat(message: nil)
+        activityText = "已选择 \(service.nodeName)"
     }
 
     init() {
@@ -262,9 +263,9 @@ final class AgentGridMobileModel: ObservableObject {
 
     var selectedServiceSummary: String {
         guard let service = selectedService else {
-            return "还没有发现可连接的 Codex 服务"
+            return "还没有发现可聊天的电脑"
         }
-        return "\(service.nodeName) / \(service.statusTitle)"
+        return "\(service.nodeName) / \(service.businessStatusTitle)"
     }
 
     var compactActivityText: String {
@@ -306,9 +307,9 @@ final class AgentGridMobileModel: ObservableObject {
     }
 
     var systemHealthTitle: String {
-        if hubState != "在线" { return "Hub 未连接" }
-        if onlineNodes.isEmpty { return "没有在线节点" }
-        if availableServices.isEmpty { return "Codex 服务不可用" }
+        if hubState != "在线" { return "中心未连接" }
+        if onlineNodes.isEmpty { return "没有在线电脑" }
+        if availableServices.isEmpty { return "没有可聊天电脑" }
         if !failedTasks.isEmpty { return "有任务失败" }
         return "系统可用"
     }
@@ -320,7 +321,7 @@ final class AgentGridMobileModel: ObservableObject {
     }
 
     var primaryCodexActionTitle: String {
-        codexConnected ? "继续和 Codex 聊天" : "连接 Mac Codex"
+        codexConnected ? "继续聊天" : "开始聊天"
     }
 
     var codexBusinessStatusTitle: String {
@@ -336,15 +337,15 @@ final class AgentGridMobileModel: ObservableObject {
             return "手机已经接到 \(selectedService?.nodeName ?? "工作电脑")，可以直接和 Codex 对话。"
         }
         guard let service = selectedService else {
-            return "还没有发现可以连接的工作电脑。请确认 Mac 上的 AgentGrid Worker 和 Codex 都在运行。"
+            return "还没有发现可以聊天的工作电脑。请确认电脑在线，并且 Codex 已经启动。"
         }
         if service.isAvailable {
-            return "将连接 \(service.nodeName)，让手机通过 AgentGrid 使用这台电脑上的 Codex。"
+            return "将连接 \(service.nodeName)，在手机上直接和这台电脑的 Codex 对话。"
         }
         if service.nodeState != "online" {
             return "\(service.nodeName) 当前不在线，不能发起聊天。"
         }
-        return "\(service.nodeName) 在线，但 Codex 服务不可用。请在这台电脑上启动 Codex。"
+        return "\(service.nodeName) 在线，但 Codex 还没准备好。请在这台电脑上启动 Codex。"
     }
 
     var codexBusinessStatusColor: Color {
@@ -376,14 +377,14 @@ final class AgentGridMobileModel: ObservableObject {
             ),
             ReadinessStep(
                 id: "service",
-                title: "Codex 服务",
-                detail: service?.statusTitle ?? "未发现服务",
+                title: "Codex 状态",
+                detail: service?.businessStatusTitle ?? "未发现电脑",
                 state: service?.isAvailable == true ? .ok : .warning
             ),
             ReadinessStep(
                 id: "bridge",
-                title: "桥接通道",
-                detail: codexConnected ? "聊天通道已建立" : "等待连接",
+                title: "手机聊天",
+                detail: codexConnected ? "已连接" : "等待连接",
                 state: codexConnected ? .ok : .pending
             ),
         ]
@@ -426,7 +427,7 @@ final class AgentGridMobileModel: ObservableObject {
     func testCodexHealth() async {
         requestMethod = "GET"
         requestPath = "/healthz"
-        await sendBridgeRequest(successMessage: "Codex 服务连接成功")
+        await sendBridgeRequest(successMessage: "Codex 已准备好")
     }
 
     func connectCodexChat() async {
@@ -439,49 +440,41 @@ final class AgentGridMobileModel: ObservableObject {
         defer { isLoading = false }
 
         if services.isEmpty {
-            activityText = "正在刷新 Codex 服务..."
-            appendSystemMessage("正在刷新 Hub 上可用的 Codex 服务。")
+            activityText = "正在查找可聊天的电脑..."
             do {
                 try await loadHealth()
                 try await loadServices()
             } catch {
                 let message = readableError(error)
                 activityText = message
-                appendSystemMessage(message)
                 return
             }
         }
 
         if !isAuthenticated {
-            activityText = "正在登录移动控制台账号..."
-            appendSystemMessage("正在登录 Hub，登录后才能创建 Codex 桥接会话。")
+            activityText = "正在准备移动端访问..."
             do {
                 email = demoEmail
                 try await loginWith(email: demoEmail, password: demoPassword)
                 try await loadServices()
-                appendSystemMessage("Hub 登录成功。")
             } catch {
                 let message = readableError(error)
                 activityText = message
-                appendSystemMessage(message)
                 return
             }
         }
 
         guard let service = selectedService else {
-            activityText = "没有找到 Codex 服务"
-            appendSystemMessage("没有找到可连接的 Codex 服务，请确认 Mac Worker 在线。")
+            activityText = "没有找到可聊天的电脑"
             return
         }
         guard service.isAvailable else {
-            activityText = "\(service.nodeName) 的 Codex 服务不可用"
-            appendSystemMessage("\(service.nodeName) 的 Codex 服务不可用，请先刷新或检查 Mac 上 Codex 是否启动。")
+            activityText = "\(service.nodeName) 现在还不能聊天"
             return
         }
 
         disconnectCodexChat(message: nil)
-        activityText = "正在连接 Codex..."
-        appendSystemMessage("正在通过 AgentGrid 连接 \(service.nodeName) 上的 Codex。")
+        activityText = "正在连接 \(service.nodeName)..."
 
         do {
             let bridgeSession = try await createBridgeSession(service: service)
@@ -522,7 +515,6 @@ final class AgentGridMobileModel: ObservableObject {
         isLoading = false
         if let message {
             activityText = message
-            appendSystemMessage(message)
         }
     }
 
@@ -531,7 +523,6 @@ final class AgentGridMobileModel: ObservableObject {
         guard !text.isEmpty else { return }
         guard codexConnected, !codexThreadID.isEmpty else {
             activityText = "请先连接 Codex"
-            appendSystemMessage("请先点“连接 Codex”，再发送消息。")
             return
         }
         codexChatInput = ""
@@ -635,11 +626,11 @@ final class AgentGridMobileModel: ObservableObject {
 
     private func sendBridgeRequest(successMessage: String) async {
         guard let service = selectedService else {
-            activityText = "请选择一个 Codex 服务"
+            activityText = "请先选择一台工作电脑"
             return
         }
         guard service.isAvailable else {
-            activityText = "\(service.nodeName) 的 Codex 服务不可用"
+            activityText = "\(service.nodeName) 现在还不能聊天"
             return
         }
         guard isAuthenticated else {
@@ -880,7 +871,7 @@ final class AgentGridMobileModel: ObservableObject {
         case "bridge.websocket.closed":
             disconnectCodexChat(message: "Codex 连接已关闭")
         case "bridge.error":
-            disconnectCodexChat(message: envelope["message"] as? String ?? "Codex 桥接失败")
+            disconnectCodexChat(message: envelope["message"] as? String ?? "Codex 连接失败")
         default:
             return
         }
@@ -921,9 +912,9 @@ final class AgentGridMobileModel: ObservableObject {
                 codexThreadID = thread["id"] as? String ?? ""
                 codexConnected = !codexThreadID.isEmpty
                 isLoading = false
-                activityText = codexConnected ? "Codex 已连接" : "Codex 线程创建失败"
+                activityText = codexConnected ? "已连接 \(selectedService?.nodeName ?? "工作电脑")" : "聊天创建失败"
                 if codexConnected {
-                    appendSystemMessage("Codex 已连接，可以开始聊天。")
+                    appendSystemMessage("已连接 \(selectedService?.nodeName ?? "工作电脑")，可以开始聊天。")
                 }
                 return
             }
@@ -1118,7 +1109,7 @@ enum AgentGridError: LocalizedError {
         case .invalidResponse:
             return "Hub 返回内容无法解析"
         case .bridgeWorkerDisconnected(let nodeName):
-            return "\(nodeName) 在线，但本地服务桥接通道没有连接。请重启这个节点的 AgentGrid Worker 后再试。"
+            return "\(nodeName) 在线，但还没有准备好聊天。请确认这台电脑上的 AgentGrid 和 Codex 都在运行。"
         case .http(let status, let body, let url):
             let title = shortHTTPMessage(status)
             let bodySummary = summarizeHTTPBody(body)
@@ -1141,9 +1132,9 @@ enum AgentGridError: LocalizedError {
         case 404:
             return "接口不存在，请检查 Hub 地址"
         case 502:
-            return "Hub 入口返回 502，请检查 Nginx 代理或 Hub 服务"
+            return "中心入口暂时打不开，请稍后再试"
         case 503:
-            return "Hub 服务暂时不可用"
+            return "中心暂时不可用"
         default:
             return "请求失败（HTTP \(status)）"
         }
@@ -1244,7 +1235,7 @@ struct DashboardView: View {
 
                     SectionCard(title: "能力入口", icon: "rectangle.3.group.fill") {
                         VStack(spacing: 10) {
-                            CapabilityTile(icon: "bolt.horizontal.circle", title: "Codex Bridge", value: model.selectedServiceSummary)
+                            CapabilityTile(icon: "bubble.left.and.bubble.right", title: "Codex 对话", value: model.selectedServiceSummary)
                             CapabilityTile(icon: "server.rack", title: "节点算力", value: "\(model.onlineNodes.count) 台在线，\(model.totalOnlineCores) 核")
                             CapabilityTile(icon: "list.bullet.rectangle", title: "最近任务", value: "\(model.tasks.count) 条记录，\(model.failedTasks.count) 条失败")
                         }
@@ -1275,9 +1266,9 @@ struct MobileCommandCenterCard: View {
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(model.codexConnected ? "手机已接入 Codex" : "把手机接到 Mac Codex")
+                    Text(model.codexConnected ? "正在和 Codex 对话" : "手机也能用 Codex")
                         .font(.title3.weight(.bold))
-                    Text(model.codexConnected ? "现在可以通过 AgentGrid 和本机 Codex 对话。" : "AgentGrid 会通过 Hub 找到 Mac 节点，再建立安全桥接通道。")
+                    Text(model.codexConnected ? "当前已连接到一台工作电脑，可以直接发消息。" : "选择一台在线工作电脑，就能在手机上和那台电脑的 Codex 聊天。")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1287,7 +1278,7 @@ struct MobileCommandCenterCard: View {
 
             HStack(spacing: 8) {
                 StatusPill(title: model.hubState == "在线" ? "Hub 在线" : "Hub 未确认", color: model.hubState == "在线" ? .green : .orange)
-                StatusPill(title: "\(model.availableServices.count) 个 Codex 服务", color: model.availableServices.isEmpty ? .orange : .green)
+                StatusPill(title: "\(model.availableServices.count) 台可聊天", color: model.availableServices.isEmpty ? .orange : .green)
             }
 
             Button(action: connectCodex) {
@@ -1334,12 +1325,12 @@ struct SystemHealthCard: View {
                             .foregroundColor(.secondary)
                     }
                     Spacer()
-                    StatusPill(title: "Hub \(model.hubState)", color: model.hubState == "在线" ? .green : .orange)
+                    StatusPill(title: model.hubState == "在线" ? "中心在线" : "中心未确认", color: model.hubState == "在线" ? .green : .orange)
                 }
 
                 HStack(spacing: 8) {
-                    StatusPill(title: "\(model.onlineNodes.count) 节点", color: .blue)
-                    StatusPill(title: "\(model.availableServices.count) Codex", color: model.availableServices.isEmpty ? .orange : .green)
+                    StatusPill(title: "\(model.onlineNodes.count) 台电脑", color: .blue)
+                    StatusPill(title: "\(model.availableServices.count) 台可聊天", color: model.availableServices.isEmpty ? .orange : .green)
                     StatusPill(title: "\(model.failedTasks.count) 失败", color: model.failedTasks.isEmpty ? .gray : .red)
                 }
             }
@@ -1396,7 +1387,7 @@ struct NodesView: View {
                             MetricCard(title: "在线", value: "\(model.onlineNodes.count)", subtitle: "可接任务")
                             MetricCard(title: "离线", value: "\(max(model.nodes.count - model.onlineNodes.count, 0))", subtitle: "不可调度")
                             MetricCard(title: "桌面节点", value: "\(model.windowsDesktopNodes)", subtitle: "可截图 / 操作")
-                            MetricCard(title: "Codex 服务", value: "\(model.availableServices.count)", subtitle: "可桥接")
+                            MetricCard(title: "Codex 电脑", value: "\(model.availableServices.count)", subtitle: "可聊天")
                         }
                     }
 
@@ -1461,23 +1452,14 @@ struct CodexBridgeView: View {
 
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    HeaderBlock(
-                        title: "Codex",
-                        subtitle: model.codexConnected ? "正在使用远程工作电脑" : "选择一台电脑开始聊天",
-                        icon: "bolt.horizontal.circle.fill"
-                    )
+            VStack(spacing: 0) {
+                CodexConversationHeader(model: model)
 
-                    CodexWorkstationCard(model: model)
+                CodexChatCard(model: model)
 
-                    CodexServicePickerCard(model: model)
-
-                    CodexUseCasesCard()
-
-                    CodexChatCard(model: model)
-                }
-                .padding(18)
+                CodexServicePickerCard(model: model)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
             }
             .refreshable {
                 await model.refreshAll()
@@ -1488,76 +1470,93 @@ struct CodexBridgeView: View {
     }
 }
 
-struct CodexWorkstationCard: View {
+struct CodexConversationHeader: View {
     @ObservedObject var model: AgentGridMobileModel
 
+    private var actionTitle: String {
+        if model.selectedService == nil { return "查找" }
+        if model.codexConnected { return "重连" }
+        return "连接"
+    }
+
+    private var actionDisabled: Bool {
+        if model.isLoading { return true }
+        guard let service = model.selectedService else { return false }
+        return !service.isAvailable
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 18)
+                    Circle()
                         .fill(model.codexBusinessStatusColor.opacity(0.13))
-                        .frame(width: 56, height: 56)
-                    Image(systemName: model.codexConnected ? "checkmark.bubble.fill" : "macbook.and.iphone")
-                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: 48, height: 48)
+                    Image(systemName: model.codexConnected ? "checkmark.bubble.fill" : "person.wave.2.fill")
+                        .font(.system(size: 21, weight: .semibold))
                         .foregroundColor(model.codexBusinessStatusColor)
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(model.codexBusinessStatusTitle)
-                        .font(.title3.weight(.bold))
-                    Text(model.codexBusinessStatusDetail)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-
-            if model.isLoading || model.activityText != "等待操作" {
-                HStack(spacing: 8) {
-                    if model.isLoading {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "info.circle.fill")
-                            .foregroundColor(model.codexBusinessStatusColor)
-                    }
-                    Text(model.compactActivityText)
+                    Text(model.selectedService?.nodeName ?? "选择工作电脑")
+                        .font(.headline.weight(.bold))
+                    Text(model.codexConnected ? "正在和这台电脑上的 Codex 对话" : model.codexBusinessStatusTitle)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Spacer()
                 }
-                .padding(10)
-                .background(AppTheme.field)
-                .cornerRadius(12)
+                Spacer(minLength: 0)
+
+                Button {
+                    Task {
+                        if model.selectedService == nil {
+                            await model.refreshAll()
+                        } else {
+                            await model.connectCodexChat()
+                        }
+                    }
+                } label: {
+                    Text(actionTitle)
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(model.codexBusinessStatusColor)
+                        .cornerRadius(999)
+                }
+                .disabled(actionDisabled)
             }
 
-            VStack(spacing: 10) {
-                Button {
-                    Task { await model.connectCodexChat() }
-                } label: {
-                    WideButtonLabel(title: model.codexConnected ? "重新连接这台电脑" : "连接并开始聊天", icon: "bolt.horizontal.circle.fill")
+            HStack(spacing: 8) {
+                if model.isLoading {
+                    ProgressView()
+                        .scaleEffect(0.78)
+                } else {
+                    Circle()
+                        .fill(model.codexBusinessStatusColor)
+                        .frame(width: 7, height: 7)
                 }
-                .buttonStyle(FilledButtonStyle())
-                .disabled(model.isLoading || model.selectedService?.isAvailable != true)
-
+                Text(model.compactActivityText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Spacer()
                 if model.codexConnected {
-                    Button {
+                    Button("结束") {
                         model.disconnectCodexChat()
-                    } label: {
-                        WideButtonLabel(title: "结束本次聊天", icon: "xmark.circle")
                     }
-                    .buttonStyle(SoftButtonStyle())
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.red)
                 }
             }
         }
-        .padding(18)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .background(AppTheme.card)
-        .overlay(
-            RoundedRectangle(cornerRadius: 18)
-                .stroke(model.codexBusinessStatusColor.opacity(0.16), lineWidth: 1)
-        )
-        .cornerRadius(18)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.black.opacity(0.05))
+                .frame(height: 1)
+        }
     }
 }
 
@@ -1565,10 +1564,18 @@ struct CodexServicePickerCard: View {
     @ObservedObject var model: AgentGridMobileModel
 
     var body: some View {
-        SectionCard(title: "工作电脑", icon: "desktopcomputer") {
+        DisclosureGroup {
             VStack(spacing: 10) {
+                Button {
+                    Task { await model.refreshAll() }
+                } label: {
+                    WideButtonLabel(title: "刷新工作电脑", icon: "arrow.clockwise")
+                }
+                .buttonStyle(SoftButtonStyle())
+                .disabled(model.isLoading)
+
                 if model.services.isEmpty {
-                    EmptyStateView(title: "还没有发现可用电脑，请先刷新", icon: "desktopcomputer")
+                    EmptyStateView(title: "还没有发现可聊天的电脑", icon: "desktopcomputer")
                 } else {
                     ForEach(model.services) { service in
                         Button {
@@ -1580,25 +1587,25 @@ struct CodexServicePickerCard: View {
                     }
                 }
             }
-        }
-    }
-}
-
-struct CodexUseCasesCard: View {
-    private let useCases = [
-        ("问项目进展", "让 Codex 总结当前 AgentGrid 状态", "chart.line.uptrend.xyaxis"),
-        ("查代码问题", "让 Codex 查看本机项目并给出建议", "curlybraces"),
-        ("规划下一步", "让 Codex 给出可落地的优化任务", "checklist"),
-    ]
-
-    var body: some View {
-        SectionCard(title: "可以做什么", icon: "sparkles") {
-            VStack(spacing: 10) {
-                ForEach(useCases, id: \.0) { item in
-                    CapabilityTile(icon: item.2, title: item.0, value: item.1)
+            .padding(.top, 10)
+        } label: {
+            HStack {
+                Image(systemName: "desktopcomputer")
+                    .foregroundColor(AppTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("工作电脑")
+                        .font(.headline)
+                    Text(model.selectedService?.businessSubtitle ?? "选择一台可以聊天的电脑")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
+                Spacer()
+                StatusPill(title: "\(model.availableServices.count) 可用", color: model.availableServices.isEmpty ? .orange : .green)
             }
         }
+        .padding(16)
+        .background(AppTheme.card)
+        .cornerRadius(18)
     }
 }
 
@@ -1908,67 +1915,129 @@ struct ResultCard: View {
 struct CodexChatCard: View {
     @ObservedObject var model: AgentGridMobileModel
 
+    private var visibleMessages: [CodexChatMessage] {
+        model.codexMessages.filter { !$0.isSystem }
+    }
+
     var body: some View {
-        SectionCard(title: "聊天", icon: "bubble.left.and.bubble.right.fill") {
-            VStack(spacing: 12) {
-                if model.codexConnected {
-                    QuickPromptBar(model: model)
-                }
+        VStack(spacing: 0) {
+            if model.codexConnected {
+                QuickPromptBar(model: model)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+            }
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            if model.codexMessages.isEmpty {
-                                EmptyStateView(
-                                    title: model.codexConnected ? "可以开始和 Mac 上的 Codex 聊天" : "连接后可以直接和 Mac 上的 Codex 聊天",
-                                    icon: "bubble.left"
-                                )
-                            } else {
-                                ForEach(model.codexMessages) { message in
-                                    ChatBubble(message: message)
-                                        .id(message.id)
-                                }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 12) {
+                        if visibleMessages.isEmpty {
+                            CodexConversationEmptyState(connected: model.codexConnected)
+                                .padding(.top, 36)
+                        } else {
+                            ForEach(visibleMessages) { message in
+                                ChatBubble(message: message)
+                                    .id(message.id)
                             }
                         }
                     }
-                    .frame(minHeight: 260, maxHeight: 420)
-                    .onChange(of: model.codexMessages) { messages in
-                        guard let last = messages.last else { return }
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
-                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 }
-
-                HStack(alignment: .bottom, spacing: 10) {
-                    TextEditor(text: $model.codexChatInput)
-                        .font(.subheadline)
-                        .frame(minHeight: 42, maxHeight: 100)
-                        .padding(8)
-                        .background(AppTheme.field)
-                        .cornerRadius(14)
-                        .overlay(alignment: .topLeading) {
-                            if model.codexChatInput.isEmpty {
-                                Text(model.codexConnected ? "输入要问 Codex 的内容" : "先连接 Codex")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 16)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-
-                    Button {
-                        Task { await model.sendCodexChatMessage() }
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 34, weight: .semibold))
+                .onChange(of: model.codexMessages) { _ in
+                    guard let last = visibleMessages.last else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
-                    .foregroundColor(AppTheme.accent)
-                    .disabled(!model.codexConnected || model.codexChatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+
+            Divider()
+
+            HStack(alignment: .bottom, spacing: 10) {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $model.codexChatInput)
+                        .font(.body)
+                        .frame(minHeight: 44, maxHeight: 110)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(AppTheme.field)
+                        .cornerRadius(18)
+
+                    if model.codexChatInput.isEmpty {
+                        Text(model.codexConnected ? "输入你想让 Codex 帮你做什么" : "先连接一台工作电脑")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 15)
+                            .padding(.vertical, 18)
+                            .allowsHitTesting(false)
+                    }
+                }
+
+                Button {
+                    Task { await model.sendCodexChatMessage() }
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 38, height: 38)
+                        .background(
+                            Circle()
+                                .fill(model.codexConnected && !model.codexChatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? AppTheme.accent : Color.gray.opacity(0.42))
+                        )
+                }
+                .disabled(!model.codexConnected || model.codexChatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+            .background(AppTheme.card)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppTheme.background)
+    }
+}
+
+struct CodexConversationEmptyState: View {
+    let connected: Bool
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.accent.opacity(0.10))
+                    .frame(width: 72, height: 72)
+                Image(systemName: connected ? "bubble.left.and.bubble.right.fill" : "desktopcomputer")
+                    .font(.system(size: 29, weight: .semibold))
+                    .foregroundColor(AppTheme.accent)
+            }
+
+            VStack(spacing: 6) {
+                Text(connected ? "可以开始聊了" : "选择电脑，开始聊天")
+                    .font(.headline.weight(.bold))
+                Text(connected ? "直接输入问题，Codex 会在工作电脑上响应你。" : "手机会连接到一台在线工作电脑，再和那台电脑上的 Codex 对话。")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+            }
+
+            if !connected {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("确认工作电脑在线", systemImage: "checkmark.circle")
+                    Label("确认那台电脑已启动 Codex", systemImage: "checkmark.circle")
+                    Label("点右上角连接即可开始", systemImage: "checkmark.circle")
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.card)
+                .cornerRadius(14)
+                .padding(.horizontal, 10)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -1976,25 +2045,33 @@ struct QuickPromptBar: View {
     @ObservedObject var model: AgentGridMobileModel
 
     private let prompts = [
-        "总结 AgentGrid 当前进展",
-        "检查本机项目状态",
-        "规划下一步最有价值优化",
+        ("项目进展", "总结 AgentGrid 当前进展"),
+        ("查代码", "检查本机项目状态"),
+        ("下一步", "规划下一步最有价值优化"),
     ]
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(prompts, id: \.self) { prompt in
+                ForEach(prompts, id: \.0) { prompt in
                     Button {
-                        model.codexChatInput = prompt
+                        model.codexChatInput = prompt.1
                     } label: {
-                        Text(prompt)
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(AppTheme.accent)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(AppTheme.accent.opacity(0.10))
-                            .cornerRadius(999)
+                        HStack(spacing: 5) {
+                            Image(systemName: "sparkles")
+                                .font(.caption2.weight(.bold))
+                            Text(prompt.0)
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundColor(AppTheme.accent)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 8)
+                        .background(AppTheme.card)
+                        .overlay(
+                            Capsule()
+                                .stroke(AppTheme.accent.opacity(0.16), lineWidth: 1)
+                        )
+                        .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
                 }
