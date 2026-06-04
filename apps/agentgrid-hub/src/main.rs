@@ -68,6 +68,7 @@ const DEFAULT_ORGANIZATION_ID: &str = "org_agentgrid_default";
 const HEARTBEAT_UNKNOWN_AFTER_SECONDS: i64 = 30;
 const HEARTBEAT_OFFLINE_AFTER_SECONDS: i64 = 120;
 const HIGH_LOAD_SCORE_LIMIT: f64 = 82.0;
+const TOOL_PROBE_FAILED_RETRY_AFTER_SECONDS: i64 = 300;
 
 #[derive(Debug, Parser)]
 #[command(name = "agentgrid-hub")]
@@ -154,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
         bridge: Arc::new(BridgeHub::default()),
         port_bridge: Arc::new(PortBridgeHub::default()),
     };
-    start_node_tool_probe_loop(state.clone());
+    start_tool_probe_loop(state.clone());
     start_job_recovery_loop(state.clone());
     let app = routes::router(state);
 
@@ -177,15 +178,28 @@ fn store(state: &AppState) -> Result<Store, ApiError> {
     Store::open(state.db_path.as_ref()).map_err(ApiError::from)
 }
 
-fn start_node_tool_probe_loop(state: AppState) {
+fn start_tool_probe_loop(state: AppState) {
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(60));
         loop {
             timer.tick().await;
             let result = Store::open(state.db_path.as_ref()).and_then(|store| {
+                let expired_tool_edges = store.expire_stale_tool_probes()?;
                 store.expire_stale_node_tool_probes()?;
+                let builtin_due = store.due_tool_probes(25)?;
                 let due = store.due_node_tools_for_probe(25)?;
                 let mut total = 0usize;
+                for edge in builtin_due {
+                    let Some(tool_id) = edge.get("tool_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let Some(node_id) = edge.get("node_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    total += store
+                        .create_tool_probe_tasks(Some(tool_id), Some(node_id))?
+                        .len();
+                }
                 for tool in due {
                     let tool_id = tool
                         .pointer("/spec/tool_id")
@@ -207,17 +221,20 @@ fn start_node_tool_probe_loop(state: AppState) {
                 }
                 if total > 0 {
                     store.audit(
-                        "node_tool.probe.scheduled",
-                        "node-tool-probe-engine",
+                        "tool.probe.scheduled",
+                        "tool-probe-engine",
                         None,
-                        "节点工具自动健康检查已调度",
-                        json!({ "count": total }),
+                        "工具自动健康检查已调度",
+                        json!({
+                            "count": total,
+                            "expired_builtin_edges": expired_tool_edges
+                        }),
                     )?;
                 }
                 Ok::<(), anyhow::Error>(())
             });
             if let Err(error) = result {
-                eprintln!("node tool probe loop failed: {error:#}");
+                eprintln!("tool probe loop failed: {error:#}");
             }
         }
     });
@@ -3709,7 +3726,17 @@ impl Store {
                     .get("id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("node id missing"))?;
-                let Some(payload) = probe_payload_for_tool(tool_id) else {
+                if self.tool_probe_is_pending(tool_id, node_id)? {
+                    created.push(json!({
+                        "tool_id": tool_id,
+                        "node_id": node_id,
+                        "task_id": Value::Null,
+                        "status": "pending",
+                        "deduplicated": true
+                    }));
+                    continue;
+                }
+                let Some(payload) = probe_payload_for_tool_on_node(tool_id, &node) else {
                     self.upsert_tool_probe_record(
                         tool_id,
                         node_id,
@@ -3762,6 +3789,80 @@ impl Store {
             }
         }
         Ok(created)
+    }
+
+    fn due_tool_probes(&self, limit: u16) -> anyhow::Result<Vec<Value>> {
+        let nodes = self.list_nodes()?;
+        let workbenches = self.workbench_items()?;
+        let tools = self
+            .tool_registry_with_dynamic()?
+            .into_iter()
+            .map(|tool| self.enrich_tool_with_nodes(tool, &nodes))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut due = Vec::new();
+        for tool in tools {
+            let Some(tool_id) = tool.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if is_dynamic_tool_id(tool_id) || !tool_has_builtin_probe(tool_id) {
+                continue;
+            }
+            for node in tool
+                .get("nodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                if due.len() >= limit.min(100) as usize {
+                    return Ok(due);
+                }
+                let Some(node_id) = node.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let state = node
+                    .get("verification_status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("declared_unverified");
+                if state == "pending" {
+                    continue;
+                }
+                let failed_retry_due = state == "failed" && tool_probe_failed_retry_due(&node);
+                if !matches!(state, "declared_unverified" | "expired") && !failed_retry_due {
+                    continue;
+                }
+                due.push(json!({
+                    "tool_id": tool_id,
+                    "node_id": node_id,
+                    "workbench_id": node_workbench_id_from_probe_node(&node, &workbenches),
+                    "state": state
+                }));
+            }
+        }
+        Ok(due)
+    }
+
+    fn expire_stale_tool_probes(&self) -> anyhow::Result<usize> {
+        let current = now();
+        let changed = self.conn.execute(
+            "
+            UPDATE tool_probes
+            SET status = 'expired',
+                updated_at = ?1
+            WHERE project_id = ?2
+              AND status = 'verified'
+              AND expires_at IS NOT NULL
+              AND expires_at < ?1
+            ",
+            params![current, PROJECT_ID],
+        )?;
+        Ok(changed)
+    }
+
+    fn tool_probe_is_pending(&self, tool_id: &str, node_id: &str) -> anyhow::Result<bool> {
+        let Some(probe) = self.get_tool_probe(tool_id, node_id)? else {
+            return Ok(false);
+        };
+        Ok(probe.pointer("/status/state").and_then(Value::as_str) == Some("pending"))
     }
 
     fn upsert_tool_probe_record(
@@ -4787,8 +4888,7 @@ impl Store {
         let tools_without_probe = tools
             .iter()
             .filter(|tool| {
-                probe_payload_for_tool(tool.get("id").and_then(Value::as_str).unwrap_or(""))
-                    .is_none()
+                !tool_has_builtin_probe(tool.get("id").and_then(Value::as_str).unwrap_or(""))
             })
             .count();
         let readiness = if failed_edges > 0 {
@@ -13163,12 +13263,73 @@ fn aggregate_probe_state(items: &[Value]) -> Value {
     json!({ "state": state, "counts": counts })
 }
 
+fn tool_probe_failed_retry_due(node: &Value) -> bool {
+    let Some(updated_at) = node
+        .pointer("/probe/metadata/updated_at")
+        .and_then(Value::as_str)
+    else {
+        return true;
+    };
+    let Ok(updated_at) = chrono::DateTime::parse_from_rfc3339(updated_at) else {
+        return true;
+    };
+    Utc::now()
+        .signed_duration_since(updated_at.with_timezone(&Utc))
+        .num_seconds()
+        >= TOOL_PROBE_FAILED_RETRY_AFTER_SECONDS
+}
+
+fn tool_has_builtin_probe(tool_id: &str) -> bool {
+    probe_payload_for_tool(tool_id).is_some()
+}
+
+fn probe_payload_for_tool_on_node(tool_id: &str, node: &Value) -> Option<Value> {
+    let os = node
+        .get("os")
+        .or_else(|| node.pointer("/spec/os"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let is_windows = os_value_matches(os, "windows");
+    match tool_id {
+        "file.read" => Some(json!({
+            "type": "file",
+            "operation": "read",
+            "path": if is_windows {
+                "C:\\Windows\\System32\\drivers\\etc\\hosts"
+            } else {
+                "/etc/hosts"
+            },
+            "max_bytes": 65536
+        })),
+        "file.write" => Some(json!({
+            "type": "file",
+            "operation": "write",
+            "path": if is_windows {
+                "C:\\Windows\\Temp\\agentgrid-probe.txt"
+            } else {
+                "/tmp/agentgrid-probe.txt"
+            },
+            "content": "agentgrid probe\n",
+            "append": false,
+            "create_dirs": true
+        })),
+        "file.list" => Some(json!({
+            "type": "file",
+            "operation": "list",
+            "path": if is_windows { "C:\\" } else { "/tmp" },
+            "recursive": false,
+            "max_entries": 20
+        })),
+        _ => probe_payload_for_tool(tool_id),
+    }
+}
+
 fn probe_payload_for_tool(tool_id: &str) -> Option<Value> {
     match tool_id {
         "http.request" => Some(json!({
             "type": "http_request",
             "method": "GET",
-            "url": "http://127.0.0.1:20181/api/health",
+            "url": "https://example.com",
             "headers": [],
             "body": null,
             "timeout_seconds": 15,
@@ -13184,7 +13345,7 @@ fn probe_payload_for_tool(tool_id: &str) -> Option<Value> {
         "file.read" => Some(json!({
             "type": "file",
             "operation": "read",
-            "path": "/tmp/agentgrid-probe.txt",
+            "path": "/etc/hosts",
             "max_bytes": 65536
         })),
         "file.write" => Some(json!({
@@ -15377,14 +15538,27 @@ fn increment_json_count(map: &mut serde_json::Map<String, Value>, key: &str) {
 fn os_value_matches(reported: &str, required: &str) -> bool {
     let reported = reported.to_ascii_lowercase();
     let required = required.to_ascii_lowercase();
-    reported.contains(&required)
-        || (required == "linux"
-            && ["ubuntu", "debian", "centos", "alibaba", "rocky", "rhel"]
+    if reported.is_empty() || required.is_empty() {
+        return false;
+    }
+    if matches!(required.as_str(), "windows" | "win") {
+        return reported == "win"
+            || reported.contains("windows")
+            || reported.starts_with("win32")
+            || reported.starts_with("win64")
+            || reported.starts_with("mingw")
+            || reported.starts_with("msys");
+    }
+    if required == "linux" {
+        return reported.contains("linux")
+            || ["ubuntu", "debian", "centos", "alibaba", "rocky", "rhel"]
                 .iter()
-                .any(|alias| reported.contains(alias)))
-        || (matches!(required.as_str(), "mac" | "macos" | "darwin")
-            && (reported.contains("darwin") || reported.contains("mac")))
-        || (matches!(required.as_str(), "windows" | "win") && reported.contains("win"))
+                .any(|alias| reported.contains(alias));
+    }
+    if matches!(required.as_str(), "mac" | "macos" | "darwin") {
+        return reported.contains("darwin") || reported.contains("mac");
+    }
+    reported == required || reported.contains(&required)
 }
 
 fn parse_job_payload_from_task(task: &Value) -> anyhow::Result<JobPayload> {
@@ -18325,6 +18499,47 @@ mod hub_core_tests {
             .unwrap_err()
             .to_string();
         assert!(member_error.contains("forbidden"));
+    }
+
+    #[test]
+    fn builtin_probe_payloads_are_node_os_aware() {
+        let windows_node = json!({ "id": "win-node", "os": "windows" });
+        let linux_node = json!({ "id": "linux-node", "os": "linux" });
+        let mac_node = json!({ "id": "mac-node", "os": "Darwin" });
+
+        let windows_list = probe_payload_for_tool_on_node("file.list", &windows_node)
+            .expect("windows file.list probe");
+        assert_eq!(
+            windows_list.get("path").and_then(Value::as_str),
+            Some("C:\\")
+        );
+
+        let linux_list = probe_payload_for_tool_on_node("file.list", &linux_node)
+            .expect("linux file.list probe");
+        assert_eq!(linux_list.get("path").and_then(Value::as_str), Some("/tmp"));
+
+        let windows_read = probe_payload_for_tool_on_node("file.read", &windows_node)
+            .expect("windows file.read probe");
+        assert_eq!(
+            windows_read.get("path").and_then(Value::as_str),
+            Some("C:\\Windows\\System32\\drivers\\etc\\hosts")
+        );
+
+        let mac_read =
+            probe_payload_for_tool_on_node("file.read", &mac_node).expect("mac file.read probe");
+        assert_eq!(
+            mac_read.get("path").and_then(Value::as_str),
+            Some("/etc/hosts")
+        );
+        assert!(!os_value_matches("Darwin", "windows"));
+        assert!(os_value_matches("Darwin", "macos"));
+
+        let http_probe =
+            probe_payload_for_tool_on_node("http.request", &linux_node).expect("http probe");
+        assert_eq!(
+            http_probe.get("url").and_then(Value::as_str),
+            Some("https://example.com")
+        );
     }
 
     #[test]

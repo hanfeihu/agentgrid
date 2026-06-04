@@ -808,6 +808,41 @@ readiness, recommendations, tool-node edges, workbench coverage, dynamic
 node tools, and recent probe records. AI clients should consult it before
 submitting high-value jobs.
 
+### Trust-Aware Scheduling Contract
+
+The Placement Engine must use Probe state as part of the scheduling decision:
+
+- `verified`: preferred and allowed.
+- `pending`: allowed only when no verified edge exists for the same tool.
+- `declared_unverified`: allowed with a strong penalty only when no verified
+  edge exists for the same tool.
+- `expired`: treated like stale verification and re-probed automatically.
+- `failed`: skipped unless the user explicitly hard-targets the node.
+- `unsupported`: skipped for high-risk and plugin-backed tools.
+
+When at least one eligible node has `verified` for the required `tool_id`, Hub
+uses a verified-only gate for that task. This prevents a merely declared node
+from stealing work from a node that has already proven the tool path works.
+
+Probe automation:
+
+- Built-in Tool Registry entries with lightweight probe payloads are rechecked
+  automatically by Hub.
+- Dynamic node tools are rechecked through their registered `probe.payload`.
+- Verified probe records expire after 24 hours.
+- Expired records are changed to `expired`, then scheduled for a fresh probe.
+- Failed probe records stay untrusted, but Hub retries them after a cooldown
+  window so repaired nodes can return to service without manual cleanup.
+- Existing `pending` probe records are deduplicated so Hub does not flood the
+  queue with duplicate health checks.
+
+Workbench UX rule:
+
+- Before submitting a workbench action, Web should show the required tool and
+  current verification state.
+- This is a product signal, not just a debug log: users should know whether the
+  selected computer has proven that capability recently.
+
 ## 23. Placement Engine Standard v1
 
 Placement Engine decides where a task should run.

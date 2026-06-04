@@ -991,6 +991,7 @@ function WorkbenchDetailDrawer({ workbench, onClose, onOpenTask, onDone }) {
   const [submitting, setSubmitting] = useState(false);
   const workbenchId = workbench?.id;
   const selectedAction = Form.useWatch('action', form);
+  const selectedTool = Form.useWatch('tool', form);
   const selectedPlacement = workbenchActionPlacement(selectedAction, workbench);
 
   const loadTimeline = async () => {
@@ -1085,6 +1086,7 @@ function WorkbenchDetailDrawer({ workbench, onClose, onOpenTask, onDone }) {
 
           <ProCard title="操作这台电脑" bordered>
             <Form form={form} layout="vertical" onFinish={submit}>
+              <WorkbenchActionTrust workbench={workbench} action={selectedAction} runtimeTool={selectedTool} />
               <Row gutter={12}>
                 <Col span={6}>
                   <Form.Item name="action" label="动作" rules={[{ required: true }]}>
@@ -1229,6 +1231,51 @@ function WorkbenchToolProbeSummary({ workbench }) {
       />
     </Space>
   );
+}
+
+function WorkbenchActionTrust({ workbench, action, runtimeTool }) {
+  const toolId = workbenchActionToolId(action, runtimeTool);
+  if (!toolId) return null;
+  const channels = workbench?.channels || {};
+  const channelRole = action === 'screenshot' ? 'desktop' : 'worker';
+  const channelNode = channels[channelRole];
+  const nodeId = channelNode?.metadata?.id;
+  const allDynamicTools = workbench?.tools || [];
+  const dynamic = allDynamicTools.find((tool) => (
+    tool.spec?.tool_id === toolId && (!nodeId || tool.metadata?.node_id === nodeId)
+  ));
+  const state = dynamic?.status?.probe_state || 'declared_unverified';
+  const color = probeStateColor(state);
+  const label = probeStateLabel(state);
+  const messageText = dynamic
+    ? `这台电脑的 ${toolId} 已注册到 ${dynamic.metadata?.node_id || '节点'}，当前验证状态：${label}。`
+    : `这次动作需要 ${toolId}。内置能力会由 Hub 的 Tool Probe Center 验证；如果没有验证记录，调度器会降权或选择已验证节点。`;
+  const type = state === 'failed' ? 'warning' : state === 'verified' ? 'success' : 'info';
+  return (
+    <Alert
+      className="workbench-trust-alert"
+      showIcon
+      type={type}
+      message={
+        <Space wrap>
+          <Text strong>能力可信度</Text>
+          <Tag color={color}>{label}</Tag>
+          <Text code>{toolId}</Text>
+          {nodeId && <Text type="secondary">{nodeId}</Text>}
+        </Space>
+      }
+      description={messageText}
+    />
+  );
+}
+
+function workbenchActionToolId(action, runtimeTool) {
+  return {
+    command: 'command.run',
+    screenshot: 'desktop.screenshot',
+    file_list: 'file.list',
+    runtime: String(runtimeTool || '').trim() || null,
+  }[action] || null;
 }
 
 function WorkbenchOperationFeed({ events, loading, onOpenTask }) {

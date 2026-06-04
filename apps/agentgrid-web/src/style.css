@@ -1034,6 +1034,15 @@ body {
   margin-inline-end: 0;
 }
 
+.workbench-trust-alert {
+  margin-bottom: 14px;
+  border-radius: 8px;
+}
+
+.workbench-trust-alert .ant-alert-message {
+  margin-bottom: 4px;
+}
+
 @media (max-width: 1180px) {
   .node-resource-row {
     grid-template-columns: 1fr;

@@ -2743,6 +2743,18 @@ Use Probe Center when an AI client needs one machine-readable view of:
 - which tool-node edges are verified, pending, failed, unsupported, or only declared;
 - what the scheduler should trust.
 
+Trust-aware scheduling rules:
+
+- If any eligible node is `verified` for the required tool, Hub applies a
+  verified-only gate and chooses only from verified candidates.
+- `failed` tool-node edges are skipped for normal scheduling.
+- `declared_unverified` and `expired` edges are allowed only when no verified
+  edge exists, and receive a score penalty.
+- Verified records expire after 24 hours and are automatically re-probed.
+- Failed records remain untrusted, but Hub automatically retries them after a
+  cooldown window so fixed nodes can regain verified status.
+- Pending probe records are deduplicated.
+
 Probe states:
 
 - `declared_unverified`: node heartbeat says it supports the capability, but Hub has not verified it.
