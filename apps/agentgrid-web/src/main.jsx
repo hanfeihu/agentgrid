@@ -1800,6 +1800,25 @@ function Tools({ tools, probeCenter, remediationCenter, onDone }) {
     }
   };
 
+  const createRemediationAction = async (row) => {
+    const key = `action:${row.metadata.id}`;
+    setProbing(key);
+    try {
+      const data = await fetchJson(row.spec.api?.create_action, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'create_task', actor: 'web-console' }),
+      });
+      const taskId = data.item?.task?.metadata?.id || data.item?.created?.[0]?.task_id;
+      message.success(taskId ? `已创建修复任务 ${taskId}` : '已提交修复动作');
+      onDone?.();
+    } catch (error) {
+      message.error(`创建修复任务失败：${error.message}`);
+    } finally {
+      setProbing(null);
+    }
+  };
+
   return (
     <Space direction="vertical" size={16} className="full">
       <Row gutter={[16, 16]}>
@@ -1870,16 +1889,25 @@ function Tools({ tools, probeCenter, remediationCenter, onDone }) {
               },
               {
                 title: '操作',
-                width: 130,
+                width: 220,
                 render: (_, row) => (
-                  <Button
-                    size="small"
-                    disabled={!row.status?.can_probe_again}
-                    loading={probing === `${row.metadata.tool_id}:${row.metadata.node_id}`}
-                    onClick={() => runProbeNode(row.metadata.tool_id, row.metadata.node_id, row.spec.api?.probe_again)}
-                  >
-                    重新验证
-                  </Button>
+                  <Space>
+                    <Button
+                      size="small"
+                      disabled={!row.status?.can_probe_again}
+                      loading={probing === `${row.metadata.tool_id}:${row.metadata.node_id}`}
+                      onClick={() => runProbeNode(row.metadata.tool_id, row.metadata.node_id, row.spec.api?.probe_again)}
+                    >
+                      重新验证
+                    </Button>
+                    <Button
+                      size="small"
+                      loading={probing === `action:${row.metadata.id}`}
+                      onClick={() => createRemediationAction(row)}
+                    >
+                      创建任务
+                    </Button>
+                  </Space>
                 ),
               },
             ]}

@@ -1236,6 +1236,40 @@ paths:
                     $ref: "#/components/schemas/ToolRemediationCenter"
         default:
           $ref: "#/components/responses/Error"
+  /tools/remediations/{remediation_id}/actions:
+    post:
+      tags: [Tools]
+      summary: Create a safe remediation action from a remediation item.
+      operationId: runToolRemediationAction
+      parameters:
+        - name: remediation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolRemediationActionRequest"
+      responses:
+        "200":
+          description: Remediation action result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    type: object
+                    additionalProperties: true
+        default:
+          $ref: "#/components/responses/Error"
   /tools/probes:
     get:
       tags: [Tools]
@@ -2771,6 +2805,22 @@ components:
         status:
           type: object
           additionalProperties: true
+    ToolRemediationActionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum:
+            - create_task
+            - probe_again
+            - check_dependency
+            - review_policy
+            - update_worker_policy
+            - install_plugin
+            - define_probe
+        actor:
+          type: string
     User:
       type: object
       additionalProperties: true

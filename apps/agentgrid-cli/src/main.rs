@@ -894,6 +894,14 @@ enum ToolCommands {
     List,
     ProbeCenter,
     RemediationCenter,
+    RemediationAction {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = "create_task")]
+        action: String,
+        #[arg(long, default_value = "agentgrid-cli")]
+        actor: String,
+    },
     Get {
         #[arg(long)]
         id: String,
@@ -1400,6 +1408,16 @@ fn main() -> Result<()> {
             ToolCommands::RemediationCenter => print_json(
                 client
                     .get(format!("{base}/api/tools/remediation-center"))
+                    .send()?
+                    .text()?,
+            ),
+            ToolCommands::RemediationAction { id, action, actor } => print_json(
+                client
+                    .post(format!("{base}/api/tools/remediations/{id}/actions"))
+                    .json(&serde_json::json!({
+                        "action": action,
+                        "actor": actor
+                    }))
                     .send()?
                     .text()?,
             ),

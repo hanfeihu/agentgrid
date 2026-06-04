@@ -5032,6 +5032,194 @@ impl Store {
         }))
     }
 
+    fn run_remediation_action(
+        &self,
+        remediation_id: &str,
+        requested_action: &str,
+        actor: &str,
+    ) -> anyhow::Result<Value> {
+        let center = self.tool_remediation_center()?;
+        let item = center
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| {
+                        item.pointer("/metadata/id").and_then(Value::as_str) == Some(remediation_id)
+                    })
+                    .cloned()
+            })
+            .ok_or_else(|| anyhow::anyhow!("remediation item not found"))?;
+        let recommended_action = item
+            .pointer("/spec/action")
+            .and_then(Value::as_str)
+            .unwrap_or("investigate");
+        let action = if requested_action == "create_task" {
+            remediation_safe_action(recommended_action)
+        } else {
+            requested_action
+        };
+        let tool_id = item
+            .pointer("/metadata/tool_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("remediation tool_id missing"))?;
+        let node_id = item
+            .pointer("/metadata/node_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("remediation node_id missing"))?;
+        let output = match action {
+            "probe_again" => {
+                let tasks =
+                    if item.get("kind").and_then(Value::as_str) == Some("NodeToolRemediation") {
+                        self.create_node_tool_probe_tasks(Some(tool_id), Some(node_id), actor)?
+                    } else {
+                        self.create_tool_probe_tasks(Some(tool_id), Some(node_id))?
+                    };
+                json!({
+                    "type": "remediation_action_result",
+                    "action": "probe_again",
+                    "remediation_id": remediation_id,
+                    "tool_id": tool_id,
+                    "node_id": node_id,
+                    "created": tasks
+                })
+            }
+            "check_dependency" => {
+                let task = self.create_remediation_check_task(&item, actor)?;
+                json!({
+                    "type": "remediation_action_result",
+                    "action": "check_dependency",
+                    "remediation_id": remediation_id,
+                    "tool_id": tool_id,
+                    "node_id": node_id,
+                    "task": task.item,
+                    "message_id": task.message_id
+                })
+            }
+            "review_policy" | "update_worker_policy" | "install_plugin" | "define_probe" => {
+                let task = self.create_remediation_review_task(&item, action, actor)?;
+                json!({
+                    "type": "remediation_action_result",
+                    "action": action,
+                    "remediation_id": remediation_id,
+                    "tool_id": tool_id,
+                    "node_id": node_id,
+                    "task": task.item,
+                    "message_id": task.message_id,
+                    "requires_operator": true
+                })
+            }
+            _ => anyhow::bail!("unsupported remediation action: {action}"),
+        };
+        self.audit(
+            "remediation.action.created",
+            actor,
+            Some(remediation_id),
+            "修复动作已创建",
+            json!({
+                "action": action,
+                "tool_id": tool_id,
+                "node_id": node_id,
+                "output": output
+            }),
+        )?;
+        Ok(output)
+    }
+
+    fn create_remediation_check_task(
+        &self,
+        item: &Value,
+        actor: &str,
+    ) -> anyhow::Result<TaskOutput> {
+        let tool_id = item
+            .pointer("/metadata/tool_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("remediation tool_id missing"))?;
+        let node_id = item
+            .pointer("/metadata/node_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("remediation node_id missing"))?;
+        let node_os = item
+            .pointer("/spec/node/os")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let payload = remediation_check_payload(tool_id, node_os);
+        let payload_text = serde_json::to_string_pretty(&payload)?;
+        self.create_task(json!({
+            "title": format!("修复检查：{tool_id} on {node_id}"),
+            "summary": "AgentGrid Remediation Action v1 只读依赖检查任务。",
+            "created_by": actor,
+            "owner": "worker-agent",
+            "assigned_to": ["worker-agent"],
+            "priority": "low",
+            "labels": [
+                "compute",
+                "command",
+                "tool:command.run",
+                format!("node:{node_id}"),
+                "remediation",
+                format!("remediation_tool:{tool_id}"),
+                "remediation_action:check_dependency"
+            ],
+            "inputs": [payload_text],
+            "outputs": ["依赖检查 stdout", "依赖检查 stderr", "退出码"],
+            "acceptance_criteria": [
+                "任务只读取环境状态，不修改节点配置",
+                "结果能说明依赖是否存在或策略是否阻止执行"
+            ],
+            "correlation_id": format!("remediation:{tool_id}:{node_id}:check_dependency")
+        }))
+    }
+
+    fn create_remediation_review_task(
+        &self,
+        item: &Value,
+        action: &str,
+        actor: &str,
+    ) -> anyhow::Result<TaskOutput> {
+        let tool_id = item
+            .pointer("/metadata/tool_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("remediation tool_id missing"))?;
+        let node_id = item
+            .pointer("/metadata/node_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("remediation node_id missing"))?;
+        let payload = json!({
+            "type": "command",
+            "program": "hostname",
+            "args": [],
+            "working_dir": null,
+            "timeout_seconds": 30
+        });
+        self.create_task(json!({
+            "title": format!("修复确认：{tool_id} on {node_id}"),
+            "summary": item.pointer("/spec/summary").and_then(Value::as_str).unwrap_or("需要人工确认的修复动作。"),
+            "created_by": actor,
+            "owner": "worker-agent",
+            "assigned_to": ["worker-agent"],
+            "priority": "low",
+            "labels": [
+                "compute",
+                "command",
+                "tool:command.run",
+                format!("node:{node_id}"),
+                "remediation",
+                format!("remediation_tool:{tool_id}"),
+                format!("remediation_action:{action}"),
+                "requires_operator"
+            ],
+            "inputs": [serde_json::to_string_pretty(&payload)?],
+            "outputs": ["节点可达性检查", "人工修复步骤"],
+            "acceptance_criteria": [
+                "确认节点仍在线且可执行安全检查",
+                "操作者根据修复中心步骤手动修复后重新 Probe"
+            ],
+            "correlation_id": format!("remediation:{tool_id}:{node_id}:{action}")
+        }))
+    }
+
     fn capability_manifest_item(&self, tool: Value, nodes: &[Value]) -> anyhow::Result<Value> {
         let enriched = self.enrich_tool_with_nodes(tool, nodes)?;
         let tool_id = enriched.get("id").and_then(Value::as_str).unwrap_or("");
@@ -13178,7 +13366,8 @@ fn tool_remediation_item(tool: &Value, node: &Value, state: &str) -> Value {
             "commands": remediation_commands(tool_id, node_id),
             "api": {
                 "probe_again": format!("/api/tools/{tool_id}/nodes/{node_id}/probe"),
-                "tool_nodes": format!("/api/tools/{tool_id}/nodes")
+                "tool_nodes": format!("/api/tools/{tool_id}/nodes"),
+                "create_action": format!("/api/tools/remediations/{}/actions", remediation_id(tool_id, node_id))
             }
         },
         "status": {
@@ -13229,7 +13418,8 @@ fn node_tool_remediation_item(tool: &Value, state: &str) -> Value {
             "steps": diagnosis.get("steps").cloned().unwrap_or_else(|| json!([])),
             "commands": node_tool_remediation_commands(tool_id, node_id),
             "api": {
-                "probe_again": format!("/api/node-tools/{tool_id}/nodes/{node_id}/probe")
+                "probe_again": format!("/api/node-tools/{tool_id}/nodes/{node_id}/probe"),
+                "create_action": format!("/api/tools/remediations/{}/actions", remediation_id(tool_id, node_id))
             }
         },
         "status": {
@@ -13345,6 +13535,7 @@ fn remediation_commands(tool_id: &str, node_id: &str) -> Value {
     json!({
         "cli_probe_again": format!("agentgrid tools probe --id {tool_id} --node {node_id}"),
         "cli_tool_nodes": format!("agentgrid tools nodes --id {tool_id}"),
+        "cli_create_action": format!("agentgrid tools remediation-action --id {}", remediation_id(tool_id, node_id)),
         "cli_probe_center": "agentgrid tools probe-center",
         "cli_remediation_center": "agentgrid tools remediation-center"
     })
@@ -13354,8 +13545,62 @@ fn node_tool_remediation_commands(tool_id: &str, node_id: &str) -> Value {
     json!({
         "cli_probe_again": format!("agentgrid node-tools probe --id {tool_id} --node {node_id}"),
         "cli_tool_nodes": format!("agentgrid node-tools get --id {tool_id}"),
+        "cli_create_action": format!("agentgrid tools remediation-action --id {}", remediation_id(tool_id, node_id)),
         "cli_probe_center": "agentgrid tools probe-center",
         "cli_remediation_center": "agentgrid tools remediation-center"
+    })
+}
+
+fn remediation_safe_action(action: &str) -> &str {
+    match action {
+        "probe_again" => "probe_again",
+        "update_worker_policy" | "install_plugin" | "review_policy" | "fix_probe_payload" => {
+            "check_dependency"
+        }
+        "define_probe" => "define_probe",
+        _ => "check_dependency",
+    }
+}
+
+fn remediation_check_payload(tool_id: &str, node_os: &str) -> Value {
+    let shell = if os_value_matches(node_os, "windows") {
+        ("powershell", vec!["-NoProfile", "-Command"])
+    } else {
+        ("sh", vec!["-lc"])
+    };
+    let script = if tool_id == "docker.run" {
+        if os_value_matches(node_os, "windows") {
+            "docker --version; if ($LASTEXITCODE -eq 0) { docker info --format '{{json .ServerVersion}}' }".to_string()
+        } else {
+            "command -v docker && docker --version && docker info --format '{{json .ServerVersion}}'".to_string()
+        }
+    } else if tool_id == "git.status" || tool_id == "git.clone" {
+        if os_value_matches(node_os, "windows") {
+            "git --version".to_string()
+        } else {
+            "command -v git && git --version".to_string()
+        }
+    } else if tool_id == "browser.fetch" {
+        if os_value_matches(node_os, "windows") {
+            "Write-Output 'browser.fetch depends on Worker browser runtime'; hostname".to_string()
+        } else {
+            "echo 'browser.fetch depends on Worker browser runtime'; hostname".to_string()
+        }
+    } else {
+        "hostname".to_string()
+    };
+    let mut args = shell
+        .1
+        .into_iter()
+        .map(|item| Value::String(item.to_string()))
+        .collect::<Vec<_>>();
+    args.push(json!(script));
+    json!({
+        "type": "command",
+        "program": shell.0,
+        "args": args,
+        "working_dir": null,
+        "timeout_seconds": 60
     })
 }
 

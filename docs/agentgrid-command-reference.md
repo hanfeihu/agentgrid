@@ -2759,12 +2759,14 @@ Remediation Center:
 
 ```bash
 agentgrid tools remediation-center
+agentgrid tools remediation-action --id rem_docker_run_jia_node
 ```
 
 API:
 
 ```text
 GET /api/tools/remediation-center
+POST /api/tools/remediations/{remediation_id}/actions
 ```
 
 Use it after Probe Center reports `attention_required`. It returns structured
@@ -2772,6 +2774,10 @@ repair items with `tool_id`, `node_id`, `probe_state`, normalized diagnosis,
 recommended action, repair steps, and the exact CLI/API command to re-probe.
 It is intentionally read-only in v1: policy changes, Docker enablement, and
 plugin installation still require an explicit operator action.
+
+`remediation-action` turns a remediation item into an auditable action. In v1,
+Hub supports safe actions such as `probe_again` and `check_dependency`; higher
+risk actions create review tasks instead of mutating Worker policy directly.
 
 Probe states:
 

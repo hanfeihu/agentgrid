@@ -875,6 +875,37 @@ AI clients should use Remediation Center after Probe Center reports
 `attention_required`. Human operators should use it as the first page for
 turning broken node capabilities back into verified capacity.
 
+### Remediation Action v1
+
+Remediation Action turns a remediation item into an auditable task or Probe:
+
+```text
+POST /api/tools/remediations/{remediation_id}/actions
+```
+
+Request:
+
+```json
+{
+  "action": "create_task",
+  "actor": "web-console"
+}
+```
+
+Supported safe actions:
+
+- `probe_again`: create a Tool Probe or Node Tool Probe.
+- `check_dependency`: create a read-only command task for dependency checks.
+- `review_policy`: create an operator review task; it does not change policy.
+- `update_worker_policy`: create an operator review task in v1.
+- `install_plugin`: create an operator review task in v1.
+- `define_probe`: create an operator review task in v1.
+
+`create_task` lets Hub choose the safest action for the remediation item. For
+example, Docker allowlist failures become a dependency check task instead of
+silently changing Worker policy. This keeps remediation auditable and avoids
+surprising machine mutation.
+
 ## 23. Placement Engine Standard v1
 
 Placement Engine decides where a task should run.

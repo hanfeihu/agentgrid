@@ -296,6 +296,7 @@ agentgrid jobs recovery-scan
 ```bash
 agentgrid tools probe-center
 agentgrid tools remediation-center
+agentgrid tools remediation-action --id rem_docker_run_linux_worker_01
 agentgrid tools probes
 agentgrid tools probe --id command.run --node linux-worker-01
 agentgrid node-tools
