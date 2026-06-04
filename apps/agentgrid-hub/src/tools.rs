@@ -12,6 +12,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/tools", get(list_tools))
         .route("/api/tools/probes", get(list_tool_probes))
         .route("/api/tools/probe-center", get(get_probe_center))
+        .route("/api/tools/remediation-center", get(get_remediation_center))
         .route("/api/tools/probe", post(probe_all_tools))
         .route("/api/tools/{id}", get(get_tool))
         .route("/api/tools/{id}/nodes", get(list_tool_nodes))
@@ -27,6 +28,14 @@ async fn get_probe_center(State(state): State<AppState>) -> Result<Json<Value>, 
     Ok(Json(json!({
         "ok": true,
         "item": store.tool_probe_center()?
+    })))
+}
+
+async fn get_remediation_center(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let store = store(&state)?;
+    Ok(Json(json!({
+        "ok": true,
+        "item": store.tool_remediation_center()?
     })))
 }
 

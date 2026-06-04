@@ -2755,6 +2755,24 @@ Trust-aware scheduling rules:
   cooldown window so fixed nodes can regain verified status.
 - Pending probe records are deduplicated.
 
+Remediation Center:
+
+```bash
+agentgrid tools remediation-center
+```
+
+API:
+
+```text
+GET /api/tools/remediation-center
+```
+
+Use it after Probe Center reports `attention_required`. It returns structured
+repair items with `tool_id`, `node_id`, `probe_state`, normalized diagnosis,
+recommended action, repair steps, and the exact CLI/API command to re-probe.
+It is intentionally read-only in v1: policy changes, Docker enablement, and
+plugin installation still require an explicit operator action.
+
 Probe states:
 
 - `declared_unverified`: node heartbeat says it supports the capability, but Hub has not verified it.

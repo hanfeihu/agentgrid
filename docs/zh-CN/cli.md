@@ -293,6 +293,7 @@ agentgrid jobs recovery-scan
 
 ```bash
 agentgrid tools probe-center
+agentgrid tools remediation-center
 agentgrid tools probes
 agentgrid tools probe --id command.run --node linux-worker-01
 agentgrid node-tools
@@ -302,7 +303,7 @@ agentgrid node-tools register --node linux-worker-01 --file node-tool.json
 agentgrid node-tools probe --id demo.hello --node linux-worker-01
 ```
 
-`tools probe-center` 是能力验证中心，适合 AI 和人先判断“哪个工具在哪台电脑上真的可用”；`node-tools` 是节点动态插件工具注册中心。
+`tools probe-center` 是能力验证中心，适合 AI 和人先判断“哪个工具在哪台电脑上真的可用”；`tools remediation-center` 会把失败或未完成验证转成修复建议；`node-tools` 是节点动态插件工具注册中心。
 
 示例：查看并验证 `jia-node` 上的 TTS 语音克隆工具：
 

@@ -893,6 +893,7 @@ enum WorkflowCommands {
 enum ToolCommands {
     List,
     ProbeCenter,
+    RemediationCenter,
     Get {
         #[arg(long)]
         id: String,
@@ -1393,6 +1394,12 @@ fn main() -> Result<()> {
             ToolCommands::ProbeCenter => print_json(
                 client
                     .get(format!("{base}/api/tools/probe-center"))
+                    .send()?
+                    .text()?,
+            ),
+            ToolCommands::RemediationCenter => print_json(
+                client
+                    .get(format!("{base}/api/tools/remediation-center"))
                     .send()?
                     .text()?,
             ),

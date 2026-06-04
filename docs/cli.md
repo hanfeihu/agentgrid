@@ -295,6 +295,7 @@ agentgrid jobs recovery-scan
 
 ```bash
 agentgrid tools probe-center
+agentgrid tools remediation-center
 agentgrid tools probes
 agentgrid tools probe --id command.run --node linux-worker-01
 agentgrid node-tools
@@ -304,7 +305,7 @@ agentgrid node-tools register --node linux-worker-01 --file node-tool.json
 agentgrid node-tools probe --id demo.hello --node linux-worker-01
 ```
 
-`tools probe-center` is the capability verification center. Use it before scheduling to see which tool-node edges are runtime verified. `node-tools` manages dynamic plugin tool registration.
+`tools probe-center` is the capability verification center. Use it before scheduling to see which tool-node edges are runtime verified. `tools remediation-center` turns failed or incomplete verification into repair guidance. `node-tools` manages dynamic plugin tool registration.
 
 Example: inspect and verify the `jia-node` TTS voice clone tool:
 

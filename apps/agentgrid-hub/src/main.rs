@@ -4951,6 +4951,87 @@ impl Store {
         }))
     }
 
+    fn tool_remediation_center(&self) -> anyhow::Result<Value> {
+        let probe_center = self.tool_probe_center()?;
+        let tools = probe_center
+            .get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut items = Vec::new();
+        for tool in &tools {
+            let Some(tool_id) = tool.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if is_dynamic_tool_id(tool_id) {
+                continue;
+            }
+            for node in tool
+                .get("nodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let state = node
+                    .get("verification_status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("declared_unverified");
+                if matches!(state, "verified" | "pending") {
+                    continue;
+                }
+                items.push(tool_remediation_item(tool, &node, state));
+            }
+        }
+        let node_tools = probe_center
+            .get("node_tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for tool in &node_tools {
+            let state = tool
+                .pointer("/status/probe_state")
+                .and_then(Value::as_str)
+                .unwrap_or("declared_unverified");
+            if matches!(state, "verified" | "pending") {
+                continue;
+            }
+            items.push(node_tool_remediation_item(tool, state));
+        }
+        items.sort_by(|left, right| {
+            remediation_priority_rank(left)
+                .cmp(&remediation_priority_rank(right))
+                .then_with(|| {
+                    left.pointer("/metadata/id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .cmp(
+                            right
+                                .pointer("/metadata/id")
+                                .and_then(Value::as_str)
+                                .unwrap_or(""),
+                        )
+                })
+        });
+        let summary = remediation_summary(&items);
+        Ok(json!({
+            "api_version": "agentgrid.remediation/v1",
+            "kind": "ToolRemediationCenter",
+            "metadata": {
+                "project_id": PROJECT_ID,
+                "generated_at": now()
+            },
+            "summary": summary,
+            "items": items,
+            "source": {
+                "probe_center": {
+                    "readiness": probe_center.pointer("/summary/readiness").cloned().unwrap_or(Value::Null),
+                    "verified_edges": probe_center.pointer("/summary/verified_edges").cloned().unwrap_or(Value::Null),
+                    "failed_edges": probe_center.pointer("/summary/failed_edges").cloned().unwrap_or(Value::Null)
+                }
+            }
+        }))
+    }
+
     fn capability_manifest_item(&self, tool: Value, nodes: &[Value]) -> anyhow::Result<Value> {
         let enriched = self.enrich_tool_with_nodes(tool, nodes)?;
         let tool_id = enriched.get("id").and_then(Value::as_str).unwrap_or("");
@@ -13002,6 +13083,304 @@ fn probe_center_recommendations(
         }));
     }
     items
+}
+
+fn remediation_priority_rank(item: &Value) -> i64 {
+    match item
+        .pointer("/spec/severity")
+        .and_then(Value::as_str)
+        .unwrap_or("info")
+    {
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        "low" => 3,
+        _ => 4,
+    }
+}
+
+fn remediation_summary(items: &[Value]) -> Value {
+    let mut by_severity = serde_json::Map::new();
+    let mut by_state = serde_json::Map::new();
+    let mut by_action = serde_json::Map::new();
+    for item in items {
+        increment_json_count(
+            &mut by_severity,
+            item.pointer("/spec/severity")
+                .and_then(Value::as_str)
+                .unwrap_or("info"),
+        );
+        increment_json_count(
+            &mut by_state,
+            item.pointer("/spec/probe_state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        );
+        increment_json_count(
+            &mut by_action,
+            item.pointer("/spec/action")
+                .and_then(Value::as_str)
+                .unwrap_or("review"),
+        );
+    }
+    json!({
+        "total": items.len(),
+        "needs_action": items.iter().filter(|item| {
+            item.pointer("/spec/action").and_then(Value::as_str) != Some("none")
+        }).count(),
+        "by_severity": by_severity,
+        "by_probe_state": by_state,
+        "by_action": by_action
+    })
+}
+
+fn tool_remediation_item(tool: &Value, node: &Value, state: &str) -> Value {
+    let tool_id = tool.get("id").and_then(Value::as_str).unwrap_or("unknown");
+    let node_id = node.get("id").and_then(Value::as_str).unwrap_or("unknown");
+    let error = node
+        .pointer("/probe/status/error")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let error_message = error.get("message").and_then(Value::as_str).unwrap_or("");
+    let diagnosis = remediation_diagnosis_for(tool_id, state, error_message);
+    json!({
+        "api_version": "agentgrid.remediation/v1",
+        "kind": "ToolRemediation",
+        "metadata": {
+            "id": remediation_id(tool_id, node_id),
+            "tool_id": tool_id,
+            "node_id": node_id,
+            "workbench_id": node.get("workbench_id").cloned().unwrap_or(Value::Null),
+            "updated_at": node.pointer("/probe/metadata/updated_at").cloned().unwrap_or(Value::Null),
+            "probe_task_id": node.pointer("/probe/metadata/task_id").cloned().unwrap_or(Value::Null)
+        },
+        "spec": {
+            "title": diagnosis.get("title").cloned().unwrap_or_else(|| json!("能力需要修复")),
+            "summary": diagnosis.get("summary").cloned().unwrap_or(Value::Null),
+            "severity": diagnosis.get("severity").cloned().unwrap_or_else(|| json!("medium")),
+            "action": diagnosis.get("action").cloned().unwrap_or_else(|| json!("review")),
+            "probe_state": state,
+            "tool": {
+                "id": tool_id,
+                "name": tool.get("name").cloned().unwrap_or_else(|| json!(tool_id)),
+                "risk": tool.get("risk").cloned().unwrap_or(Value::Null),
+                "requires_policy": tool.get("requires_policy").cloned().unwrap_or(json!(false))
+            },
+            "node": {
+                "id": node_id,
+                "name": node.get("name").cloned().unwrap_or_else(|| json!(node_id)),
+                "os": node.get("os").cloned().unwrap_or(Value::Null),
+                "arch": node.get("arch").cloned().unwrap_or(Value::Null),
+                "state": node.get("state").cloned().unwrap_or(Value::Null)
+            },
+            "error": error,
+            "steps": diagnosis.get("steps").cloned().unwrap_or_else(|| json!([])),
+            "commands": remediation_commands(tool_id, node_id),
+            "api": {
+                "probe_again": format!("/api/tools/{tool_id}/nodes/{node_id}/probe"),
+                "tool_nodes": format!("/api/tools/{tool_id}/nodes")
+            }
+        },
+        "status": {
+            "state": remediation_state_for(state),
+            "can_probe_again": state != "pending",
+            "can_auto_fix": diagnosis.get("can_auto_fix").and_then(Value::as_bool).unwrap_or(false)
+        }
+    })
+}
+
+fn node_tool_remediation_item(tool: &Value, state: &str) -> Value {
+    let tool_id = tool
+        .pointer("/spec/tool_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let node_id = tool
+        .pointer("/metadata/node_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let error = tool
+        .pointer("/status/last_error")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let error_message = error.as_str().unwrap_or("");
+    let diagnosis = remediation_diagnosis_for(tool_id, state, error_message);
+    json!({
+        "api_version": "agentgrid.remediation/v1",
+        "kind": "NodeToolRemediation",
+        "metadata": {
+            "id": remediation_id(tool_id, node_id),
+            "tool_id": tool_id,
+            "node_id": node_id,
+            "updated_at": tool.pointer("/metadata/updated_at").cloned().unwrap_or(Value::Null)
+        },
+        "spec": {
+            "title": diagnosis.get("title").cloned().unwrap_or_else(|| json!("节点工具需要修复")),
+            "summary": diagnosis.get("summary").cloned().unwrap_or(Value::Null),
+            "severity": diagnosis.get("severity").cloned().unwrap_or_else(|| json!("medium")),
+            "action": diagnosis.get("action").cloned().unwrap_or_else(|| json!("review")),
+            "probe_state": state,
+            "tool": {
+                "id": tool_id,
+                "name": tool.pointer("/spec/name").cloned().unwrap_or_else(|| json!(tool_id)),
+                "executor": tool.pointer("/spec/executor").cloned().unwrap_or(Value::Null)
+            },
+            "node": { "id": node_id },
+            "error": error,
+            "steps": diagnosis.get("steps").cloned().unwrap_or_else(|| json!([])),
+            "commands": node_tool_remediation_commands(tool_id, node_id),
+            "api": {
+                "probe_again": format!("/api/node-tools/{tool_id}/nodes/{node_id}/probe")
+            }
+        },
+        "status": {
+            "state": remediation_state_for(state),
+            "can_probe_again": state != "pending",
+            "can_auto_fix": diagnosis.get("can_auto_fix").and_then(Value::as_bool).unwrap_or(false)
+        }
+    })
+}
+
+fn remediation_diagnosis_for(tool_id: &str, state: &str, error_message: &str) -> Value {
+    let lower = error_message.to_ascii_lowercase();
+    if state == "declared_unverified" {
+        return json!({
+            "title": "能力尚未验证",
+            "summary": "节点声明支持该工具，但 Hub 还没有看到真实执行证据。",
+            "severity": "low",
+            "action": "probe_again",
+            "can_auto_fix": true,
+            "steps": [
+                "提交一次轻量 Probe。",
+                "等待 Worker 执行并回写结果。",
+                "Probe 成功后调度器会优先信任该节点。"
+            ]
+        });
+    }
+    if state == "unsupported" {
+        return json!({
+            "title": "缺少 Probe 定义",
+            "summary": "该工具没有轻量验证 payload，插件或工具作者需要补齐 probe.payload 和 probe.verify。",
+            "severity": "medium",
+            "action": "define_probe",
+            "can_auto_fix": false,
+            "steps": [
+                "在工具声明里定义最小可执行 probe.payload。",
+                "定义成功判断 probe.verify 或让 Worker 返回 ok=true。",
+                "重新注册工具并执行 Probe。"
+            ]
+        });
+    }
+    if lower.contains("plugin executable not found") {
+        return json!({
+            "title": "插件执行文件缺失",
+            "summary": "节点声明了插件工具，但 Worker 找不到插件二进制或脚本。",
+            "severity": "high",
+            "action": "install_plugin",
+            "can_auto_fix": false,
+            "steps": [
+                "确认插件包已经发布到该节点。",
+                "检查工具声明中的 executor/path 是否指向真实文件。",
+                "修复后重新注册节点工具并执行 Probe。"
+            ]
+        });
+    }
+    if tool_id == "docker.run" || lower.contains("command docker is not allowlisted") {
+        return json!({
+            "title": "Docker 执行策略未放行",
+            "summary": "节点声明 Docker 能力，但 Worker 安全策略没有允许 docker 命令，或本机 Docker 不可用。",
+            "severity": "medium",
+            "action": "update_worker_policy",
+            "can_auto_fix": false,
+            "steps": [
+                "确认该节点确实需要运行 Docker 任务。",
+                "检查 Docker 是否已安装并正在运行。",
+                "把 docker 加入 Worker command_allowlist 或改用专门的 Docker Worker。",
+                "重新执行 docker.run Probe。"
+            ]
+        });
+    }
+    if lower.contains("blocked host") || lower.contains("policy denied") {
+        return json!({
+            "title": "Worker 策略拒绝执行",
+            "summary": "能力失败来自安全策略，而不是调度器选错节点。",
+            "severity": "medium",
+            "action": "review_policy",
+            "can_auto_fix": false,
+            "steps": [
+                "查看 Worker 当前安全策略。",
+                "确认目标域名、IP、命令或文件路径是否应该放行。",
+                "调整策略后重新 Probe。"
+            ]
+        });
+    }
+    if lower.contains("no such file") || lower.contains("找不到指定") {
+        return json!({
+            "title": "Probe 文件路径不可用",
+            "summary": "文件能力失败通常是路径不存在、系统路径不匹配或 Worker 运行身份无法访问。",
+            "severity": "medium",
+            "action": "fix_probe_payload",
+            "can_auto_fix": false,
+            "steps": [
+                "确认节点操作系统和 Worker 上报的 os 字段正确。",
+                "使用该系统稳定存在的文件或目录作为 Probe 目标。",
+                "重新执行 file.read 或 file.list Probe。"
+            ]
+        });
+    }
+    json!({
+        "title": "能力验证失败",
+        "summary": "该工具在节点上执行 Probe 失败，需要查看错误并重新验证。",
+        "severity": "medium",
+        "action": "investigate",
+        "can_auto_fix": false,
+        "steps": [
+            "查看最近 Probe 任务结果。",
+            "确认节点在线、Worker 版本和工具依赖。",
+            "修复环境后重新 Probe。"
+        ]
+    })
+}
+
+fn remediation_commands(tool_id: &str, node_id: &str) -> Value {
+    json!({
+        "cli_probe_again": format!("agentgrid tools probe --id {tool_id} --node {node_id}"),
+        "cli_tool_nodes": format!("agentgrid tools nodes --id {tool_id}"),
+        "cli_probe_center": "agentgrid tools probe-center",
+        "cli_remediation_center": "agentgrid tools remediation-center"
+    })
+}
+
+fn node_tool_remediation_commands(tool_id: &str, node_id: &str) -> Value {
+    json!({
+        "cli_probe_again": format!("agentgrid node-tools probe --id {tool_id} --node {node_id}"),
+        "cli_tool_nodes": format!("agentgrid node-tools get --id {tool_id}"),
+        "cli_probe_center": "agentgrid tools probe-center",
+        "cli_remediation_center": "agentgrid tools remediation-center"
+    })
+}
+
+fn remediation_state_for(probe_state: &str) -> &'static str {
+    match probe_state {
+        "verified" => "resolved",
+        "pending" => "probing",
+        "declared_unverified" | "expired" => "needs_probe",
+        "unsupported" => "needs_contract",
+        "failed" => "needs_fix",
+        _ => "needs_review",
+    }
+}
+
+fn remediation_id(tool_id: &str, node_id: &str) -> String {
+    format!("rem_{}_{}", tool_id, node_id)
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn node_workbench_id_from_probe_node(node: &Value, workbenches: &HashMap<String, Value>) -> String {

@@ -843,6 +843,38 @@ Workbench UX rule:
 - This is a product signal, not just a debug log: users should know whether the
   selected computer has proven that capability recently.
 
+### Capability Remediation Center
+
+The Remediation Center turns failed or incomplete capability verification into
+machine-readable repair guidance:
+
+```text
+GET /api/tools/remediation-center
+```
+
+It is a read-only standard view. It does not silently mutate Worker policy or
+install packages. Each item contains:
+
+- `tool_id` and `node_id`.
+- current `probe_state`.
+- normalized failure diagnosis.
+- severity and recommended action.
+- human-readable repair steps.
+- CLI and API commands for re-probing after repair.
+
+Common actions:
+
+- `probe_again`: submit a new Probe for unverified or repaired edges.
+- `review_policy`: inspect Worker policy, domain rules, or allowlists.
+- `update_worker_policy`: explicitly change Worker policy after human approval.
+- `install_plugin`: install or fix missing plugin executables.
+- `define_probe`: add `probe.payload` / `probe.verify` to a plugin contract.
+- `fix_probe_payload`: repair an OS/path-specific Probe payload.
+
+AI clients should use Remediation Center after Probe Center reports
+`attention_required`. Human operators should use it as the first page for
+turning broken node capabilities back into verified capacity.
+
 ## 23. Placement Engine Standard v1
 
 Placement Engine decides where a task should run.

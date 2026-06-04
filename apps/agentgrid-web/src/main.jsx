@@ -242,6 +242,40 @@ function channelColor(role, node) {
   }[role] || 'green';
 }
 
+function remediationSeverityLabel(value) {
+  return {
+    critical: '严重',
+    high: '高',
+    medium: '中',
+    low: '低',
+    info: '提示',
+  }[value] || '中';
+}
+
+function remediationSeverityColor(value) {
+  return {
+    critical: 'red',
+    high: 'volcano',
+    medium: 'orange',
+    low: 'blue',
+    info: 'default',
+  }[value] || 'orange';
+}
+
+function remediationActionLabel(value) {
+  return {
+    probe_again: '重新验证',
+    define_probe: '补 Probe',
+    install_plugin: '安装插件',
+    update_worker_policy: '更新策略',
+    review_policy: '检查策略',
+    fix_probe_payload: '修 Probe',
+    investigate: '排查',
+    review: '查看',
+    none: '无需处理',
+  }[value] || value || '查看';
+}
+
 function ChannelStatus({ role, node }) {
   return (
     <Tag color={channelColor(role, node)}>
@@ -422,6 +456,7 @@ function App() {
   const [workflows, setWorkflows] = useState([]);
   const [tools, setTools] = useState([]);
   const [probeCenter, setProbeCenter] = useState(null);
+  const [remediationCenter, setRemediationCenter] = useState(null);
   const [runtimeManifest, setRuntimeManifest] = useState({});
   const [runtimeStandard, setRuntimeStandard] = useState({});
   const [workflowTemplates, setWorkflowTemplates] = useState([]);
@@ -459,6 +494,7 @@ function App() {
         workflowRes,
         toolRes,
         probeCenterRes,
+        remediationCenterRes,
         nodeToolRes,
         capabilityRes,
         runtimeRes,
@@ -487,6 +523,7 @@ function App() {
         fetchJson('/workflows?limit=100'),
         fetchJson('/tools'),
         fetchOptionalJson('/tools/probe-center'),
+        fetchOptionalJson('/tools/remediation-center'),
         fetchJson('/node-tools'),
         fetchJson('/capabilities/manifest'),
         fetchJson('/agent-runtime/manifest'),
@@ -515,6 +552,7 @@ function App() {
       setWorkflows(workflowRes.items || []);
       setTools(toolRes.items || []);
       setProbeCenter(probeCenterRes.item || null);
+      setRemediationCenter(remediationCenterRes.item || null);
       setNodeTools(nodeToolRes.items || []);
       setCapabilities(capabilityRes || {});
       setRuntimeManifest(runtimeRes || {});
@@ -666,7 +704,7 @@ function App() {
             )}
             {active === 'nodes' && <Nodes nodes={nodes} workbenches={workbenches} onOpenTask={setSelectedTaskId} onDone={refresh} />}
             {active === 'capabilities' && <Capabilities manifest={capabilities} />}
-            {active === 'tools' && <Tools tools={tools} probeCenter={probeCenter} onDone={refresh} />}
+            {active === 'tools' && <Tools tools={tools} probeCenter={probeCenter} remediationCenter={remediationCenter} onDone={refresh} />}
             {active === 'nodeTools' && <NodeTools nodeTools={nodeTools} nodes={nodes} onDone={refresh} />}
             {active === 'runtime' && <AgentRuntime manifest={runtimeManifest} />}
             {active === 'standard' && <RuntimeStandard standard={runtimeStandard} />}
@@ -1718,7 +1756,7 @@ function Capabilities({ manifest }) {
   );
 }
 
-function Tools({ tools, probeCenter, onDone }) {
+function Tools({ tools, probeCenter, remediationCenter, onDone }) {
   const [selected, setSelected] = useState(null);
   const [probing, setProbing] = useState(null);
   const categories = Array.from(new Set(tools.map((tool) => tool.category || 'other')));
@@ -1728,6 +1766,8 @@ function Tools({ tools, probeCenter, onDone }) {
     low: tools.filter((tool) => tool.risk === 'low').length,
   };
   const summary = probeCenter?.summary || {};
+  const remediationSummary = remediationCenter?.summary || {};
+  const remediationItems = remediationCenter?.items || [];
   const centerTools = probeCenter?.tools || tools;
   const workbenchRows = probeCenter?.workbenches || [];
 
@@ -1741,6 +1781,20 @@ function Tools({ tools, probeCenter, onDone }) {
       onDone?.();
     } catch (error) {
       message.error(`验证失败：${error.message}`);
+    } finally {
+      setProbing(null);
+    }
+  };
+
+  const runProbeNode = async (toolId, nodeId, path) => {
+    const key = `${toolId}:${nodeId}`;
+    setProbing(key);
+    try {
+      await fetchJson(path || `/tools/${toolId}/nodes/${nodeId}/probe`, { method: 'POST' });
+      message.success('已重新提交验证任务');
+      onDone?.();
+    } catch (error) {
+      message.error(`重新验证失败：${error.message}`);
     } finally {
       setProbing(null);
     }
@@ -1773,6 +1827,72 @@ function Tools({ tools, probeCenter, onDone }) {
               </Col>
             ))}
           </Row>
+        </Space>
+      </ProCard>
+
+      <ProCard
+        title="能力修复中心"
+        bordered
+        extra={<Tag color={remediationSummary.needs_action ? 'orange' : 'green'}>待处理 {remediationSummary.needs_action || 0}</Tag>}
+      >
+        <Space direction="vertical" className="full" size={12}>
+          <Row gutter={[12, 12]}>
+            <Col xs={24} md={8}><Metric title="修复项" value={remediationSummary.total || 0} /></Col>
+            <Col xs={24} md={8}><Metric title="高优先级" value={(remediationSummary.by_severity?.high || 0) + (remediationSummary.by_severity?.critical || 0)} tone="red" /></Col>
+            <Col xs={24} md={8}><Metric title="可重新验证" value={remediationItems.filter((item) => item.status?.can_probe_again).length} tone="green" /></Col>
+          </Row>
+          <Table
+            rowKey={(row) => row.metadata.id}
+            dataSource={remediationItems.slice(0, 12)}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ x: 1180 }}
+            locale={{ emptyText: '当前没有需要处理的能力修复项' }}
+            columns={[
+              {
+                title: '问题',
+                width: 280,
+                render: (_, row) => (
+                  <Space direction="vertical" size={1}>
+                    <Text strong>{row.spec.title}</Text>
+                    <Text type="secondary">{row.spec.summary}</Text>
+                  </Space>
+                ),
+              },
+              { title: '电脑/节点', width: 190, render: (_, row) => row.spec.node?.name || row.metadata.node_id },
+              { title: '工具', width: 170, render: (_, row) => <Text code>{row.metadata.tool_id}</Text> },
+              { title: '状态', width: 120, render: (_, row) => <Tag color={probeStateColor(row.spec.probe_state)}>{probeStateLabel(row.spec.probe_state)}</Tag> },
+              { title: '优先级', width: 100, render: (_, row) => <Tag color={remediationSeverityColor(row.spec.severity)}>{remediationSeverityLabel(row.spec.severity)}</Tag> },
+              { title: '动作', width: 130, render: (_, row) => <Tag>{remediationActionLabel(row.spec.action)}</Tag> },
+              {
+                title: '错误',
+                render: (_, row) => <Text type="secondary">{row.spec.error?.message || row.spec.error || '-'}</Text>,
+              },
+              {
+                title: '操作',
+                width: 130,
+                render: (_, row) => (
+                  <Button
+                    size="small"
+                    disabled={!row.status?.can_probe_again}
+                    loading={probing === `${row.metadata.tool_id}:${row.metadata.node_id}`}
+                    onClick={() => runProbeNode(row.metadata.tool_id, row.metadata.node_id, row.spec.api?.probe_again)}
+                  >
+                    重新验证
+                  </Button>
+                ),
+              },
+            ]}
+            expandable={{
+              expandedRowRender: (row) => (
+                <Space direction="vertical" className="full">
+                  <Space wrap>{(row.spec.steps || []).map((step, index) => <Tag key={index}>{step}</Tag>)}</Space>
+                  <Text copyable code>{row.spec.commands?.cli_probe_again}</Text>
+                  <Text type="secondary">API: {row.spec.api?.probe_again}</Text>
+                </Space>
+              ),
+            }}
+          />
         </Space>
       </ProCard>
 

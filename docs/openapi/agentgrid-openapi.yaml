@@ -1215,6 +1215,27 @@ paths:
                     $ref: "#/components/schemas/ToolProbeCenter"
         default:
           $ref: "#/components/responses/Error"
+  /tools/remediation-center:
+    get:
+      tags: [Tools]
+      summary: Get capability remediation guidance for failed or incomplete tool verification.
+      operationId: getToolRemediationCenter
+      responses:
+        "200":
+          description: Capability remediation center snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/ToolRemediationCenter"
+        default:
+          $ref: "#/components/responses/Error"
   /tools/probes:
     get:
       tags: [Tools]
@@ -2674,6 +2695,82 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ToolProbe"
+    ToolRemediationCenter:
+      type: object
+      additionalProperties: true
+      required: [api_version, kind, summary, items]
+      properties:
+        api_version:
+          const: agentgrid.remediation/v1
+        kind:
+          const: ToolRemediationCenter
+        summary:
+          type: object
+          additionalProperties: true
+          properties:
+            total:
+              type: integer
+            needs_action:
+              type: integer
+            by_severity:
+              type: object
+              additionalProperties: true
+            by_probe_state:
+              type: object
+              additionalProperties: true
+            by_action:
+              type: object
+              additionalProperties: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolRemediation"
+    ToolRemediation:
+      type: object
+      additionalProperties: true
+      required: [api_version, kind, metadata, spec, status]
+      properties:
+        api_version:
+          const: agentgrid.remediation/v1
+        kind:
+          type: string
+          enum: [ToolRemediation, NodeToolRemediation]
+        metadata:
+          type: object
+          additionalProperties: true
+          required: [id, tool_id, node_id]
+          properties:
+            id:
+              type: string
+            tool_id:
+              type: string
+            node_id:
+              type: string
+        spec:
+          type: object
+          additionalProperties: true
+          properties:
+            title:
+              type: string
+            summary:
+              type: string
+            severity:
+              type: string
+              enum: [critical, high, medium, low, info]
+            action:
+              type: string
+            probe_state:
+              type: string
+            steps:
+              type: array
+              items:
+                type: string
+            commands:
+              type: object
+              additionalProperties: true
+        status:
+          type: object
+          additionalProperties: true
     User:
       type: object
       additionalProperties: true
