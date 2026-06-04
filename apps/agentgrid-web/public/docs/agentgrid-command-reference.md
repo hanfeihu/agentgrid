@@ -2779,6 +2779,24 @@ plugin installation still require an explicit operator action.
 Hub supports safe actions such as `probe_again` and `check_dependency`; higher
 risk actions create review tasks instead of mutating Worker policy directly.
 
+Remediation Result Classifier:
+
+- Read `spec.diagnosis.code` for the latest product-level conclusion.
+- Read `spec.diagnosis.next_action` for the recommended next step.
+- Read `status.last_action_task` to open the task that produced the diagnosis.
+
+Common diagnosis codes:
+
+- `not_checked`: no remediation task has run yet.
+- `check_running`: remediation task is waiting or running.
+- `dependency_missing`: dependency or command is missing.
+- `policy_blocked`: Worker policy blocked execution.
+- `service_not_running`: dependency exists but service is stopped.
+- `path_missing`: file or directory path is unavailable.
+- `probe_ready`: dependency check passed; run Probe again.
+- `check_failed`: check failed without a more specific class.
+- `unknown`: insufficient evidence.
+
 Probe states:
 
 - `declared_unverified`: node heartbeat says it supports the capability, but Hub has not verified it.

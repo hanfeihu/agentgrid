@@ -4979,7 +4979,14 @@ impl Store {
                 if matches!(state, "verified" | "pending") {
                     continue;
                 }
-                items.push(tool_remediation_item(tool, &node, state));
+                let node_id = node.get("id").and_then(Value::as_str).unwrap_or("unknown");
+                let latest_task = self.latest_remediation_action_task(tool_id, node_id)?;
+                items.push(tool_remediation_item(
+                    tool,
+                    &node,
+                    state,
+                    latest_task.as_ref(),
+                ));
             }
         }
         let node_tools = probe_center
@@ -4995,7 +5002,20 @@ impl Store {
             if matches!(state, "verified" | "pending") {
                 continue;
             }
-            items.push(node_tool_remediation_item(tool, state));
+            let tool_id = tool
+                .pointer("/spec/tool_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let node_id = tool
+                .pointer("/metadata/node_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let latest_task = self.latest_remediation_action_task(tool_id, node_id)?;
+            items.push(node_tool_remediation_item(
+                tool,
+                state,
+                latest_task.as_ref(),
+            ));
         }
         items.sort_by(|left, right| {
             remediation_priority_rank(left)
@@ -5125,6 +5145,36 @@ impl Store {
             }),
         )?;
         Ok(output)
+    }
+
+    fn latest_remediation_action_task(
+        &self,
+        tool_id: &str,
+        node_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
+        let organization_id = self.default_organization_id()?;
+        self.conn
+            .query_row(
+                "
+                SELECT * FROM agent_tasks
+                WHERE project_id = ?1
+                  AND organization_id = ?2
+                  AND labels_json LIKE ?3
+                  AND labels_json LIKE ?4
+                  AND labels_json LIKE '%\"remediation\"%'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                ",
+                params![
+                    PROJECT_ID,
+                    organization_id,
+                    format!("%\"remediation_tool:{tool_id}\"%"),
+                    format!("%\"node:{node_id}\"%"),
+                ],
+                task_row,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     fn create_remediation_check_task(
@@ -13322,7 +13372,12 @@ fn remediation_summary(items: &[Value]) -> Value {
     })
 }
 
-fn tool_remediation_item(tool: &Value, node: &Value, state: &str) -> Value {
+fn tool_remediation_item(
+    tool: &Value,
+    node: &Value,
+    state: &str,
+    latest_task: Option<&Value>,
+) -> Value {
     let tool_id = tool.get("id").and_then(Value::as_str).unwrap_or("unknown");
     let node_id = node.get("id").and_then(Value::as_str).unwrap_or("unknown");
     let error = node
@@ -13331,6 +13386,7 @@ fn tool_remediation_item(tool: &Value, node: &Value, state: &str) -> Value {
         .unwrap_or(Value::Null);
     let error_message = error.get("message").and_then(Value::as_str).unwrap_or("");
     let diagnosis = remediation_diagnosis_for(tool_id, state, error_message);
+    let result_diagnosis = remediation_result_diagnosis(tool_id, state, latest_task);
     json!({
         "api_version": "agentgrid.remediation/v1",
         "kind": "ToolRemediation",
@@ -13347,6 +13403,7 @@ fn tool_remediation_item(tool: &Value, node: &Value, state: &str) -> Value {
             "summary": diagnosis.get("summary").cloned().unwrap_or(Value::Null),
             "severity": diagnosis.get("severity").cloned().unwrap_or_else(|| json!("medium")),
             "action": diagnosis.get("action").cloned().unwrap_or_else(|| json!("review")),
+            "diagnosis": result_diagnosis,
             "probe_state": state,
             "tool": {
                 "id": tool_id,
@@ -13373,12 +13430,13 @@ fn tool_remediation_item(tool: &Value, node: &Value, state: &str) -> Value {
         "status": {
             "state": remediation_state_for(state),
             "can_probe_again": state != "pending",
-            "can_auto_fix": diagnosis.get("can_auto_fix").and_then(Value::as_bool).unwrap_or(false)
+            "can_auto_fix": diagnosis.get("can_auto_fix").and_then(Value::as_bool).unwrap_or(false),
+            "last_action_task": remediation_action_task_summary(latest_task)
         }
     })
 }
 
-fn node_tool_remediation_item(tool: &Value, state: &str) -> Value {
+fn node_tool_remediation_item(tool: &Value, state: &str, latest_task: Option<&Value>) -> Value {
     let tool_id = tool
         .pointer("/spec/tool_id")
         .and_then(Value::as_str)
@@ -13393,6 +13451,7 @@ fn node_tool_remediation_item(tool: &Value, state: &str) -> Value {
         .unwrap_or(Value::Null);
     let error_message = error.as_str().unwrap_or("");
     let diagnosis = remediation_diagnosis_for(tool_id, state, error_message);
+    let result_diagnosis = remediation_result_diagnosis(tool_id, state, latest_task);
     json!({
         "api_version": "agentgrid.remediation/v1",
         "kind": "NodeToolRemediation",
@@ -13407,6 +13466,7 @@ fn node_tool_remediation_item(tool: &Value, state: &str) -> Value {
             "summary": diagnosis.get("summary").cloned().unwrap_or(Value::Null),
             "severity": diagnosis.get("severity").cloned().unwrap_or_else(|| json!("medium")),
             "action": diagnosis.get("action").cloned().unwrap_or_else(|| json!("review")),
+            "diagnosis": result_diagnosis,
             "probe_state": state,
             "tool": {
                 "id": tool_id,
@@ -13425,7 +13485,8 @@ fn node_tool_remediation_item(tool: &Value, state: &str) -> Value {
         "status": {
             "state": remediation_state_for(state),
             "can_probe_again": state != "pending",
-            "can_auto_fix": diagnosis.get("can_auto_fix").and_then(Value::as_bool).unwrap_or(false)
+            "can_auto_fix": diagnosis.get("can_auto_fix").and_then(Value::as_bool).unwrap_or(false),
+            "last_action_task": remediation_action_task_summary(latest_task)
         }
     })
 }
@@ -13529,6 +13590,133 @@ fn remediation_diagnosis_for(tool_id: &str, state: &str, error_message: &str) ->
             "修复环境后重新 Probe。"
         ]
     })
+}
+
+fn remediation_result_diagnosis(
+    tool_id: &str,
+    probe_state: &str,
+    latest_task: Option<&Value>,
+) -> Value {
+    let Some(task) = latest_task else {
+        return json!({
+            "code": "not_checked",
+            "message": "尚未创建修复检查任务。",
+            "next_action": remediation_safe_action_for_probe_state(probe_state),
+            "source_task_id": Value::Null
+        });
+    };
+    let task_id = task
+        .pointer("/metadata/id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let state = task
+        .pointer("/status/state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if matches!(state, "assigned" | "todo" | "in_progress") {
+        return json!({
+            "code": "check_running",
+            "message": "修复检查任务正在等待或执行。",
+            "next_action": "wait",
+            "source_task_id": task_id
+        });
+    }
+    let stdout = remediation_task_text(task, "stdout");
+    let stderr = remediation_task_text(task, "stderr");
+    let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    let exit_code = task
+        .pointer("/status/error/result/exit_code")
+        .or_else(|| task.pointer("/status/result/exit_code"))
+        .and_then(Value::as_i64);
+    let code = if tool_id == "docker.run"
+        && (combined.contains("not recognized")
+            || combined.contains("command not found")
+            || combined.contains("no docker")
+            || combined.contains("not found"))
+    {
+        "dependency_missing"
+    } else if tool_id == "docker.run"
+        && (combined.contains("cannot connect")
+            || combined.contains("docker daemon")
+            || combined.contains("is the docker daemon running"))
+    {
+        "service_not_running"
+    } else if combined.contains("policy denied") || combined.contains("not allowlisted") {
+        "policy_blocked"
+    } else if combined.contains("no such file")
+        || combined.contains("找不到指定")
+        || combined.contains("path not found")
+    {
+        "path_missing"
+    } else if state == "done" || exit_code == Some(0) {
+        "probe_ready"
+    } else if state == "failed" {
+        "check_failed"
+    } else {
+        "unknown"
+    };
+    let (message, next_action) = remediation_classifier_message(code);
+    json!({
+        "code": code,
+        "message": message,
+        "next_action": next_action,
+        "source_task_id": task_id,
+        "source_task_state": state,
+        "exit_code": exit_code,
+        "stdout_excerpt": truncate_text(&stdout, 240),
+        "stderr_excerpt": truncate_text(&stderr, 240)
+    })
+}
+
+fn remediation_task_text(task: &Value, field: &str) -> String {
+    task.pointer(&format!("/status/result/{field}"))
+        .or_else(|| task.pointer(&format!("/status/error/result/{field}")))
+        .or_else(|| task.pointer("/status/error/message"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn remediation_classifier_message(code: &str) -> (&'static str, &'static str) {
+    match code {
+        "dependency_missing" => ("依赖没有安装或命令不可用。", "install_dependency"),
+        "policy_blocked" => ("Worker 安全策略阻止了该能力。", "review_policy"),
+        "service_not_running" => ("依赖已存在但服务没有运行。", "start_service"),
+        "path_missing" => ("路径不存在或 Worker 身份无法访问。", "fix_path"),
+        "probe_ready" => ("依赖检查通过，可以重新验证能力。", "probe_again"),
+        "check_running" => ("修复检查还在执行。", "wait"),
+        "check_failed" => ("修复检查失败，需要查看任务输出。", "investigate"),
+        _ => ("还没有足够证据判断问题类型。", "check_dependency"),
+    }
+}
+
+fn remediation_safe_action_for_probe_state(probe_state: &str) -> &'static str {
+    match probe_state {
+        "declared_unverified" | "expired" => "probe_again",
+        "failed" => "check_dependency",
+        "unsupported" => "define_probe",
+        _ => "check_dependency",
+    }
+}
+
+fn remediation_action_task_summary(task: Option<&Value>) -> Value {
+    let Some(task) = task else {
+        return Value::Null;
+    };
+    json!({
+        "id": task.pointer("/metadata/id").and_then(Value::as_str),
+        "state": task.pointer("/status/state").and_then(Value::as_str),
+        "updated_at": task.pointer("/metadata/updated_at").cloned().unwrap_or(Value::Null),
+        "leased_by_node_id": task.pointer("/status/leased_by_node_id").cloned().unwrap_or(Value::Null)
+    })
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    let mut output = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    output
 }
 
 fn remediation_commands(tool_id: &str, node_id: &str) -> Value {
@@ -19163,6 +19351,40 @@ mod hub_core_tests {
         assert_eq!(
             http_probe.get("url").and_then(Value::as_str),
             Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn remediation_result_classifier_detects_missing_docker_dependency() {
+        let task = json!({
+            "metadata": {
+                "id": "task_missing_docker"
+            },
+            "status": {
+                "state": "failed",
+                "error": {
+                    "result": {
+                        "exit_code": 1,
+                        "stdout": "",
+                        "stderr": "docker : The term 'docker' is not recognized as the name of a cmdlet"
+                    }
+                }
+            }
+        });
+
+        let diagnosis = remediation_result_diagnosis("docker.run", "failed", Some(&task));
+
+        assert_eq!(
+            diagnosis.get("code").and_then(Value::as_str),
+            Some("dependency_missing")
+        );
+        assert_eq!(
+            diagnosis.get("next_action").and_then(Value::as_str),
+            Some("install_dependency")
+        );
+        assert_eq!(
+            diagnosis.get("source_task_id").and_then(Value::as_str),
+            Some("task_missing_docker")
         );
     }
 

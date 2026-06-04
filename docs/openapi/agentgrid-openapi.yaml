@@ -2793,6 +2793,38 @@ components:
               enum: [critical, high, medium, low, info]
             action:
               type: string
+            diagnosis:
+              type: object
+              additionalProperties: true
+              properties:
+                code:
+                  type: string
+                  enum:
+                    - not_checked
+                    - check_running
+                    - dependency_missing
+                    - policy_blocked
+                    - service_not_running
+                    - path_missing
+                    - probe_ready
+                    - check_failed
+                    - unknown
+                message:
+                  type: string
+                next_action:
+                  type: string
+                source_task_id:
+                  type: string
+                  nullable: true
+                source_task_state:
+                  type: string
+                exit_code:
+                  type: integer
+                  nullable: true
+                stdout_excerpt:
+                  type: string
+                stderr_excerpt:
+                  type: string
             probe_state:
               type: string
             steps:
@@ -2805,6 +2837,17 @@ components:
         status:
           type: object
           additionalProperties: true
+          properties:
+            state:
+              type: string
+            can_probe_again:
+              type: boolean
+            can_auto_fix:
+              type: boolean
+            last_action_task:
+              type: object
+              nullable: true
+              additionalProperties: true
     ToolRemediationActionRequest:
       type: object
       additionalProperties: false

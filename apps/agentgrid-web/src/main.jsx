@@ -267,13 +267,46 @@ function remediationActionLabel(value) {
     probe_again: '重新验证',
     define_probe: '补 Probe',
     install_plugin: '安装插件',
+    install_dependency: '安装依赖',
     update_worker_policy: '更新策略',
     review_policy: '检查策略',
     fix_probe_payload: '修 Probe',
+    check_dependency: '检查依赖',
+    start_service: '启动服务',
+    fix_path: '修复路径',
+    wait: '等待完成',
     investigate: '排查',
     review: '查看',
     none: '无需处理',
   }[value] || value || '查看';
+}
+
+function remediationDiagnosisLabel(value) {
+  return {
+    not_checked: '未检查',
+    check_running: '检查中',
+    dependency_missing: '依赖缺失',
+    policy_blocked: '策略阻止',
+    service_not_running: '服务未运行',
+    path_missing: '路径不可用',
+    probe_ready: '可重新验证',
+    check_failed: '检查失败',
+    unknown: '未知',
+  }[value] || value || '未检查';
+}
+
+function remediationDiagnosisColor(value) {
+  return {
+    not_checked: 'default',
+    check_running: 'processing',
+    dependency_missing: 'red',
+    policy_blocked: 'orange',
+    service_not_running: 'volcano',
+    path_missing: 'orange',
+    probe_ready: 'green',
+    check_failed: 'red',
+    unknown: 'default',
+  }[value] || 'default';
 }
 
 function ChannelStatus({ role, node }) {
@@ -1881,6 +1914,15 @@ function Tools({ tools, probeCenter, remediationCenter, onDone }) {
               { title: '电脑/节点', width: 190, render: (_, row) => row.spec.node?.name || row.metadata.node_id },
               { title: '工具', width: 170, render: (_, row) => <Text code>{row.metadata.tool_id}</Text> },
               { title: '状态', width: 120, render: (_, row) => <Tag color={probeStateColor(row.spec.probe_state)}>{probeStateLabel(row.spec.probe_state)}</Tag> },
+              {
+                title: '结论',
+                width: 140,
+                render: (_, row) => (
+                  <Tag color={remediationDiagnosisColor(row.spec.diagnosis?.code)}>
+                    {remediationDiagnosisLabel(row.spec.diagnosis?.code)}
+                  </Tag>
+                ),
+              },
               { title: '优先级', width: 100, render: (_, row) => <Tag color={remediationSeverityColor(row.spec.severity)}>{remediationSeverityLabel(row.spec.severity)}</Tag> },
               { title: '动作', width: 130, render: (_, row) => <Tag>{remediationActionLabel(row.spec.action)}</Tag> },
               {
@@ -1914,6 +1956,15 @@ function Tools({ tools, probeCenter, remediationCenter, onDone }) {
             expandable={{
               expandedRowRender: (row) => (
                 <Space direction="vertical" className="full">
+                  <Space wrap>
+                    <Tag color={remediationDiagnosisColor(row.spec.diagnosis?.code)}>
+                      {remediationDiagnosisLabel(row.spec.diagnosis?.code)}
+                    </Tag>
+                    {row.spec.diagnosis?.next_action && <Tag>下一步：{remediationActionLabel(row.spec.diagnosis.next_action)}</Tag>}
+                    {row.spec.diagnosis?.source_task_id && <Text copyable code>{row.spec.diagnosis.source_task_id}</Text>}
+                  </Space>
+                  {row.spec.diagnosis?.message && <Text type="secondary">{row.spec.diagnosis.message}</Text>}
+                  {row.spec.diagnosis?.stderr_excerpt && <pre className="result-json">{row.spec.diagnosis.stderr_excerpt}</pre>}
                   <Space wrap>{(row.spec.steps || []).map((step, index) => <Tag key={index}>{step}</Tag>)}</Space>
                   <Text copyable code>{row.spec.commands?.cli_probe_again}</Text>
                   <Text type="secondary">API: {row.spec.api?.probe_again}</Text>

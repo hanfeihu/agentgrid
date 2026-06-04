@@ -906,6 +906,47 @@ example, Docker allowlist failures become a dependency check task instead of
 silently changing Worker policy. This keeps remediation auditable and avoids
 surprising machine mutation.
 
+### Remediation Result Classifier v1
+
+Remediation Result Classifier converts the latest remediation action task into
+a product-level conclusion. API clients read it from:
+
+```text
+spec.diagnosis
+status.last_action_task
+```
+
+`spec.diagnosis.code` is one of:
+
+- `not_checked`: no remediation action task has been created.
+- `check_running`: the latest remediation action task is waiting or running.
+- `dependency_missing`: a required executable or package is missing.
+- `policy_blocked`: Worker policy prevented the capability check.
+- `service_not_running`: the dependency exists but its service is not running.
+- `path_missing`: the target path does not exist or is not accessible.
+- `probe_ready`: the dependency check passed; the edge can be probed again.
+- `check_failed`: the check ran and failed, but no more specific class matched.
+- `unknown`: Hub does not yet have enough evidence to classify the failure.
+
+Example:
+
+```json
+{
+  "code": "dependency_missing",
+  "message": "依赖没有安装或命令不可用。",
+  "next_action": "install_dependency",
+  "source_task_id": "task_xxx",
+  "source_task_state": "failed",
+  "exit_code": 1,
+  "stdout_excerpt": "",
+  "stderr_excerpt": "docker: command not found"
+}
+```
+
+This classifier is deliberately diagnostic only. It does not install packages,
+start services, or update Worker policy. Those mutations must be explicit
+operator or AI actions with their own audit trail.
+
 ## 23. Placement Engine Standard v1
 
 Placement Engine decides where a task should run.
