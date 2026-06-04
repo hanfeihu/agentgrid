@@ -2759,6 +2759,7 @@ Remediation Center:
 
 ```bash
 agentgrid tools remediation-center
+agentgrid tools remediation-runbook --id rem_docker_run_jia_node
 agentgrid tools remediation-action --id rem_docker_run_jia_node
 ```
 
@@ -2766,6 +2767,7 @@ API:
 
 ```text
 GET /api/tools/remediation-center
+GET /api/tools/remediations/{remediation_id}/runbook
 POST /api/tools/remediations/{remediation_id}/actions
 ```
 
@@ -2796,6 +2798,19 @@ Common diagnosis codes:
 - `probe_ready`: dependency check passed; run Probe again.
 - `check_failed`: check failed without a more specific class.
 - `unknown`: insufficient evidence.
+
+Remediation Runbook:
+
+- Read `spec.runbook` from each remediation item.
+- Use `agentgrid tools remediation-runbook --id rem_xxx` to print one runbook.
+- `spec.runbook.current_step_id` tells the current step.
+- `spec.runbook.requires_operator=true` means Hub must not mutate the machine
+  silently; an operator or explicitly authorized AI action must perform the
+  state-changing step.
+- `spec.runbook.steps[]` contains normalized phases: diagnostic,
+  operator_action, and verification.
+- `spec.runbook.commands.probe_again` and `spec.runbook.api.probe_again` are
+  the standard verification entrypoints after repair.
 
 Probe states:
 

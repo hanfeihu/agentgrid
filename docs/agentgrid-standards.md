@@ -947,6 +947,66 @@ This classifier is deliberately diagnostic only. It does not install packages,
 start services, or update Worker policy. Those mutations must be explicit
 operator or AI actions with their own audit trail.
 
+### Remediation Runbook v1
+
+Each remediation item includes a machine-readable runbook:
+
+```text
+spec.runbook
+```
+
+The runbook is also available directly:
+
+```text
+GET /api/tools/remediations/{remediation_id}/runbook
+```
+
+Runbook v1 turns a diagnosis into a stable repair workflow. It does not execute
+the repair by itself. The schema is explicit so Web, CLI, SDK, MCP, and AI
+clients can show and follow the same process.
+
+Important fields:
+
+- `api_version`: `agentgrid.remediation-runbook/v1`.
+- `diagnosis_code`: copied from `spec.diagnosis.code`.
+- `current_step_id`: the step that should be handled now.
+- `requires_operator`: true when the next step changes machine state.
+- `steps[]`: normalized repair steps.
+- `commands.create_action`: create or rerun a safe remediation check.
+- `commands.probe_again`: re-verify the capability after repair.
+- `evidence.source_task_id`: task that produced the current conclusion.
+- `guardrails[]`: non-negotiable safety boundaries for the runbook.
+
+Step fields:
+
+- `id`
+- `title`
+- `kind`: `diagnostic`, `operator_action`, or `verification`.
+- `actor`: `hub`, `operator`, or another explicit actor.
+- `status`: `available`, `active`, `done`, `manual_required`, `blocked`, or
+  `waiting`.
+- `summary`
+- `action`
+- `command`
+- `api`
+
+Runbook v1 covers these diagnosis flows:
+
+- `not_checked`: create a safe dependency check, wait for classification, then
+  choose a repair path.
+- `check_running`: wait for the existing check and inspect the source task.
+- `dependency_missing`: install the missing dependency, confirm Worker access,
+  then Probe again.
+- `policy_blocked`: review policy, explicitly update it if approved, then Probe
+  again.
+- `service_not_running`: start the required service and Probe again.
+- `path_missing`: fix the path or Probe payload and Probe again.
+- `probe_ready`: immediately Probe again.
+- `check_failed` / `unknown`: collect more evidence and choose a repair path.
+
+Guardrail: Runbook v1 must not silently install packages, start services, or
+mutate Worker policy. Those actions require a separate audited task.
+
 ## 23. Placement Engine Standard v1
 
 Placement Engine decides where a task should run.

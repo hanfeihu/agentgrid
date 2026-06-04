@@ -1898,7 +1898,7 @@ function Tools({ tools, probeCenter, remediationCenter, onDone }) {
             dataSource={remediationItems.slice(0, 12)}
             pagination={false}
             tableLayout="fixed"
-            scroll={{ x: 1180 }}
+            scroll={{ x: 1280 }}
             locale={{ emptyText: '当前没有需要处理的能力修复项' }}
             columns={[
               {
@@ -1961,10 +1961,44 @@ function Tools({ tools, probeCenter, remediationCenter, onDone }) {
                       {remediationDiagnosisLabel(row.spec.diagnosis?.code)}
                     </Tag>
                     {row.spec.diagnosis?.next_action && <Tag>下一步：{remediationActionLabel(row.spec.diagnosis.next_action)}</Tag>}
+                    {row.spec.runbook?.requires_operator && <Tag color="orange">需要人工确认</Tag>}
                     {row.spec.diagnosis?.source_task_id && <Text copyable code>{row.spec.diagnosis.source_task_id}</Text>}
                   </Space>
                   {row.spec.diagnosis?.message && <Text type="secondary">{row.spec.diagnosis.message}</Text>}
                   {row.spec.diagnosis?.stderr_excerpt && <pre className="result-json">{row.spec.diagnosis.stderr_excerpt}</pre>}
+                  {row.spec.runbook && (
+                    <div className="remediation-runbook">
+                      <Space direction="vertical" className="full" size={10}>
+                        <Space direction="vertical" size={2}>
+                          <Text strong>{row.spec.runbook.title}</Text>
+                          <Text type="secondary">{row.spec.runbook.goal}</Text>
+                        </Space>
+                        <Steps
+                          direction="vertical"
+                          size="small"
+                          current={Math.max(0, (row.spec.runbook.steps || []).findIndex((step) => step.id === row.spec.runbook.current_step_id))}
+                          items={(row.spec.runbook.steps || []).map((step) => ({
+                            title: (
+                              <Space wrap size={6}>
+                                <Text>{step.title}</Text>
+                                <Tag>{step.actor === 'hub' ? 'Hub' : step.actor === 'operator' ? '人工/授权 AI' : step.actor}</Tag>
+                                <Tag color={step.status === 'done' ? 'green' : step.status === 'manual_required' ? 'orange' : step.status === 'blocked' ? 'red' : 'blue'}>
+                                  {step.status === 'done' ? '已完成' : step.status === 'manual_required' ? '需确认' : step.status === 'blocked' ? '等待前置' : step.status === 'active' ? '当前' : step.status === 'available' ? '可执行' : step.status}
+                                </Tag>
+                              </Space>
+                            ),
+                            description: (
+                              <Space direction="vertical" className="full" size={4}>
+                                <Text type="secondary">{step.summary}</Text>
+                                {step.command && <Text copyable code>{step.command}</Text>}
+                                {step.api && <Text type="secondary">API: {step.api}</Text>}
+                              </Space>
+                            ),
+                          }))}
+                        />
+                      </Space>
+                    </div>
+                  )}
                   <Space wrap>{(row.spec.steps || []).map((step, index) => <Tag key={index}>{step}</Tag>)}</Space>
                   <Text copyable code>{row.spec.commands?.cli_probe_again}</Text>
                   <Text type="secondary">API: {row.spec.api?.probe_again}</Text>

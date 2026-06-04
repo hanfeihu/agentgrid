@@ -407,6 +407,17 @@ body {
   font-size: 12px;
 }
 
+.remediation-runbook {
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.remediation-runbook .ant-steps-item-description {
+  max-width: 100%;
+}
+
 .artifact-preview {
   display: grid;
   place-items: center;

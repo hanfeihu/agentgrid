@@ -5147,6 +5147,23 @@ impl Store {
         Ok(output)
     }
 
+    fn get_remediation_runbook(&self, remediation_id: &str) -> anyhow::Result<Value> {
+        let center = self.tool_remediation_center()?;
+        center
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| {
+                        item.pointer("/metadata/id").and_then(Value::as_str) == Some(remediation_id)
+                    })
+                    .and_then(|item| item.pointer("/spec/runbook"))
+                    .cloned()
+            })
+            .ok_or_else(|| anyhow::anyhow!("remediation runbook not found"))
+    }
+
     fn latest_remediation_action_task(
         &self,
         tool_id: &str,
@@ -13387,6 +13404,7 @@ fn tool_remediation_item(
     let error_message = error.get("message").and_then(Value::as_str).unwrap_or("");
     let diagnosis = remediation_diagnosis_for(tool_id, state, error_message);
     let result_diagnosis = remediation_result_diagnosis(tool_id, state, latest_task);
+    let runbook = remediation_runbook(tool_id, node_id, state, &result_diagnosis, false);
     json!({
         "api_version": "agentgrid.remediation/v1",
         "kind": "ToolRemediation",
@@ -13404,6 +13422,7 @@ fn tool_remediation_item(
             "severity": diagnosis.get("severity").cloned().unwrap_or_else(|| json!("medium")),
             "action": diagnosis.get("action").cloned().unwrap_or_else(|| json!("review")),
             "diagnosis": result_diagnosis,
+            "runbook": runbook,
             "probe_state": state,
             "tool": {
                 "id": tool_id,
@@ -13452,6 +13471,7 @@ fn node_tool_remediation_item(tool: &Value, state: &str, latest_task: Option<&Va
     let error_message = error.as_str().unwrap_or("");
     let diagnosis = remediation_diagnosis_for(tool_id, state, error_message);
     let result_diagnosis = remediation_result_diagnosis(tool_id, state, latest_task);
+    let runbook = remediation_runbook(tool_id, node_id, state, &result_diagnosis, true);
     json!({
         "api_version": "agentgrid.remediation/v1",
         "kind": "NodeToolRemediation",
@@ -13467,6 +13487,7 @@ fn node_tool_remediation_item(tool: &Value, state: &str, latest_task: Option<&Va
             "severity": diagnosis.get("severity").cloned().unwrap_or_else(|| json!("medium")),
             "action": diagnosis.get("action").cloned().unwrap_or_else(|| json!("review")),
             "diagnosis": result_diagnosis,
+            "runbook": runbook,
             "probe_state": state,
             "tool": {
                 "id": tool_id,
@@ -13709,6 +13730,512 @@ fn remediation_action_task_summary(task: Option<&Value>) -> Value {
         "updated_at": task.pointer("/metadata/updated_at").cloned().unwrap_or(Value::Null),
         "leased_by_node_id": task.pointer("/status/leased_by_node_id").cloned().unwrap_or(Value::Null)
     })
+}
+
+fn remediation_runbook(
+    tool_id: &str,
+    node_id: &str,
+    probe_state: &str,
+    diagnosis: &Value,
+    is_node_tool: bool,
+) -> Value {
+    let code = diagnosis
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let next_action = diagnosis
+        .get("next_action")
+        .and_then(Value::as_str)
+        .unwrap_or("check_dependency");
+    let remediation_id_value = remediation_id(tool_id, node_id);
+    let probe_command = if is_node_tool {
+        format!("agentgrid node-tools probe --id {tool_id} --node {node_id}")
+    } else {
+        format!("agentgrid tools probe --id {tool_id} --node {node_id}")
+    };
+    let probe_api = if is_node_tool {
+        format!("/api/node-tools/{tool_id}/nodes/{node_id}/probe")
+    } else {
+        format!("/api/tools/{tool_id}/nodes/{node_id}/probe")
+    };
+    let action_command = format!("agentgrid tools remediation-action --id {remediation_id_value}");
+    let action_api = format!("/api/tools/remediations/{remediation_id_value}/actions");
+    let source_task_id = diagnosis
+        .get("source_task_id")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let runbook_id = format!(
+        "runbook_{}_{}",
+        code,
+        remediation_id_value
+            .trim_start_matches("rem_")
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>()
+    );
+
+    let steps = match code {
+        "not_checked" => json!([
+            runbook_step(
+                "create_check",
+                "创建只读检查任务",
+                "diagnostic",
+                "hub",
+                "available",
+                "先让 Hub 创建一次安全检查任务，确认问题属于依赖、策略、服务还是路径。",
+                "check_dependency",
+                Some(action_command.as_str()),
+                Some(action_api.as_str())
+            ),
+            runbook_step(
+                "classify_result",
+                "等待自动归类",
+                "diagnostic",
+                "hub",
+                "waiting",
+                "检查任务完成后，Hub 会根据 stdout/stderr/exit_code 写回诊断结论。",
+                "wait",
+                None,
+                None
+            ),
+            runbook_step(
+                "apply_fix",
+                "按结论修复",
+                "operator_action",
+                "operator",
+                "blocked",
+                "根据新的 diagnosis.code 进入依赖、策略、服务或路径修复流程。",
+                next_action,
+                None,
+                None
+            )
+        ]),
+        "check_running" => json!([
+            runbook_step(
+                "wait_check",
+                "等待检查完成",
+                "diagnostic",
+                "hub",
+                "active",
+                "修复检查任务仍在排队或执行，先等待结果回写。",
+                "wait",
+                None,
+                None
+            ),
+            runbook_step(
+                "inspect_task",
+                "查看检查任务",
+                "diagnostic",
+                "operator",
+                "available",
+                "打开来源任务，查看 stdout/stderr 和执行节点。",
+                "inspect_task",
+                None,
+                None
+            ),
+            runbook_step(
+                "classify_result",
+                "读取诊断结论",
+                "diagnostic",
+                "hub",
+                "waiting",
+                "任务完成后，刷新修复中心并读取 spec.diagnosis。",
+                "refresh",
+                None,
+                None
+            )
+        ]),
+        "dependency_missing" => json!([
+            runbook_step(
+                "confirm_dependency",
+                "确认依赖缺失",
+                "diagnostic",
+                "hub",
+                "done",
+                "检查任务已经证明命令或依赖不可用。",
+                "inspect_task",
+                None,
+                None
+            ),
+            runbook_step(
+                "install_dependency",
+                "安装缺失依赖",
+                "operator_action",
+                "operator",
+                "manual_required",
+                remediation_dependency_hint(tool_id),
+                "install_dependency",
+                None,
+                None
+            ),
+            runbook_step(
+                "restart_runtime",
+                "确认 Worker 可访问依赖",
+                "operator_action",
+                "operator",
+                "manual_required",
+                "安装后确认 Worker 的运行身份能访问该命令；必要时重启 Worker 或相关桌面/服务通道。",
+                "restart_runtime",
+                None,
+                None
+            ),
+            runbook_step(
+                "probe_again",
+                "重新验证能力",
+                "verification",
+                "hub",
+                "available",
+                "修复后重新执行 Probe，让该节点重新进入可信调度候选。",
+                "probe_again",
+                Some(probe_command.as_str()),
+                Some(probe_api.as_str())
+            )
+        ]),
+        "policy_blocked" => json!([
+            runbook_step(
+                "confirm_policy",
+                "确认策略拦截",
+                "diagnostic",
+                "hub",
+                "done",
+                "检查结果显示 Worker 安全策略阻止了该能力。",
+                "inspect_task",
+                None,
+                None
+            ),
+            runbook_step(
+                "review_policy",
+                "审查策略影响",
+                "operator_action",
+                "operator",
+                "manual_required",
+                "确认这个节点是否应该开放该命令、域名、IP 或路径。",
+                "review_policy",
+                None,
+                None
+            ),
+            runbook_step(
+                "update_policy",
+                "显式更新策略",
+                "operator_action",
+                "operator",
+                "manual_required",
+                "只在负责人确认后更新 Worker 策略，并保留审计记录。",
+                "update_worker_policy",
+                None,
+                None
+            ),
+            runbook_step(
+                "probe_again",
+                "重新验证能力",
+                "verification",
+                "hub",
+                "available",
+                "策略更新后重新执行 Probe。",
+                "probe_again",
+                Some(probe_command.as_str()),
+                Some(probe_api.as_str())
+            )
+        ]),
+        "service_not_running" => json!([
+            runbook_step(
+                "confirm_service",
+                "确认服务未运行",
+                "diagnostic",
+                "hub",
+                "done",
+                "依赖命令存在，但服务或守护进程不可用。",
+                "inspect_task",
+                None,
+                None
+            ),
+            runbook_step(
+                "start_service",
+                "启动相关服务",
+                "operator_action",
+                "operator",
+                "manual_required",
+                remediation_service_hint(tool_id),
+                "start_service",
+                None,
+                None
+            ),
+            runbook_step(
+                "probe_again",
+                "重新验证能力",
+                "verification",
+                "hub",
+                "available",
+                "服务启动后重新执行 Probe。",
+                "probe_again",
+                Some(probe_command.as_str()),
+                Some(probe_api.as_str())
+            )
+        ]),
+        "path_missing" => json!([
+            runbook_step(
+                "confirm_path",
+                "确认路径不可用",
+                "diagnostic",
+                "hub",
+                "done",
+                "检查结果显示文件或目录路径不存在，或 Worker 身份无权访问。",
+                "inspect_task",
+                None,
+                None
+            ),
+            runbook_step(
+                "fix_path",
+                "修复路径或 Probe Payload",
+                "operator_action",
+                "operator",
+                "manual_required",
+                "选择该系统稳定存在且 Worker 可访问的路径，必要时调整 Probe payload。",
+                "fix_path",
+                None,
+                None
+            ),
+            runbook_step(
+                "probe_again",
+                "重新验证能力",
+                "verification",
+                "hub",
+                "available",
+                "路径修复后重新执行 Probe。",
+                "probe_again",
+                Some(probe_command.as_str()),
+                Some(probe_api.as_str())
+            )
+        ]),
+        "probe_ready" => json!([
+            runbook_step(
+                "dependency_ready",
+                "依赖检查通过",
+                "diagnostic",
+                "hub",
+                "done",
+                "只读检查已经通过，可以进入能力验证。",
+                "inspect_task",
+                None,
+                None
+            ),
+            runbook_step(
+                "probe_again",
+                "重新验证能力",
+                "verification",
+                "hub",
+                "available",
+                "重新执行 Probe，让调度器恢复信任该节点能力。",
+                "probe_again",
+                Some(probe_command.as_str()),
+                Some(probe_api.as_str())
+            )
+        ]),
+        "check_failed" => json!([
+            runbook_step(
+                "inspect_failure",
+                "查看检查输出",
+                "diagnostic",
+                "operator",
+                "active",
+                "检查任务失败但未匹配到明确类别，需要人工查看 stdout/stderr。",
+                "inspect_task",
+                None,
+                None
+            ),
+            runbook_step(
+                "choose_fix",
+                "选择修复路径",
+                "operator_action",
+                "operator",
+                "manual_required",
+                "根据错误内容选择依赖、策略、服务、路径或插件修复。",
+                "investigate",
+                None,
+                None
+            ),
+            runbook_step(
+                "probe_again",
+                "修复后重新验证",
+                "verification",
+                "hub",
+                "blocked",
+                "完成修复后重新执行 Probe。",
+                "probe_again",
+                Some(probe_command.as_str()),
+                Some(probe_api.as_str())
+            )
+        ]),
+        _ => json!([
+            runbook_step(
+                "collect_evidence",
+                "收集更多证据",
+                "diagnostic",
+                "hub",
+                "available",
+                "当前证据不足，先创建或重跑检查任务。",
+                "check_dependency",
+                Some(action_command.as_str()),
+                Some(action_api.as_str())
+            ),
+            runbook_step(
+                "inspect_output",
+                "人工判断输出",
+                "operator_action",
+                "operator",
+                "manual_required",
+                "查看任务输出后选择具体修复路径。",
+                "investigate",
+                None,
+                None
+            ),
+            runbook_step(
+                "probe_again",
+                "修复后重新验证",
+                "verification",
+                "hub",
+                "blocked",
+                "修复完成后重新执行 Probe。",
+                "probe_again",
+                Some(probe_command.as_str()),
+                Some(probe_api.as_str())
+            )
+        ]),
+    };
+
+    json!({
+        "api_version": "agentgrid.remediation-runbook/v1",
+        "kind": "RemediationRunbook",
+        "id": runbook_id,
+        "title": remediation_runbook_title(code),
+        "goal": remediation_runbook_goal(code, tool_id, node_id),
+        "diagnosis_code": code,
+        "probe_state": probe_state,
+        "next_action": next_action,
+        "current_step_id": remediation_runbook_current_step(code),
+        "requires_operator": remediation_runbook_requires_operator(code),
+        "commands": {
+            "create_action": action_command,
+            "probe_again": probe_command
+        },
+        "api": {
+            "create_action": action_api,
+            "probe_again": probe_api
+        },
+        "evidence": {
+            "source_task_id": source_task_id,
+            "source_task_state": diagnosis.get("source_task_state").cloned().unwrap_or(Value::Null),
+            "exit_code": diagnosis.get("exit_code").cloned().unwrap_or(Value::Null)
+        },
+        "guardrails": [
+            "Runbook v1 不会自动安装软件、启动服务或修改 Worker 策略。",
+            "所有会改变机器状态的步骤都必须由 operator 或显式授权的 AI 动作执行。",
+            "修复完成后必须重新 Probe，调度器只信任新的验证结果。"
+        ],
+        "steps": steps
+    })
+}
+
+fn runbook_step(
+    id: &str,
+    title: &str,
+    kind: &str,
+    actor: &str,
+    status: &str,
+    summary: &str,
+    action: &str,
+    command: Option<&str>,
+    api: Option<&str>,
+) -> Value {
+    json!({
+        "id": id,
+        "title": title,
+        "kind": kind,
+        "actor": actor,
+        "status": status,
+        "summary": summary,
+        "action": action,
+        "command": command,
+        "api": api
+    })
+}
+
+fn remediation_runbook_title(code: &str) -> &'static str {
+    match code {
+        "not_checked" => "创建检查并归类问题",
+        "check_running" => "等待修复检查完成",
+        "dependency_missing" => "安装依赖并重新验证",
+        "policy_blocked" => "审查策略并重新验证",
+        "service_not_running" => "启动服务并重新验证",
+        "path_missing" => "修复路径并重新验证",
+        "probe_ready" => "重新执行 Probe",
+        "check_failed" => "人工排查检查失败",
+        _ => "收集证据并选择修复路径",
+    }
+}
+
+fn remediation_runbook_goal(code: &str, tool_id: &str, node_id: &str) -> String {
+    match code {
+        "dependency_missing" => {
+            format!("让节点 {node_id} 安装并暴露 {tool_id} 所需依赖，然后恢复可信调度。")
+        }
+        "policy_blocked" => {
+            format!("确认 {node_id} 是否允许执行 {tool_id}，必要时显式更新策略并重新验证。")
+        }
+        "service_not_running" => {
+            format!("让 {tool_id} 依赖的服务在 {node_id} 上可用，并重新验证能力。")
+        }
+        "path_missing" => {
+            format!("修复 {node_id} 上 {tool_id} 的路径或 Probe payload，并重新验证。")
+        }
+        "probe_ready" => format!("重新 Probe {node_id} 上的 {tool_id}，恢复调度器信任。"),
+        _ => format!("收集 {node_id} 上 {tool_id} 的修复证据，并确定下一步。"),
+    }
+}
+
+fn remediation_runbook_current_step(code: &str) -> &'static str {
+    match code {
+        "not_checked" => "create_check",
+        "check_running" => "wait_check",
+        "dependency_missing" => "install_dependency",
+        "policy_blocked" => "review_policy",
+        "service_not_running" => "start_service",
+        "path_missing" => "fix_path",
+        "probe_ready" => "probe_again",
+        "check_failed" => "inspect_failure",
+        _ => "collect_evidence",
+    }
+}
+
+fn remediation_runbook_requires_operator(code: &str) -> bool {
+    matches!(
+        code,
+        "dependency_missing"
+            | "policy_blocked"
+            | "service_not_running"
+            | "path_missing"
+            | "check_failed"
+            | "unknown"
+    )
+}
+
+fn remediation_dependency_hint(tool_id: &str) -> &'static str {
+    match tool_id {
+        "docker.run" => {
+            "安装 Docker Engine 或 Docker Desktop，并确认 Worker 运行身份能访问 docker 命令。"
+        }
+        "git.clone" | "git.status" => "安装 Git，并确认 Worker 运行身份能访问 git 命令。",
+        _ => "安装该工具运行所需依赖，并确认 Worker 运行身份可以访问对应命令或运行时。",
+    }
+}
+
+fn remediation_service_hint(tool_id: &str) -> &'static str {
+    match tool_id {
+        "docker.run" => {
+            "启动 Docker Desktop、Docker Engine 或 docker daemon，并确认 docker info 可以成功返回。"
+        }
+        _ => "启动该工具依赖的后台服务或守护进程，并确认 Worker 能访问。",
+    }
 }
 
 fn truncate_text(value: &str, max_chars: usize) -> String {
@@ -19386,6 +19913,27 @@ mod hub_core_tests {
             diagnosis.get("source_task_id").and_then(Value::as_str),
             Some("task_missing_docker")
         );
+
+        let runbook =
+            remediation_runbook("docker.run", "windows-node", "failed", &diagnosis, false);
+        assert_eq!(
+            runbook.get("diagnosis_code").and_then(Value::as_str),
+            Some("dependency_missing")
+        );
+        assert_eq!(
+            runbook.get("current_step_id").and_then(Value::as_str),
+            Some("install_dependency")
+        );
+        assert_eq!(
+            runbook
+                .pointer("/commands/probe_again")
+                .and_then(Value::as_str),
+            Some("agentgrid tools probe --id docker.run --node windows-node")
+        );
+        assert!(runbook
+            .get("requires_operator")
+            .and_then(Value::as_bool)
+            .unwrap_or(false));
     }
 
     #[test]

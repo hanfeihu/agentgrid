@@ -894,6 +894,10 @@ enum ToolCommands {
     List,
     ProbeCenter,
     RemediationCenter,
+    RemediationRunbook {
+        #[arg(long)]
+        id: String,
+    },
     RemediationAction {
         #[arg(long)]
         id: String,
@@ -1408,6 +1412,12 @@ fn main() -> Result<()> {
             ToolCommands::RemediationCenter => print_json(
                 client
                     .get(format!("{base}/api/tools/remediation-center"))
+                    .send()?
+                    .text()?,
+            ),
+            ToolCommands::RemediationRunbook { id } => print_json(
+                client
+                    .get(format!("{base}/api/tools/remediations/{id}/runbook"))
                     .send()?
                     .text()?,
             ),

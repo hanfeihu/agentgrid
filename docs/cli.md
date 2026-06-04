@@ -296,6 +296,7 @@ agentgrid jobs recovery-scan
 ```bash
 agentgrid tools probe-center
 agentgrid tools remediation-center
+agentgrid tools remediation-runbook --id rem_docker_run_linux_worker_01
 agentgrid tools remediation-action --id rem_docker_run_linux_worker_01
 agentgrid tools probes
 agentgrid tools probe --id command.run --node linux-worker-01
@@ -312,6 +313,11 @@ Remediation items include `spec.diagnosis.code`, `spec.diagnosis.next_action`,
 and `status.last_action_task`. Use them to distinguish missing dependencies,
 policy blocks, stopped services, missing paths, passed dependency checks, and
 still-running checks without parsing raw stdout/stderr.
+
+Use `tools remediation-runbook --id rem_xxx` to print the exact repair workflow
+for one remediation item. Runbook v1 is diagnostic and auditable: state-changing
+steps such as installing software, starting services, or updating Worker policy
+must be explicit operator or authorized AI actions.
 
 Example: inspect and verify the `jia-node` TTS voice clone tool:
 

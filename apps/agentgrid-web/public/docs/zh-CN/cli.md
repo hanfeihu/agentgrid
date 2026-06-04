@@ -294,6 +294,7 @@ agentgrid jobs recovery-scan
 ```bash
 agentgrid tools probe-center
 agentgrid tools remediation-center
+agentgrid tools remediation-runbook --id rem_docker_run_linux_worker_01
 agentgrid tools remediation-action --id rem_docker_run_linux_worker_01
 agentgrid tools probes
 agentgrid tools probe --id command.run --node linux-worker-01
@@ -309,6 +310,10 @@ agentgrid node-tools probe --id demo.hello --node linux-worker-01
 修复项会返回 `spec.diagnosis.code`、`spec.diagnosis.next_action` 和
 `status.last_action_task`。AI 和人可以不用解析原始 stdout/stderr，就能区分
 依赖缺失、策略阻止、服务未运行、路径不可用、依赖检查已通过、检查仍在执行等结论。
+
+使用 `tools remediation-runbook --id rem_xxx` 可以查看某一个修复项的标准
+修复流程。Runbook v1 只做诊断和审计流程编排；安装软件、启动服务、修改
+Worker 策略等改变机器状态的步骤，必须是显式的人工或授权 AI 动作。
 
 示例：查看并验证 `jia-node` 上的 TTS 语音克隆工具：
 

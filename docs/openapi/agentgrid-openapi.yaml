@@ -1270,6 +1270,33 @@ paths:
                     additionalProperties: true
         default:
           $ref: "#/components/responses/Error"
+  /tools/remediations/{remediation_id}/runbook:
+    get:
+      tags: [Tools]
+      summary: Get the remediation runbook for one remediation item.
+      operationId: getToolRemediationRunbook
+      parameters:
+        - name: remediation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Remediation runbook.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/RemediationRunbook"
+        default:
+          $ref: "#/components/responses/Error"
   /tools/probes:
     get:
       tags: [Tools]
@@ -2825,6 +2852,8 @@ components:
                   type: string
                 stderr_excerpt:
                   type: string
+            runbook:
+              $ref: "#/components/schemas/RemediationRunbook"
             probe_state:
               type: string
             steps:
@@ -2848,6 +2877,48 @@ components:
               type: object
               nullable: true
               additionalProperties: true
+    RemediationRunbook:
+      type: object
+      additionalProperties: true
+      properties:
+        api_version:
+          const: agentgrid.remediation-runbook/v1
+        kind:
+          const: RemediationRunbook
+        id:
+          type: string
+        title:
+          type: string
+        goal:
+          type: string
+        diagnosis_code:
+          type: string
+        probe_state:
+          type: string
+        next_action:
+          type: string
+        current_step_id:
+          type: string
+        requires_operator:
+          type: boolean
+        commands:
+          type: object
+          additionalProperties: true
+        api:
+          type: object
+          additionalProperties: true
+        evidence:
+          type: object
+          additionalProperties: true
+        guardrails:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
     ToolRemediationActionRequest:
       type: object
       additionalProperties: false

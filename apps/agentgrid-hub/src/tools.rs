@@ -14,6 +14,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/tools/probe-center", get(get_probe_center))
         .route("/api/tools/remediation-center", get(get_remediation_center))
         .route(
+            "/api/tools/remediations/{id}/runbook",
+            get(get_remediation_runbook),
+        )
+        .route(
             "/api/tools/remediations/{id}/actions",
             post(run_remediation_action),
         )
@@ -41,6 +45,14 @@ async fn get_remediation_center(State(state): State<AppState>) -> Result<Json<Va
         "ok": true,
         "item": store.tool_remediation_center()?
     })))
+}
+
+async fn get_remediation_runbook(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let item = store(&state)?.get_remediation_runbook(&id)?;
+    Ok(Json(json!({ "ok": true, "item": item })))
 }
 
 async fn run_remediation_action(
