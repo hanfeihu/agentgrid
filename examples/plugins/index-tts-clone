@@ -1,0 +1,222 @@
+#!/root/ai-tests/index-tts/.venv/bin/python
+import base64
+import contextlib
+import json
+import os
+import shutil
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+from gradio_client import Client, handle_file
+
+
+SERVICE_URL = os.environ.get("INDEX_TTS_URL", "http://127.0.0.1:18194/index-tts/")
+DEFAULT_REFERENCE_AUDIO = "/root/ai-tests/index-tts/user_voice.wav"
+DEFAULT_OUTPUT_DIR = "/tmp/agentgrid-artifacts/audio.tts.clone"
+
+EMOTION_MODE_LABELS = {
+    "same_as_reference": "Same as the voice reference",
+    "emotion_reference": "Use emotion reference audio",
+    "emotion_vector": "Use emotion vectors",
+}
+
+
+def emit(value):
+    sys.stdout.write(json.dumps(value, ensure_ascii=False))
+    sys.stdout.flush()
+
+
+def fail(code, message, retryable=False):
+    emit(
+        {
+            "ok": False,
+            "type": "audio_tts_clone_result",
+            "error": {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            },
+        }
+    )
+    return 1
+
+
+def read_request():
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
+def plugin_input(request):
+    return request.get("input") or {}
+
+
+def health():
+    with urllib.request.urlopen(SERVICE_URL.rstrip("/") + "/config", timeout=10) as response:
+        config = json.loads(response.read().decode("utf-8"))
+    endpoints = {
+        dep.get("api_name")
+        for dep in config.get("dependencies", [])
+        if dep.get("api_name")
+    }
+    service_ready = "gen_single" in endpoints
+    emit(
+        {
+            "ok": service_ready,
+            "type": "audio_tts_clone_health",
+            "service_url": SERVICE_URL,
+            "service_ready": service_ready,
+            "engine": "IndexTTS-2",
+            "api": "gradio/gen_single",
+        }
+    )
+    return 0 if service_ready else 2
+
+
+def path_from_base64(value, suffix=".wav"):
+    if not value:
+        return None
+    payload = value
+    if "," in payload and payload.strip().lower().startswith("data:"):
+        payload = payload.split(",", 1)[1]
+    data = base64.b64decode(payload)
+    fd, path = tempfile.mkstemp(prefix="agentgrid-tts-ref-", suffix=suffix)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    return path
+
+
+def resolve_audio_path(data, path_key, base64_key, default_path=None):
+    direct_path = data.get(path_key)
+    if direct_path:
+        path = Path(str(direct_path)).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"{path_key} does not exist: {path}")
+        return str(path)
+    encoded = data.get(base64_key)
+    if encoded:
+        return path_from_base64(str(encoded))
+    if default_path:
+        path = Path(default_path)
+        if path.exists():
+            return str(path)
+    return None
+
+
+def output_path_from_result(result):
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        return result.get("path") or result.get("value") or result.get("name")
+    if isinstance(result, (list, tuple)) and result:
+        return output_path_from_result(result[0])
+    return None
+
+
+def run(data):
+    started = time.monotonic()
+    text = str(data.get("text") or "").strip()
+    if not text:
+        return fail("invalid_input", "text is required")
+
+    reference_audio = resolve_audio_path(
+        data,
+        "reference_audio_path",
+        "reference_audio_base64",
+        DEFAULT_REFERENCE_AUDIO,
+    )
+    if not reference_audio:
+        return fail("invalid_input", "reference_audio_path or reference_audio_base64 is required")
+
+    emotion_mode = str(data.get("emotion_mode") or "same_as_reference")
+    emotion_label = EMOTION_MODE_LABELS.get(emotion_mode, emotion_mode)
+    emotion_audio = resolve_audio_path(
+        data,
+        "emotion_audio_path",
+        "emotion_audio_base64",
+        None,
+    )
+
+    output_dir = Path(str(data.get("output_dir") or DEFAULT_OUTPUT_DIR)).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with contextlib.redirect_stdout(sys.stderr):
+        client = Client(SERVICE_URL)
+        result = client.predict(
+            emotion_label,
+            handle_file(reference_audio),
+            text,
+            handle_file(emotion_audio) if emotion_audio else None,
+            float(data.get("emotion_weight", 0.65)),
+            float(data.get("happy", 0.0)),
+            float(data.get("angry", 0.0)),
+            float(data.get("sad", 0.0)),
+            float(data.get("afraid", 0.0)),
+            float(data.get("disgusted", 0.0)),
+            float(data.get("melancholic", 0.0)),
+            float(data.get("surprised", 0.0)),
+            float(data.get("calm", 0.0)),
+            str(data.get("emotion_text") or ""),
+            bool(data.get("emotion_random", False)),
+            int(data.get("max_text_tokens_per_segment", 120)),
+            bool(data.get("do_sample", True)),
+            float(data.get("top_p", 0.8)),
+            int(data.get("top_k", 30)),
+            float(data.get("temperature", 0.8)),
+            float(data.get("length_penalty", 0.0)),
+            int(data.get("num_beams", 3)),
+            float(data.get("repetition_penalty", 10.0)),
+            int(data.get("max_mel_tokens", 1500)),
+            api_name="/gen_single",
+        )
+
+    generated_path = output_path_from_result(result)
+    if not generated_path or not Path(generated_path).exists():
+        return fail("generation_failed", "IndexTTS did not return a generated audio file")
+
+    final_path = output_dir / f"agentgrid-tts-{int(time.time())}.wav"
+    shutil.copy2(generated_path, final_path)
+    stat = final_path.stat()
+    emit(
+        {
+            "ok": True,
+            "type": "audio_tts_clone_result",
+            "engine": "IndexTTS-2",
+            "text_length": len(text),
+            "reference_audio_path": reference_audio,
+            "output_audio_path": str(final_path),
+            "mime_type": "audio/wav",
+            "bytes": stat.st_size,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "evidence": [
+                {
+                    "type": "audio",
+                    "path": str(final_path),
+                    "mime_type": "audio/wav",
+                    "bytes": stat.st_size,
+                    "role": "generated_audio",
+                }
+            ],
+        }
+    )
+    return 0
+
+
+def main():
+    try:
+        action = sys.argv[1] if len(sys.argv) > 1 else "run"
+        request = read_request()
+        data = plugin_input(request)
+        if action in {"health", "probe"}:
+            return health()
+        return run(data)
+    except Exception as error:
+        return fail("plugin_exception", str(error), retryable=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

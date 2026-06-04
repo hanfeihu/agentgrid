@@ -58,6 +58,7 @@ mod settings;
 mod tasks;
 mod tools;
 mod webhooks;
+mod workbenches;
 mod workflows;
 
 const API_VERSION: &str = "agentmessage.io/v1";
@@ -120,7 +121,7 @@ struct PortBridgeHub {
 }
 
 #[derive(Clone)]
-struct PortBridgeSession {
+pub(crate) struct PortBridgeSession {
     id: String,
     source_node_id: String,
     target_node_id: String,
@@ -475,22 +476,40 @@ async fn create_port_bridge(
     headers: axum::http::HeaderMap,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let store = store(&state)?;
-    let created_by = store
-        .require_user_session(bearer_token_from_headers(&headers).as_deref())
-        .ok()
-        .and_then(|user| {
-            user.pointer("/spec/email")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-        })
-        .unwrap_or_else(|| {
-            optional_string(&input, "created_by").unwrap_or_else(|| "agentgrid-cli".to_string())
-        });
-    let source_node_id = required_string(&input, "source_node_id")?;
-    let target_node_id = required_string(&input, "target_node_id")?;
-    validate_port_bridge_node(&store, &source_node_id)?;
-    validate_port_bridge_node(&store, &target_node_id)?;
+    let created_by = {
+        let store = store(&state)?;
+        store
+            .require_user_session(bearer_token_from_headers(&headers).as_deref())
+            .ok()
+            .and_then(|user| {
+                user.pointer("/spec/email")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| {
+                optional_string(&input, "created_by").unwrap_or_else(|| "agentgrid-cli".to_string())
+            })
+    };
+    let current = create_port_bridge_session(&state, input, created_by).await?;
+    Ok(Json(
+        json!({ "ok": true, "item": port_bridge_session_json(current) }),
+    ))
+}
+
+pub(crate) async fn create_port_bridge_session(
+    state: &AppState,
+    input: Value,
+    created_by: String,
+) -> Result<PortBridgeSession, ApiError> {
+    let source_node_id = required_string(&input, "source_node_id")
+        .map_err(|error| ApiError::bad_request(&error.to_string()))?;
+    let target_node_id = required_string(&input, "target_node_id")
+        .map_err(|error| ApiError::bad_request(&error.to_string()))?;
+    {
+        let store = store(state)?;
+        validate_port_bridge_node(&store, &source_node_id)?;
+        validate_port_bridge_node(&store, &target_node_id)?;
+    }
     let source_bind_host = string_or(&input, "source_bind_host", "127.0.0.1");
     if source_bind_host != "127.0.0.1" {
         return Err(ApiError::bad_request(
@@ -503,8 +522,11 @@ async fn create_port_bridge(
             "target_host must be 127.0.0.1, localhost, or a private IP in v1",
         ));
     }
-    let source_bind_port = optional_u16(&input, "source_bind_port")?.unwrap_or(0);
-    let target_port = optional_u16(&input, "target_port")?
+    let source_bind_port = optional_u16(&input, "source_bind_port")
+        .map_err(|error| ApiError::bad_request(&error.to_string()))?
+        .unwrap_or(0);
+    let target_port = optional_u16(&input, "target_port")
+        .map_err(|error| ApiError::bad_request(&error.to_string()))?
         .ok_or_else(|| ApiError::bad_request("target_port is required"))?;
     if target_port == 0 {
         return Err(ApiError::bad_request("target_port must be greater than 0"));
@@ -515,7 +537,8 @@ async fn create_port_bridge(
             "only tcp port bridges are supported in v1",
         ));
     }
-    let ttl_seconds = optional_i64(&input, "ttl_seconds")?
+    let ttl_seconds = optional_i64(&input, "ttl_seconds")
+        .map_err(|error| ApiError::bad_request(&error.to_string()))?
         .unwrap_or(1800)
         .clamp(30, 86_400);
     let purpose = optional_string(&input, "purpose").unwrap_or_else(|| {
@@ -566,27 +589,30 @@ async fn create_port_bridge(
         .lock()
         .await
         .insert(id.clone(), session.clone());
-    store.audit(
-        "port_bridge.created",
-        &created_by,
-        Some(&source_node_id),
-        "节点端口桥接会话已创建",
-        json!({
-            "id": id,
-            "source_node_id": source_node_id,
-            "target_node_id": target_node_id,
-            "source_bind_host": source_bind_host,
-            "source_bind_port": source_bind_port,
-            "target_host": target_host,
-            "target_port": target_port,
-            "protocol": protocol,
-            "ttl_seconds": ttl_seconds,
-            "source_worker_connected": has_source_worker,
-            "target_worker_connected": has_target_worker,
-            "purpose": purpose
-        }),
-    )?;
-    send_port_bridge_start(&state, &session).await;
+    {
+        let store = store(state)?;
+        store.audit(
+            "port_bridge.created",
+            &created_by,
+            Some(&source_node_id),
+            "节点端口桥接会话已创建",
+            json!({
+                "id": id,
+                "source_node_id": source_node_id,
+                "target_node_id": target_node_id,
+                "source_bind_host": source_bind_host,
+                "source_bind_port": source_bind_port,
+                "target_host": target_host,
+                "target_port": target_port,
+                "protocol": protocol,
+                "ttl_seconds": ttl_seconds,
+                "source_worker_connected": has_source_worker,
+                "target_worker_connected": has_target_worker,
+                "purpose": purpose
+            }),
+        )?;
+    }
+    send_port_bridge_start(state, &session).await;
     let current = state
         .port_bridge
         .sessions
@@ -595,9 +621,7 @@ async fn create_port_bridge(
         .get(&id)
         .cloned()
         .unwrap_or(session);
-    Ok(Json(
-        json!({ "ok": true, "item": port_bridge_session_json(current) }),
-    ))
+    Ok(current)
 }
 
 async fn close_port_bridge(
@@ -1598,6 +1622,8 @@ impl Store {
                 join_token_hint TEXT NOT NULL DEFAULT '',
                 auth_status TEXT NOT NULL DEFAULT 'legacy',
                 authorized_at TEXT,
+                channel_role TEXT NOT NULL DEFAULT '',
+                physical_host_id TEXT NOT NULL DEFAULT '',
                 auto_update_enabled INTEGER NOT NULL DEFAULT 1,
                 update_channel TEXT NOT NULL DEFAULT 'stable',
                 status TEXT NOT NULL,
@@ -2067,6 +2093,8 @@ impl Store {
         self.ensure_column("nodes", "join_token_hint", "TEXT NOT NULL DEFAULT ''")?;
         self.ensure_column("nodes", "auth_status", "TEXT NOT NULL DEFAULT 'legacy'")?;
         self.ensure_column("nodes", "authorized_at", "TEXT")?;
+        self.ensure_column("nodes", "channel_role", "TEXT NOT NULL DEFAULT ''")?;
+        self.ensure_column("nodes", "physical_host_id", "TEXT NOT NULL DEFAULT ''")?;
         self.ensure_column("nodes", "auto_update_enabled", "INTEGER NOT NULL DEFAULT 1")?;
         self.ensure_column("nodes", "update_channel", "TEXT NOT NULL DEFAULT 'stable'")?;
         self.ensure_column("node_provisioning_plans", "join_token_hash", "TEXT")?;
@@ -3253,6 +3281,364 @@ impl Store {
         Ok(nodes)
     }
 
+    fn list_workbenches(&self) -> anyhow::Result<Vec<Value>> {
+        let mut items = self.workbench_items()?.into_values().collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            let left_state = left
+                .pointer("/status/state")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let right_state = right
+                .pointer("/status/state")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let left_name = left
+                .pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let right_name = right
+                .pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            state_sort_key(left_state)
+                .cmp(&state_sort_key(right_state))
+                .then_with(|| left_name.cmp(right_name))
+        });
+        Ok(items)
+    }
+
+    fn get_workbench(&self, id: &str) -> anyhow::Result<Option<Value>> {
+        Ok(self.workbench_items()?.remove(id))
+    }
+
+    fn workbench_timeline(&self, id: &str, limit: u16) -> anyhow::Result<Value> {
+        let workbench = self
+            .get_workbench(id)?
+            .ok_or_else(|| anyhow::anyhow!("workbench not found"))?;
+        let channel_ids = workbench
+            .pointer("/spec/channels")
+            .and_then(Value::as_object)
+            .map(|channels| {
+                channels
+                    .values()
+                    .filter_map(|node| {
+                        node.pointer("/metadata/id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let task_limit = i64::from(limit.min(500));
+        let tasks = self.list_tasks_for_workbench(id, &channel_ids, task_limit)?;
+        let mut events = Vec::new();
+        for task in &tasks {
+            let Some(task_id) = task.pointer("/metadata/id").and_then(Value::as_str) else {
+                continue;
+            };
+            for event in self.list_audit_events_for_subject(task_id, 20)? {
+                events.push(workbench_timeline_event_from_audit(&event, task));
+            }
+            events.push(workbench_timeline_event_from_task(task));
+        }
+        events.sort_by(|left, right| {
+            let left_time = left.get("time").and_then(Value::as_str).unwrap_or("");
+            let right_time = right.get("time").and_then(Value::as_str).unwrap_or("");
+            right_time.cmp(left_time)
+        });
+        events.truncate(limit as usize);
+        Ok(json!({
+            "workbench": workbench,
+            "workbench_id": id,
+            "channel_ids": channel_ids,
+            "tasks": tasks,
+            "events": events
+        }))
+    }
+
+    fn create_workbench_action(&self, workbench_id: &str, data: Value) -> anyhow::Result<Value> {
+        let workbench = self
+            .get_workbench(workbench_id)?
+            .ok_or_else(|| anyhow::anyhow!("workbench not found"))?;
+        let action = required_string(&data, "action")?;
+        let created_by = string_or(&data, "created_by", "workbench-action-api");
+        let title = optional_string(&data, "title");
+        let operation_id = new_id("op");
+        let priority = string_or(&data, "priority", "normal");
+        let payload = data.get("payload").cloned().unwrap_or_else(|| json!({}));
+        let output = match action.as_str() {
+            "command.run" | "command" => {
+                let task_payload = json!({
+                    "type": "command",
+                    "program": string_or(&payload, "program", "hostname"),
+                    "args": payload.get("args").cloned().unwrap_or_else(|| json!([])),
+                    "working_dir": payload.get("working_dir").cloned().unwrap_or(Value::Null),
+                    "timeout_seconds": payload.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(30)
+                });
+                self.create_workbench_action_task(WorkbenchActionTaskInput {
+                    workbench_id,
+                    workbench: &workbench,
+                    operation_id: &operation_id,
+                    action: &action,
+                    task_label: "command",
+                    channel_role: "worker",
+                    payload: task_payload,
+                    title: title
+                        .unwrap_or_else(|| format!("{} 执行命令", workbench_name(&workbench))),
+                    summary: "Workbench Action API 提交的后台命令动作。",
+                    created_by,
+                    priority,
+                    outputs: json!(["退出码", "stdout", "stderr", "执行耗时"]),
+                    os_label: None,
+                    verify: data.get("verify").cloned(),
+                })?
+            }
+            "file.list" | "file.read" | "file.write" | "file" => {
+                let operation = payload
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .or_else(|| action.strip_prefix("file."))
+                    .unwrap_or("list");
+                let task_payload = match operation {
+                    "read" => json!({
+                        "type": "file",
+                        "operation": "read",
+                        "path": required_string(&payload, "path")?,
+                        "max_bytes": payload.get("max_bytes").cloned().unwrap_or(Value::Null)
+                    }),
+                    "write" => json!({
+                        "type": "file",
+                        "operation": "write",
+                        "path": required_string(&payload, "path")?,
+                        "content": string_or(&payload, "content", ""),
+                        "append": payload.get("append").and_then(Value::as_bool).unwrap_or(false),
+                        "create_dirs": payload.get("create_dirs").and_then(Value::as_bool).unwrap_or(true)
+                    }),
+                    "list" => json!({
+                        "type": "file",
+                        "operation": "list",
+                        "path": required_string(&payload, "path")?,
+                        "recursive": payload.get("recursive").and_then(Value::as_bool).unwrap_or(false),
+                        "max_entries": payload.get("max_entries").cloned().unwrap_or_else(|| json!(200))
+                    }),
+                    other => anyhow::bail!("unsupported workbench file action: {other}"),
+                };
+                self.create_workbench_action_task(WorkbenchActionTaskInput {
+                    workbench_id,
+                    workbench: &workbench,
+                    operation_id: &operation_id,
+                    action: &action,
+                    task_label: "file",
+                    channel_role: "worker",
+                    payload: task_payload,
+                    title: title.unwrap_or_else(|| {
+                        format!("{} 文件 {}", workbench_name(&workbench), operation)
+                    }),
+                    summary: "Workbench Action API 提交的文件动作。",
+                    created_by,
+                    priority,
+                    outputs: json!(["文件内容或目录项", "执行耗时"]),
+                    os_label: None,
+                    verify: data.get("verify").cloned(),
+                })?
+            }
+            "desktop.screenshot" | "desktop.click" | "desktop.type_text" | "desktop.key"
+            | "desktop" => {
+                let operation = payload
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .or_else(|| action.strip_prefix("desktop."))
+                    .unwrap_or("screenshot");
+                let task_payload = match operation {
+                    "screenshot" => json!({
+                        "type": "desktop",
+                        "operation": "screenshot",
+                        "path": payload.get("path").cloned().unwrap_or(Value::Null),
+                        "timeout_seconds": payload.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(30)
+                    }),
+                    "click" => json!({
+                        "type": "desktop",
+                        "operation": "click",
+                        "x": payload.get("x").cloned().unwrap_or(Value::Null),
+                        "y": payload.get("y").cloned().unwrap_or(Value::Null),
+                        "timeout_seconds": payload.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(30)
+                    }),
+                    "type_text" => json!({
+                        "type": "desktop",
+                        "operation": "type_text",
+                        "text": string_or(&payload, "text", ""),
+                        "timeout_seconds": payload.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(30)
+                    }),
+                    "key" => json!({
+                        "type": "desktop",
+                        "operation": "key",
+                        "key": string_or(&payload, "key", ""),
+                        "modifiers": payload.get("modifiers").cloned().unwrap_or_else(|| json!([])),
+                        "timeout_seconds": payload.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(30)
+                    }),
+                    other => anyhow::bail!("unsupported desktop action: {other}"),
+                };
+                self.create_workbench_action_task(WorkbenchActionTaskInput {
+                    workbench_id,
+                    workbench: &workbench,
+                    operation_id: &operation_id,
+                    action: &action,
+                    task_label: "desktop",
+                    channel_role: "desktop",
+                    payload: task_payload,
+                    title: title.unwrap_or_else(|| {
+                        format!("{} 桌面 {}", workbench_name(&workbench), operation)
+                    }),
+                    summary: "Workbench Action API 提交的桌面动作。",
+                    created_by,
+                    priority,
+                    outputs: json!(["桌面操作结果", "产物", "执行耗时"]),
+                    os_label: Some("windows"),
+                    verify: data.get("verify").cloned(),
+                })?
+            }
+            "runtime.submit" | "runtime" => {
+                let tool_id = required_string(&payload, "tool_id")?;
+                let runtime_payload = payload.get("payload").cloned().unwrap_or_else(|| json!({}));
+                let mut request = json!({
+                    "tool_id": tool_id,
+                    "payload": runtime_payload,
+                    "title": title.unwrap_or_else(|| format!("{} 运行工具 {}", workbench_name(&workbench), tool_id)),
+                    "summary": "Workbench Action API 提交的 Runtime 工具动作。",
+                    "workbench_id": workbench_id,
+                    "created_by": created_by,
+                    "priority": priority,
+                    "correlation_id": operation_id
+                });
+                if let Some(verify) = data.get("verify").cloned() {
+                    request["verify"] = verify;
+                }
+                let task = self.create_agent_runtime_task(request)?;
+                workbench_action_task_response(
+                    &operation_id,
+                    &action,
+                    workbench_id,
+                    "worker",
+                    workbench_channel_node_id(&workbench, "worker"),
+                    "Runtime 工具动作默认走后台 Worker 通道，Hub 仍会按 ToolContract 和 workbench_id 校验。",
+                    task,
+                )
+            }
+            "port_bridge.create" | "port_bridge" => {
+                anyhow::bail!(
+                    "port_bridge.create is handled by the stateful Workbench Action route"
+                )
+            }
+            other => anyhow::bail!("unsupported workbench action: {other}"),
+        };
+        Ok(output)
+    }
+
+    fn create_workbench_action_task(
+        &self,
+        input: WorkbenchActionTaskInput<'_>,
+    ) -> anyhow::Result<Value> {
+        let mut labels = vec![
+            "compute".to_string(),
+            input.task_label.to_string(),
+            format!("workbench:{}", input.workbench_id),
+            format!("operation:{}", input.operation_id),
+            format!("action:{}", input.action),
+        ];
+        if let Some(os) = input.os_label {
+            labels.push(format!("os:{os}"));
+        }
+        let mut task = json!({
+            "title": input.title,
+            "summary": input.summary,
+            "created_by": input.created_by,
+            "owner": "worker-agent",
+            "assigned_to": ["worker-agent"],
+            "priority": input.priority,
+            "labels": labels,
+            "inputs": [serde_json::to_string_pretty(&input.payload)?],
+            "outputs": input.outputs,
+            "acceptance_criteria": [
+                "Workbench Action API 校验电脑和通道",
+                "Hub 自动选择这台电脑的正确能力通道",
+                "Worker 写回结构化结果和证据"
+            ],
+            "correlation_id": input.operation_id
+        });
+        if let Some(verify) = input.verify {
+            task["verify"] = verify;
+        }
+        let output = self.create_task(task)?;
+        Ok(workbench_action_task_response(
+            input.operation_id,
+            input.action,
+            input.workbench_id,
+            input.channel_role,
+            workbench_channel_node_id(input.workbench, input.channel_role),
+            workbench_action_routing_reason(input.channel_role),
+            output,
+        ))
+    }
+
+    fn list_tasks_for_workbench(
+        &self,
+        workbench_id: &str,
+        channel_ids: &[String],
+        limit: i64,
+    ) -> anyhow::Result<Vec<Value>> {
+        let organization_id = self.default_organization_id()?;
+        let mut values = vec![PROJECT_ID.to_string(), organization_id];
+        let mut clauses = vec!["labels_json LIKE ?".to_string()];
+        values.push(format!("%\"workbench:{workbench_id}\"%"));
+        for node_id in channel_ids {
+            clauses.push("leased_by_node_id = ?".to_string());
+            values.push(node_id.clone());
+            clauses.push("labels_json LIKE ?".to_string());
+            values.push(format!("%\"node:{node_id}\"%"));
+        }
+        let sql = format!(
+            "
+            SELECT * FROM agent_tasks
+            WHERE project_id = ?1
+              AND organization_id = ?2
+              AND ({})
+            ORDER BY updated_at DESC
+            LIMIT ?
+            ",
+            clauses.join(" OR ")
+        );
+        values.push(limit.to_string());
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(values), task_row)?;
+        collect_values(rows)
+    }
+
+    fn workbench_items(&self) -> anyhow::Result<HashMap<String, Value>> {
+        let nodes = self.list_nodes()?;
+        let mut items: HashMap<String, Value> = HashMap::new();
+        for node in nodes {
+            let workbench_id = node
+                .pointer("/spec/physical_host_id")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| {
+                    node.pointer("/metadata/id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                })
+                .to_string();
+            let channel_role = node
+                .pointer("/spec/channel_role")
+                .and_then(Value::as_str)
+                .unwrap_or("worker")
+                .to_string();
+            let existing = items
+                .entry(workbench_id.clone())
+                .or_insert_with(|| empty_workbench(&workbench_id, &node));
+            merge_workbench_node(existing, node, &channel_role);
+        }
+        Ok(items)
+    }
+
     fn list_tool_probes(&self, limit: u16) -> anyhow::Result<Vec<Value>> {
         let organization_id = self.default_organization_id()?;
         let mut stmt = self.conn.prepare(
@@ -3442,6 +3828,13 @@ impl Store {
         let now = now();
         let id = string_or(&data, "id", &new_id("node"));
         let organization_id = self.organization_id_from_data(&data)?;
+        let capabilities = array_field(&data, "capabilities");
+        let channel_role = normalize_node_channel_role(
+            optional_string(&data, "channel_role").as_deref(),
+            &id,
+            &capabilities,
+        );
+        let physical_host_id = physical_host_id_for_node(&id, &data, &channel_role);
         let auth = self.authorize_node_heartbeat(&id, &data, &now)?;
         self.conn.execute(
             "
@@ -3451,9 +3844,9 @@ impl Store {
                 cpu_cores, memory_mb, cpu_usage_percent, memory_used_mb, disk_total_mb, disk_free_mb,
                 running_jobs, worker_version, worker_target, glibc_version,
                 machine_fingerprint, join_token_hash, join_token_hint, auth_status, authorized_at,
-                auto_update_enabled, update_channel,
+                channel_role, physical_host_id, auto_update_enabled, update_channel,
                 status, created_at, updated_at, last_heartbeat_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?32, ?33)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)
             ON CONFLICT(id) DO UPDATE SET
                 organization_id = nodes.organization_id,
                 name = excluded.name,
@@ -3484,6 +3877,8 @@ impl Store {
                 END,
                 auth_status = excluded.auth_status,
                 authorized_at = COALESCE(nodes.authorized_at, excluded.authorized_at),
+                channel_role = excluded.channel_role,
+                physical_host_id = excluded.physical_host_id,
                 auto_update_enabled = excluded.auto_update_enabled,
                 update_channel = excluded.update_channel,
                 status = excluded.status,
@@ -3499,7 +3894,7 @@ impl Store {
                 string_or(&data, "arch", "unknown"),
                 string_or(&data, "address", ""),
                 serde_json::to_string(&array_field(&data, "tags"))?,
-                serde_json::to_string(&array_field(&data, "capabilities"))?,
+                serde_json::to_string(&capabilities)?,
                 serde_json::to_string(&json_array_field(&data, "local_services"))?,
                 serde_json::to_string(&array_field(&data, "groups"))?,
                 float_or(&data, "weight", 1.0),
@@ -3519,9 +3914,12 @@ impl Store {
                 auth.join_token_hint,
                 auth.status,
                 auth.authorized_at,
+                channel_role,
+                physical_host_id,
                 bool_or(&data, "auto_update_enabled", true) as i64,
                 string_or(&data, "update_channel", "stable"),
                 string_or(&data, "status", "online"),
+                now,
                 now,
                 string_or(&data, "last_heartbeat_at", &now),
             ],
@@ -4329,6 +4727,127 @@ impl Store {
                 "tool_nodes": "/api/tools/{tool_id}/nodes"
             },
             "tools": tools
+        }))
+    }
+
+    fn tool_probe_center(&self) -> anyhow::Result<Value> {
+        let nodes = self.list_nodes()?;
+        let workbenches = self.workbench_items()?;
+        let tools = self
+            .tool_registry_with_dynamic()?
+            .into_iter()
+            .map(|tool| self.enrich_tool_with_nodes(tool, &nodes))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let node_tools = self.list_node_tools(None)?;
+        let probes = self.list_tool_probes(1000)?;
+        let mut state_counts: HashMap<String, usize> = HashMap::new();
+        let mut workbench_rows: HashMap<String, Value> = HashMap::new();
+
+        for tool in &tools {
+            for node in tool
+                .get("nodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let state = node
+                    .get("verification_status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("declared_unverified");
+                *state_counts.entry(state.to_string()).or_default() += 1;
+                let workbench_id = node_workbench_id_from_probe_node(&node, &workbenches);
+                let entry = workbench_rows
+                    .entry(workbench_id.clone())
+                    .or_insert_with(|| probe_center_workbench_entry(&workbench_id, &workbenches));
+                merge_probe_center_tool(entry, tool, &node);
+            }
+        }
+
+        let verified_edges = *state_counts.get("verified").unwrap_or(&0);
+        let failed_edges = *state_counts.get("failed").unwrap_or(&0);
+        let pending_edges = *state_counts.get("pending").unwrap_or(&0);
+        let unverified_edges = *state_counts.get("declared_unverified").unwrap_or(&0);
+        let unsupported_edges = *state_counts.get("unsupported").unwrap_or(&0);
+        let total_edges: usize = state_counts.values().sum();
+        let tool_count = tools.len();
+        let tools_with_verified_node = tools
+            .iter()
+            .filter(|tool| {
+                tool.get("nodes")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items.iter().any(|node| {
+                            node.get("verification_status").and_then(Value::as_str)
+                                == Some("verified")
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+            .count();
+        let tools_without_probe = tools
+            .iter()
+            .filter(|tool| {
+                probe_payload_for_tool(tool.get("id").and_then(Value::as_str).unwrap_or(""))
+                    .is_none()
+            })
+            .count();
+        let readiness = if failed_edges > 0 {
+            "attention_required"
+        } else if pending_edges > 0 {
+            "probing"
+        } else if verified_edges > 0 && unverified_edges == 0 && unsupported_edges == 0 {
+            "verified"
+        } else {
+            "needs_probe"
+        };
+        let mut workbench_items = workbench_rows.into_values().collect::<Vec<_>>();
+        workbench_items.sort_by(|left, right| {
+            left.pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(
+                    right
+                        .pointer("/metadata/name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                )
+        });
+
+        Ok(json!({
+            "api_version": "agentgrid.probe-center/v1",
+            "kind": "ToolProbeCenter",
+            "metadata": {
+                "project_id": PROJECT_ID,
+                "generated_at": now()
+            },
+            "summary": {
+                "readiness": readiness,
+                "tool_count": tool_count,
+                "node_count": nodes.len(),
+                "workbench_count": workbenches.len(),
+                "registered_node_tool_count": node_tools.len(),
+                "probe_record_count": probes.len(),
+                "total_tool_node_edges": total_edges,
+                "verified_edges": verified_edges,
+                "failed_edges": failed_edges,
+                "pending_edges": pending_edges,
+                "declared_unverified_edges": unverified_edges,
+                "unsupported_edges": unsupported_edges,
+                "tools_with_verified_node": tools_with_verified_node,
+                "tools_without_probe_payload": tools_without_probe,
+                "recommendations": probe_center_recommendations(
+                    failed_edges,
+                    pending_edges,
+                    unverified_edges,
+                    unsupported_edges,
+                    tools_without_probe,
+                )
+            },
+            "state_counts": state_counts,
+            "tools": tools,
+            "workbenches": workbench_items,
+            "node_tools": node_tools,
+            "recent_probes": probes
         }))
     }
 
@@ -5451,6 +5970,7 @@ impl Store {
     fn create_task(&self, data: Value) -> anyhow::Result<TaskOutput> {
         let id = string_or(&data, "id", &new_id("task"));
         let organization_id = self.organization_id_from_data(&data)?;
+        self.validate_task_channel_contract(&data, &organization_id)?;
         let now = now();
         let owner = optional_string(&data, "owner");
         let mut assigned_to = array_field(&data, "assigned_to");
@@ -5539,6 +6059,106 @@ impl Store {
         })
     }
 
+    fn validate_task_channel_contract(
+        &self,
+        data: &Value,
+        organization_id: &str,
+    ) -> anyhow::Result<()> {
+        let task = preview_task_value(data);
+        let job = task_to_job(&task)?;
+        if let Some(workbench_id) = job.spec.requirements.workbench_id.as_deref() {
+            let required_channel = task_channel_role(&job);
+            self.resolve_workbench_channel_node(workbench_id, required_channel, organization_id)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "workbench:{workbench_id} does not have an online {required_channel} channel for this task"
+                    )
+                })?;
+        }
+        let Some(node_id) = job.spec.requirements.node_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(node_value) = self.get_task_target_node(node_id, organization_id)? else {
+            return Ok(());
+        };
+        let node = json_node_to_protocol(&node_value)?;
+        if let Some(workbench_id) = job.spec.requirements.workbench_id.as_deref() {
+            if node.physical_host_id != workbench_id {
+                anyhow::bail!(
+                    "task target mismatch: node:{node_id} belongs to workbench:{}, not workbench:{workbench_id}",
+                    node.physical_host_id
+                );
+            }
+        }
+        let required_channel = task_channel_role(&job);
+        let node_channel = node_channel_role(&node_value, &node);
+        if let Some(reason) = channel_role_mismatch_reason(required_channel, node_channel) {
+            anyhow::bail!("task channel mismatch for node:{node_id}: {reason}");
+        }
+        Ok(())
+    }
+
+    fn resolve_workbench_channel_node(
+        &self,
+        workbench_id: &str,
+        required_channel: &str,
+        organization_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT * FROM nodes
+            WHERE project_id = ?1
+              AND organization_id = ?2
+              AND physical_host_id = ?3
+            ORDER BY
+              CASE channel_role
+                WHEN ?4 THEN 0
+                WHEN 'worker' THEN 1
+                WHEN 'desktop' THEN 2
+                WHEN 'service' THEN 3
+                WHEN 'bridge' THEN 4
+                WHEN 'device' THEN 5
+                ELSE 9
+              END ASC,
+              updated_at DESC
+            ",
+        )?;
+        let rows = stmt.query_map(
+            params![PROJECT_ID, organization_id, workbench_id, required_channel],
+            node_row,
+        )?;
+        for item in rows {
+            let node_value = item?;
+            let node = json_node_to_protocol(&node_value)?;
+            let node_channel = node_channel_role(&node_value, &node);
+            if node_channel != required_channel {
+                continue;
+            }
+            if node.status != NodeState::Online {
+                continue;
+            }
+            if channel_role_mismatch_reason(required_channel, node_channel).is_none() {
+                return Ok(Some(node_value));
+            }
+        }
+        Ok(None)
+    }
+
+    fn get_task_target_node(
+        &self,
+        node_id: &str,
+        organization_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
+        self.conn
+            .query_row(
+                "SELECT * FROM nodes WHERE project_id = ?1 AND organization_id = ?2 AND id = ?3",
+                params![PROJECT_ID, organization_id, node_id],
+                node_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     fn create_agent_runtime_task(&self, data: Value) -> anyhow::Result<TaskOutput> {
         let tool_id = required_string(&data, "tool_id")?;
         let selection = self
@@ -5564,6 +6184,9 @@ impl Store {
             .collect::<Vec<_>>();
         if let Some(node_id) = optional_string(&data, "node_id") {
             ensure_label(&mut labels, &format!("node:{node_id}"));
+        }
+        if let Some(workbench_id) = optional_string(&data, "workbench_id") {
+            ensure_label(&mut labels, &format!("workbench:{workbench_id}"));
         }
         if let Some(os) = optional_string(&data, "os") {
             ensure_label(&mut labels, &format!("os:{os}"));
@@ -6058,6 +6681,12 @@ impl Store {
             .and_then(Value::as_str)
         {
             ensure_label(&mut labels, &format!("node:{node_id}"));
+        }
+        if let Some(workbench_id) = normalized
+            .pointer("/placement/workbench_id")
+            .and_then(Value::as_str)
+        {
+            ensure_label(&mut labels, &format!("workbench:{workbench_id}"));
         }
         if let Some(os) = normalized.pointer("/placement/os").and_then(Value::as_str) {
             ensure_label(&mut labels, &format!("os:{os}"));
@@ -6662,6 +7291,9 @@ impl Store {
         if let Some(node_id) = placement.get("node_id").and_then(Value::as_str) {
             ensure_label(&mut labels, &format!("node:{node_id}"));
         }
+        if let Some(workbench_id) = placement.get("workbench_id").and_then(Value::as_str) {
+            ensure_label(&mut labels, &format!("workbench:{workbench_id}"));
+        }
         if let Some(os) = placement.get("os").and_then(Value::as_str) {
             ensure_label(&mut labels, &format!("os:{os}"));
         }
@@ -7156,6 +7788,8 @@ impl Store {
             .get_node(&node_id)?
             .ok_or_else(|| anyhow::anyhow!("node not found"))?;
         let organization_id = self.organization_id_from_item(&requesting_node)?;
+        let requesting_node_protocol = json_node_to_protocol(&requesting_node)?;
+        let requesting_channel = node_channel_role(&requesting_node, &requesting_node_protocol);
         let node_state = requesting_node
             .pointer("/status/state")
             .and_then(Value::as_str)
@@ -7221,6 +7855,20 @@ impl Store {
             let task = task?;
             if leased.len() >= max_tasks as usize {
                 break;
+            }
+            let job = task_to_job(&task)?;
+            let required_channel = task_channel_role(&job);
+            if channel_role_mismatch_reason(required_channel, requesting_channel).is_some() {
+                continue;
+            }
+            if let Some(workbench_id) = job.spec.requirements.workbench_id.as_deref() {
+                if requesting_node
+                    .pointer("/spec/physical_host_id")
+                    .and_then(Value::as_str)
+                    != Some(workbench_id)
+                {
+                    continue;
+                }
             }
             if !task_matches_capabilities(&task, &capabilities) {
                 continue;
@@ -7400,6 +8048,23 @@ impl Store {
             let node = node?;
             if node.status != NodeState::Online {
                 continue;
+            }
+            let node_value = self
+                .get_node(&node.id)?
+                .ok_or_else(|| anyhow::anyhow!("node not found while evaluating scheduler"))?;
+            let required_channel = task_channel_role(&job);
+            let node_channel = node_channel_role(&node_value, &node);
+            if channel_role_mismatch_reason(required_channel, node_channel).is_some() {
+                continue;
+            }
+            if let Some(workbench_id) = job.spec.requirements.workbench_id.as_deref() {
+                if node_value
+                    .pointer("/spec/physical_host_id")
+                    .and_then(Value::as_str)
+                    != Some(workbench_id)
+                {
+                    continue;
+                }
             }
             if let Some(tool_id) = tool_id_for_job(&job) {
                 if !self.node_supports_task_tool(&node.id, &tool_id)? {
@@ -7642,10 +8307,66 @@ impl Store {
         }
         let decision = self.choose_best_node_for_task(&task)?;
         let selected = decision.node_id.clone();
+        if let Some(selected_node_id) = selected.as_deref() {
+            if let Some(candidate) = candidates.iter_mut().find(|candidate| {
+                candidate.get("node_id").and_then(Value::as_str) == Some(selected_node_id)
+            }) {
+                if let Some(map) = candidate.as_object_mut() {
+                    map.insert("eligible".to_string(), json!(true));
+                    let mut reasons = map
+                        .get("reasons")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|item| item.as_str().map(ToString::to_string))
+                        .collect::<Vec<_>>();
+                    reasons.retain(|reason| {
+                        !reason.contains("可信调度跳过") && !reason.contains("未通过运行时验证")
+                    });
+                    if !reasons.iter().any(|reason| reason.contains("最终调度选择")) {
+                        reasons.insert(
+                            0,
+                            "最终调度选择：满足硬约束并由 Placement Engine 选中".to_string(),
+                        );
+                    }
+                    map.insert("reasons".to_string(), json!(reasons));
+                    map.insert("selected".to_string(), json!(true));
+                }
+            }
+        }
+        let eligible_count = candidates
+            .iter()
+            .filter(|candidate| candidate.get("eligible").and_then(Value::as_bool) == Some(true))
+            .count();
+        let skipped_count = candidates.len().saturating_sub(eligible_count);
+        let selected_channel = selected
+            .as_deref()
+            .and_then(|node_id| {
+                candidates
+                    .iter()
+                    .find(|candidate| {
+                        candidate.get("node_id").and_then(Value::as_str) == Some(node_id)
+                    })
+                    .and_then(|candidate| candidate.get("channel_role").and_then(Value::as_str))
+            })
+            .unwrap_or(task_channel_role(&job));
         Ok(json!({
             "task_id": id,
             "generated_at": now(),
             "selected_node_id": selected,
+            "summary": {
+                "selected_node_id": decision.node_id,
+                "selected_channel_role": selected_channel,
+                "required_channel_role": task_channel_role(&job),
+                "tool_id": tool_id_for_job(&job),
+                "task_type": task_type(&task),
+                "eligible_count": eligible_count,
+                "skipped_count": skipped_count,
+                "candidate_count": candidates.len(),
+                "score": decision.score,
+                "reason": decision.reason
+            },
             "decision": {
                 "node_id": decision.node_id,
                 "reason": decision.reason,
@@ -9527,6 +10248,17 @@ fn task_matches_capabilities(task: &Value, capabilities: &[String]) -> bool {
     let Ok(payload) = parse_job_payload_from_task(task) else {
         return false;
     };
+    let requested_capabilities = capabilities.iter().map(String::as_str).collect::<Vec<_>>();
+    if matches!(payload, JobPayload::Desktop(_)) {
+        return requested_capabilities.contains(&"desktop");
+    }
+    if requested_capabilities.contains(&"desktop")
+        && !requested_capabilities
+            .iter()
+            .any(|capability| *capability != "desktop")
+    {
+        return false;
+    }
     let required = match payload {
         JobPayload::HttpRequest(_) => "http",
         JobPayload::Command(_) => "command",
@@ -12126,6 +12858,147 @@ fn webhook_signature(secret: &str, body: &[u8]) -> String {
     format!("sha256={:x}", mac.finalize().into_bytes())
 }
 
+fn probe_center_recommendations(
+    failed_edges: usize,
+    pending_edges: usize,
+    unverified_edges: usize,
+    unsupported_edges: usize,
+    tools_without_probe: usize,
+) -> Vec<Value> {
+    let mut items = Vec::new();
+    if failed_edges > 0 {
+        items.push(json!({
+            "level": "warning",
+            "code": "probe_failed",
+            "message": "有工具验证失败，调度器会降低或跳过这些节点。优先查看失败原因并重新 Probe。"
+        }));
+    }
+    if pending_edges > 0 {
+        items.push(json!({
+            "level": "info",
+            "code": "probe_pending",
+            "message": "有 Probe 正在等待 Worker 执行，完成后可信状态会自动更新。"
+        }));
+    }
+    if unverified_edges > 0 {
+        items.push(json!({
+            "level": "info",
+            "code": "declared_unverified",
+            "message": "有工具只是节点声明可用，还没有运行时验证。建议在能力验证中心执行 Probe。"
+        }));
+    }
+    if unsupported_edges > 0 || tools_without_probe > 0 {
+        items.push(json!({
+            "level": "notice",
+            "code": "probe_payload_missing",
+            "message": "部分工具没有轻量 Probe payload。插件作者应在工具声明中提供 probe.payload 和 probe.verify。"
+        }));
+    }
+    if items.is_empty() {
+        items.push(json!({
+            "level": "ok",
+            "code": "probe_center_healthy",
+            "message": "当前工具验证状态健康，调度器可以优先选择已验证节点。"
+        }));
+    }
+    items
+}
+
+fn node_workbench_id_from_probe_node(node: &Value, workbenches: &HashMap<String, Value>) -> String {
+    let node_id = node.get("id").and_then(Value::as_str).unwrap_or("unknown");
+    for (workbench_id, workbench) in workbenches {
+        let channels = workbench
+            .pointer("/spec/channels")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if channels
+            .values()
+            .any(|channel| channel.pointer("/metadata/id").and_then(Value::as_str) == Some(node_id))
+        {
+            return workbench_id.clone();
+        }
+    }
+    node_id.to_string()
+}
+
+fn probe_center_workbench_entry(workbench_id: &str, workbenches: &HashMap<String, Value>) -> Value {
+    let workbench = workbenches.get(workbench_id);
+    json!({
+        "api_version": "agentgrid.probe-center/v1",
+        "kind": "WorkbenchProbeSummary",
+        "metadata": {
+            "id": workbench_id,
+            "name": workbench
+                .and_then(|item| item.pointer("/metadata/name"))
+                .and_then(Value::as_str)
+                .unwrap_or(workbench_id)
+        },
+        "spec": {
+            "type": workbench
+                .and_then(|item| item.pointer("/spec/type"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "os": workbench
+                .and_then(|item| item.pointer("/spec/os"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "channels": workbench
+                .and_then(|item| item.pointer("/spec/channels"))
+                .cloned()
+                .unwrap_or_else(|| json!({}))
+        },
+        "status": {
+            "state": workbench
+                .and_then(|item| item.pointer("/status/state"))
+                .cloned()
+                .unwrap_or_else(|| json!("unknown")),
+            "verified_tools": 0,
+            "failed_tools": 0,
+            "pending_tools": 0,
+            "unverified_tools": 0,
+            "tool_count": 0
+        },
+        "tools": []
+    })
+}
+
+fn merge_probe_center_tool(workbench: &mut Value, tool: &Value, node: &Value) {
+    let tool_id = tool.get("id").and_then(Value::as_str).unwrap_or("");
+    let state = node
+        .get("verification_status")
+        .and_then(Value::as_str)
+        .unwrap_or("declared_unverified");
+    if let Some(status) = workbench.get_mut("status").and_then(Value::as_object_mut) {
+        let key = match state {
+            "verified" => "verified_tools",
+            "failed" => "failed_tools",
+            "pending" => "pending_tools",
+            _ => "unverified_tools",
+        };
+        let current = status.get(key).and_then(Value::as_i64).unwrap_or(0);
+        status.insert(key.to_string(), json!(current + 1));
+        let count = status
+            .get("tool_count")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        status.insert("tool_count".to_string(), json!(count + 1));
+    }
+    let Some(tools) = workbench.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+    tools.push(json!({
+        "tool_id": tool_id,
+        "name": tool.get("name").cloned().unwrap_or_else(|| json!(tool_id)),
+        "category": tool.get("category").cloned().unwrap_or(Value::Null),
+        "capability": tool.get("capability").cloned().unwrap_or(Value::Null),
+        "risk": tool.get("risk").cloned().unwrap_or(Value::Null),
+        "node": node,
+        "probe": node.get("probe").cloned().unwrap_or(Value::Null),
+        "verification_status": state
+    }));
+}
+
 fn nodes_for_tool(tool: &Value, nodes: &[Value]) -> Vec<Value> {
     let capability = tool.get("capability").and_then(Value::as_str).unwrap_or("");
     nodes
@@ -12351,6 +13224,14 @@ fn probe_payload_for_tool(tool_id: &str) -> Option<Value> {
             "timeout_seconds": 30,
             "max_response_bytes": 65536
         })),
+        "desktop.screenshot" | "desktop.click" | "desktop.type_text" | "desktop.key" => {
+            Some(json!({
+                "type": "desktop",
+                "operation": "screenshot",
+                "path": null,
+                "timeout_seconds": 30
+            }))
+        }
         "session.run" => Some(json!({
             "type": "session",
             "operation": "run",
@@ -12852,6 +13733,9 @@ fn task_to_job(task: &Value) -> anyhow::Result<Job> {
                 node_id: labels
                     .iter()
                     .find_map(|label| label.strip_prefix("node:").map(ToString::to_string)),
+                workbench_id: labels
+                    .iter()
+                    .find_map(|label| label.strip_prefix("workbench:").map(ToString::to_string)),
                 ..JobRequirements::default()
             },
             payload: match payload {
@@ -12899,6 +13783,22 @@ fn task_type(task: &Value) -> String {
         })
         .unwrap_or("unknown")
         .to_string()
+}
+
+fn task_type_for_payload(payload: &JobPayload) -> String {
+    match payload {
+        JobPayload::HttpRequest(_) => "http_request".to_string(),
+        JobPayload::Command(_) => "command".to_string(),
+        JobPayload::File(_) => "file".to_string(),
+        JobPayload::Git(_) => "git".to_string(),
+        JobPayload::Docker(_) => "docker".to_string(),
+        JobPayload::Browser(_) => "browser".to_string(),
+        JobPayload::Desktop(_) => "desktop".to_string(),
+        JobPayload::Session(_) => "session".to_string(),
+        JobPayload::AgentMessage(_) => "agent_message".to_string(),
+        JobPayload::Plugin(payload) => format!("plugin.{}", payload.plugin_id),
+        JobPayload::Custom { name, .. } => name.clone(),
+    }
 }
 
 fn tool_id_for_job(job: &Job) -> Option<String> {
@@ -13075,6 +13975,507 @@ fn graph_multiplier_for_job(job: &Job, trust: &TrustEvaluation) -> f64 {
     multiplier
 }
 
+fn node_channel_role(node_value: &Value, node: &Node) -> &'static str {
+    let explicit_role = node_value
+        .pointer("/spec/channel_role")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if matches!(
+        explicit_role,
+        "desktop" | "worker" | "service" | "bridge" | "device"
+    ) {
+        return match explicit_role {
+            "desktop" => "desktop",
+            "service" => "service",
+            "bridge" => "bridge",
+            "device" => "device",
+            _ => "worker",
+        };
+    }
+    if node.id.ends_with("-desktop") || node.capabilities.iter().any(|item| item == "desktop") {
+        "desktop"
+    } else {
+        "worker"
+    }
+}
+
+fn normalize_node_channel_role(
+    explicit: Option<&str>,
+    node_id: &str,
+    capabilities: &[String],
+) -> String {
+    let explicit = explicit.unwrap_or("").trim().to_ascii_lowercase();
+    if explicit == "desktop"
+        && !node_id.ends_with("-desktop")
+        && has_background_capability(capabilities)
+    {
+        return "worker".to_string();
+    }
+    if matches!(
+        explicit.as_str(),
+        "worker" | "desktop" | "service" | "bridge" | "device"
+    ) {
+        return explicit;
+    }
+    if node_id.ends_with("-desktop") {
+        "desktop".to_string()
+    } else {
+        "worker".to_string()
+    }
+}
+
+fn has_background_capability(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|item| {
+        matches!(
+            item.as_str(),
+            "http"
+                | "command"
+                | "file"
+                | "git"
+                | "docker"
+                | "browser"
+                | "session"
+                | "agentmessage"
+                | "plugin"
+        )
+    })
+}
+
+fn physical_host_id_for_node(node_id: &str, data: &Value, channel_role: &str) -> String {
+    optional_string(data, "physical_host_id")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            physical_host_id_from_parts(
+                node_id,
+                optional_string(data, "machine_fingerprint").as_deref(),
+                channel_role,
+            )
+        })
+}
+
+fn physical_host_id_from_parts(
+    node_id: &str,
+    machine_fingerprint: Option<&str>,
+    channel_role: &str,
+) -> String {
+    if let Some(fingerprint) = machine_fingerprint.filter(|value| !value.trim().is_empty()) {
+        return fingerprint.to_string();
+    }
+    if channel_role == "desktop" {
+        node_id.trim_end_matches("-desktop").to_string()
+    } else {
+        node_id.to_string()
+    }
+}
+
+fn empty_workbench(id: &str, node: &Value) -> Value {
+    json!({
+        "api_version": "agentgrid.workbench/v1",
+        "kind": "Workbench",
+        "metadata": {
+            "id": id,
+            "name": workbench_name_from_node(node),
+            "organization_id": node.pointer("/metadata/organization_id").cloned().unwrap_or(Value::Null),
+            "project_id": PROJECT_ID,
+            "created_at": node.pointer("/metadata/created_at").cloned().unwrap_or(Value::Null),
+            "updated_at": node.pointer("/metadata/updated_at").cloned().unwrap_or(Value::Null)
+        },
+        "spec": {
+            "type": "compute_bench",
+            "os": node.pointer("/spec/os").cloned().unwrap_or(Value::Null),
+            "arch": node.pointer("/spec/arch").cloned().unwrap_or(Value::Null),
+            "address": node.pointer("/spec/address").cloned().unwrap_or(Value::Null),
+            "channels": {},
+            "capabilities": [],
+            "tools": [],
+            "local_services": []
+        },
+        "resources": {
+            "cpu_cores": 0,
+            "memory_mb": 0,
+            "memory_used_mb": 0,
+            "cpu_usage_percent": 0.0,
+            "disk_total_mb": 0,
+            "disk_free_mb": 0,
+            "running_jobs": 0,
+            "max_concurrent_jobs": 0
+        },
+        "status": {
+            "state": "offline",
+            "online_channels": 0,
+            "total_channels": 0,
+            "last_heartbeat_at": null
+        },
+        "routing": {
+            "workbench_id": id,
+            "channel_roles": ["worker", "desktop", "service", "bridge", "device"],
+            "target_rule": "AI should target the workbench for a real machine, then Hub selects a matching channel."
+        }
+    })
+}
+
+fn merge_workbench_node(workbench: &mut Value, node: Value, channel_role: &str) {
+    if let Some(channels) = workbench
+        .pointer_mut("/spec/channels")
+        .and_then(Value::as_object_mut)
+    {
+        channels.insert(channel_role.to_string(), node.clone());
+    }
+    merge_json_array_unique(
+        workbench,
+        "/spec/capabilities",
+        node.pointer("/spec/capabilities"),
+    );
+    merge_json_array_unique(
+        workbench,
+        "/spec/local_services",
+        node.pointer("/spec/local_services"),
+    );
+    merge_node_tools(workbench, &node);
+    merge_workbench_resources(workbench, &node);
+    refresh_workbench_status(workbench);
+    if workbench.pointer("/spec/type").and_then(Value::as_str) == Some("compute_bench")
+        && (channel_role == "desktop"
+            || node.pointer("/status/state").and_then(Value::as_str) == Some("online"))
+    {
+        if let Some(spec) = workbench.get_mut("spec").and_then(Value::as_object_mut) {
+            spec.insert("type".to_string(), json!(workbench_type_for_node(&node)));
+            spec.insert(
+                "os".to_string(),
+                node.pointer("/spec/os").cloned().unwrap_or(Value::Null),
+            );
+            spec.insert(
+                "arch".to_string(),
+                node.pointer("/spec/arch").cloned().unwrap_or(Value::Null),
+            );
+            spec.insert(
+                "address".to_string(),
+                node.pointer("/spec/address")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+        }
+        if let Some(metadata) = workbench.get_mut("metadata").and_then(Value::as_object_mut) {
+            metadata.insert("name".to_string(), json!(workbench_name_from_node(&node)));
+            metadata.insert(
+                "updated_at".to_string(),
+                node.pointer("/metadata/updated_at")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+        }
+    }
+}
+
+fn merge_node_tools(workbench: &mut Value, node: &Value) {
+    let Some(tools) = node.pointer("/spec/node_tools").and_then(Value::as_array) else {
+        return;
+    };
+    merge_json_array_unique(workbench, "/spec/tools", Some(&Value::Array(tools.clone())));
+}
+
+fn merge_workbench_resources(workbench: &mut Value, node: &Value) {
+    let Some(resources) = workbench
+        .get_mut("resources")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let current_cpu = resources
+        .get("cpu_cores")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let current_memory = resources
+        .get("memory_mb")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let node_cpu = node
+        .pointer("/spec/cpu_cores")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let node_memory = node
+        .pointer("/spec/memory_mb")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if node_cpu >= current_cpu || node_memory >= current_memory {
+        for key in [
+            "cpu_cores",
+            "memory_mb",
+            "memory_used_mb",
+            "cpu_usage_percent",
+            "disk_total_mb",
+            "disk_free_mb",
+            "max_concurrent_jobs",
+        ] {
+            if let Some(value) = node.pointer(&format!("/spec/{key}")).cloned() {
+                resources.insert(key.to_string(), value);
+            }
+        }
+        if let Some(value) = node.pointer("/status/running_jobs").cloned() {
+            resources.insert("running_jobs".to_string(), value);
+        }
+    }
+}
+
+fn refresh_workbench_status(workbench: &mut Value) {
+    let channels = workbench
+        .pointer("/spec/channels")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut online = 0;
+    let mut unknown = 0;
+    let mut last_heartbeat_at: Option<String> = None;
+    for node in channels.values() {
+        match node.pointer("/status/state").and_then(Value::as_str) {
+            Some("online") => online += 1,
+            Some("unknown") => unknown += 1,
+            _ => {}
+        }
+        if let Some(value) = node
+            .pointer("/status/last_heartbeat_at")
+            .and_then(Value::as_str)
+        {
+            if last_heartbeat_at
+                .as_deref()
+                .map(|old| value > old)
+                .unwrap_or(true)
+            {
+                last_heartbeat_at = Some(value.to_string());
+            }
+        }
+    }
+    let state = if online > 0 {
+        "online"
+    } else if unknown > 0 {
+        "unknown"
+    } else {
+        "offline"
+    };
+    if let Some(status) = workbench.get_mut("status").and_then(Value::as_object_mut) {
+        status.insert("state".to_string(), json!(state));
+        status.insert("online_channels".to_string(), json!(online));
+        status.insert("total_channels".to_string(), json!(channels.len()));
+        status.insert("last_heartbeat_at".to_string(), json!(last_heartbeat_at));
+    }
+}
+
+fn merge_json_array_unique(target: &mut Value, pointer: &str, source: Option<&Value>) {
+    let Some(source_items) = source.and_then(Value::as_array) else {
+        return;
+    };
+    let Some(target_items) = target.pointer_mut(pointer).and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in source_items {
+        if !target_items.iter().any(|existing| existing == item) {
+            target_items.push(item.clone());
+        }
+    }
+}
+
+fn workbench_timeline_event_from_task(task: &Value) -> Value {
+    let task_id = task.pointer("/metadata/id").and_then(Value::as_str);
+    let state = task
+        .pointer("/status/state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let title = task
+        .pointer("/spec/title")
+        .and_then(Value::as_str)
+        .unwrap_or("AgentGrid task");
+    json!({
+        "id": format!("task:{}", task_id.unwrap_or("unknown")),
+        "time": task.pointer("/metadata/updated_at").cloned().unwrap_or(Value::Null),
+        "kind": "task",
+        "type": format!("task.{state}"),
+        "summary": format!("{title} / {}", task_state_display(state)),
+        "task_id": task_id,
+        "node_id": task.pointer("/status/leased_by_node_id").cloned().unwrap_or(Value::Null),
+        "state": state,
+        "payload": {
+            "task": task
+        }
+    })
+}
+
+fn workbench_timeline_event_from_audit(event: &Value, task: &Value) -> Value {
+    let event_id = event
+        .pointer("/metadata/id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    json!({
+        "id": format!("audit:{event_id}"),
+        "time": event.pointer("/metadata/created_at").cloned().unwrap_or(Value::Null),
+        "kind": "audit",
+        "type": event.pointer("/spec/type").cloned().unwrap_or(Value::Null),
+        "summary": event.pointer("/spec/summary").cloned().unwrap_or(Value::Null),
+        "task_id": task.pointer("/metadata/id").cloned().unwrap_or(Value::Null),
+        "node_id": event.pointer("/spec/payload/node_id")
+            .cloned()
+            .or_else(|| task.pointer("/status/leased_by_node_id").cloned())
+            .unwrap_or(Value::Null),
+        "state": task.pointer("/status/state").cloned().unwrap_or(Value::Null),
+        "payload": event.pointer("/spec/payload").cloned().unwrap_or(Value::Null)
+    })
+}
+
+fn task_state_display(state: &str) -> &'static str {
+    match state {
+        "assigned" => "已分配",
+        "in_progress" => "执行中",
+        "done" => "已完成",
+        "failed" => "失败",
+        "cancelled" => "已取消",
+        "stopped" => "已停止",
+        "stopping" => "停止中",
+        "review" => "待审查",
+        "blocked" => "阻塞",
+        _ => "未知",
+    }
+}
+
+struct WorkbenchActionTaskInput<'a> {
+    workbench_id: &'a str,
+    workbench: &'a Value,
+    operation_id: &'a str,
+    action: &'a str,
+    task_label: &'a str,
+    channel_role: &'a str,
+    payload: Value,
+    title: String,
+    summary: &'a str,
+    created_by: String,
+    priority: String,
+    outputs: Value,
+    os_label: Option<&'a str>,
+    verify: Option<Value>,
+}
+
+fn workbench_action_task_response(
+    operation_id: &str,
+    action: &str,
+    workbench_id: &str,
+    channel_role: &str,
+    channel_node_id: Option<String>,
+    routing_reason: &str,
+    output: TaskOutput,
+) -> Value {
+    let task_id = output
+        .item
+        .pointer("/metadata/id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    json!({
+        "api_version": "agentgrid.workbench-action/v1",
+        "kind": "WorkbenchAction",
+        "operation_id": operation_id,
+        "workbench_id": workbench_id,
+        "action": action,
+        "selected_channel": {
+            "role": channel_role,
+            "node_id": channel_node_id
+        },
+        "routing_reason": routing_reason,
+        "state": output.item.pointer("/status/state").cloned().unwrap_or(Value::Null),
+        "task_id": task_id,
+        "message_id": output.message_id,
+        "task": output.item,
+        "artifacts": [],
+        "timeline": {
+            "workbench": format!("/api/workbenches/{workbench_id}/timeline"),
+            "task_events": format!("/api/tasks/{task_id}/events")
+        },
+        "links": {
+            "task": format!("/api/tasks/{task_id}"),
+            "snapshot": format!("/api/tasks/{task_id}/snapshot"),
+            "schedule_preview": format!("/api/tasks/{task_id}/schedule-preview"),
+            "workbench": format!("/api/workbenches/{workbench_id}")
+        }
+    })
+}
+
+fn workbench_action_routing_reason(channel_role: &str) -> &'static str {
+    match channel_role {
+        "desktop" => "桌面动作需要真实前台会话，Hub 会选择该电脑的 Desktop Helper 通道。",
+        "bridge" => "端口桥接动作需要桥接通道，Hub 会选择可建立桥接的节点通道。",
+        "service" => "本地服务动作需要服务通道，Hub 会选择该电脑的 Service 通道。",
+        "device" => "设备动作需要设备通道，Hub 会选择该工位的 Device 通道。",
+        _ => "后台动作需要普通 Worker 通道，Hub 会选择该电脑的 worker 通道。",
+    }
+}
+
+pub(crate) fn workbench_channel_node_id(workbench: &Value, role: &str) -> Option<String> {
+    workbench
+        .pointer(&format!("/spec/channels/{role}/metadata/id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+pub(crate) fn workbench_name(workbench: &Value) -> String {
+    workbench
+        .pointer("/metadata/name")
+        .and_then(Value::as_str)
+        .or_else(|| workbench.pointer("/metadata/id").and_then(Value::as_str))
+        .unwrap_or("Workbench")
+        .to_string()
+}
+
+fn workbench_name_from_node(node: &Value) -> String {
+    node.pointer("/metadata/name")
+        .and_then(Value::as_str)
+        .or_else(|| node.pointer("/metadata/id").and_then(Value::as_str))
+        .unwrap_or("Workbench")
+        .trim_end_matches(" Desktop")
+        .trim_end_matches("-desktop")
+        .to_string()
+}
+
+fn workbench_type_for_node(node: &Value) -> &'static str {
+    let capabilities = node
+        .pointer("/spec/capabilities")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let capability_ids = capabilities
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let node_id = node
+        .pointer("/metadata/id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    classify_workbench(node_id, &capability_ids)
+}
+
+fn state_sort_key(state: &str) -> u8 {
+    match state {
+        "online" => 0,
+        "unknown" => 1,
+        "offline" => 2,
+        _ => 3,
+    }
+}
+
+fn task_channel_role(job: &Job) -> &'static str {
+    match job.spec.payload {
+        JobPayload::Desktop(_) => "desktop",
+        _ => "worker",
+    }
+}
+
+fn channel_role_mismatch_reason(required: &str, actual: &str) -> Option<&'static str> {
+    match (required, actual) {
+        ("desktop", "worker" | "service" | "bridge" | "device") => {
+            Some("桌面操作必须投递到 Desktop Helper 通道，普通 Worker 不能操作真实前台桌面")
+        }
+        ("worker", "desktop" | "service" | "bridge" | "device") => {
+            Some("后台任务必须投递到普通 Worker 通道，Desktop Helper、Service、Bridge、Device 通道不能接普通后台任务")
+        }
+        _ => None,
+    }
+}
+
 fn json_node_to_protocol(value: &Value) -> anyhow::Result<Node> {
     let status = match value
         .pointer("/status/state")
@@ -13093,6 +14494,12 @@ fn json_node_to_protocol(value: &Value) -> anyhow::Result<Node> {
         id: value
             .pointer("/metadata/id")
             .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        physical_host_id: value
+            .pointer("/spec/physical_host_id")
+            .and_then(Value::as_str)
+            .or_else(|| value.pointer("/metadata/id").and_then(Value::as_str))
             .unwrap_or("unknown")
             .to_string(),
         name: value
@@ -13187,6 +14594,11 @@ fn json_node_to_protocol(value: &Value) -> anyhow::Result<Node> {
 
 fn evaluate_node_for_job(node_value: &Value, node: &Node, job: &Job) -> Value {
     let mut reasons = Vec::new();
+    let required_channel = task_channel_role(job);
+    let node_channel = node_channel_role(node_value, node);
+    if let Some(reason) = channel_role_mismatch_reason(required_channel, node_channel) {
+        reasons.push(reason.to_string());
+    }
     if node.status != NodeState::Online {
         reasons.push(format!("节点状态是 {:?}，不能接任务", node.status));
     }
@@ -13200,6 +14612,17 @@ fn evaluate_node_for_job(node_value: &Value, node: &Node, job: &Job) -> Value {
     if let Some(required) = job.spec.requirements.node_id.as_ref() {
         if required != &node.id {
             reasons.push(format!("任务指定节点 {required}，当前节点不匹配"));
+        }
+    }
+    if let Some(required) = job.spec.requirements.workbench_id.as_ref() {
+        let actual_workbench = node_value
+            .pointer("/spec/physical_host_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if required != actual_workbench {
+            reasons.push(format!(
+                "任务指定电脑/工位 {required}，当前节点属于 {actual_workbench}"
+            ));
         }
     }
     for os in &job.spec.requirements.os {
@@ -13248,11 +14671,35 @@ fn evaluate_node_for_job(node_value: &Value, node: &Node, job: &Job) -> Value {
         reasons.push("并发槽位已满".to_string());
     }
     let eligible = reasons.is_empty();
+    let channel_explanation = if eligible {
+        format!(
+            "这个任务需要{}，当前节点就是{}，通道匹配",
+            channel_role_display(required_channel),
+            channel_role_display(node_channel)
+        )
+    } else if let Some(reason) = channel_role_mismatch_reason(required_channel, node_channel) {
+        reason.to_string()
+    } else {
+        format!(
+            "这个任务需要{}，当前节点是{}",
+            channel_role_display(required_channel),
+            channel_role_display(node_channel)
+        )
+    };
     json!({
-        "node_id": node.id,
-        "node_name": node.name,
-        "eligible": eligible,
-        "score": load_score,
+            "node_id": node.id,
+            "node_name": node.name,
+            "workbench_id": node_value.pointer("/spec/physical_host_id").cloned().unwrap_or(Value::Null),
+            "channel_role": node_channel,
+            "required_channel_role": required_channel,
+            "channel_explanation": channel_explanation,
+            "task_requires": {
+                "channel_role": required_channel,
+                "task_type": task_type_for_payload(&job.spec.payload),
+                "tool_id": tool_id_for_job(job)
+            },
+            "eligible": eligible,
+            "score": load_score,
         "available_slots": node.max_concurrent_jobs.saturating_sub(node.running_jobs),
         "state": node_value.pointer("/status/state").cloned().unwrap_or_else(|| json!("offline")),
         "os": node.os,
@@ -13265,6 +14712,16 @@ fn evaluate_node_for_job(node_value: &Value, node: &Node, job: &Job) -> Value {
         },
         "reasons": if eligible { vec!["满足任务要求，可参与调度".to_string()] } else { reasons }
     })
+}
+
+fn channel_role_display(role: &str) -> &'static str {
+    match role {
+        "desktop" => "桌面通道",
+        "service" => "服务通道",
+        "bridge" => "桥接通道",
+        "device" => "设备通道",
+        _ => "后台通道",
+    }
 }
 
 fn preview_task_value(data: &Value) -> Value {
@@ -14709,14 +16166,37 @@ fn user_public(mut user: Value) -> Value {
 }
 
 fn node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let id: String = row.get("id")?;
     let stored_state: String = row.get("status")?;
     let last_heartbeat_at: String = row.get("last_heartbeat_at")?;
     let effective_state = effective_node_state(&stored_state, &last_heartbeat_at);
+    let capabilities = json_text(row, "capabilities_json", json!([]))?;
+    let capability_strings = capabilities
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.as_str().map(ToString::to_string))
+        .collect::<Vec<_>>();
+    let stored_channel_role: String = row.get("channel_role")?;
+    let channel_role =
+        normalize_node_channel_role(Some(stored_channel_role.as_str()), &id, &capability_strings);
+    let stored_physical_host_id: String = row.get("physical_host_id")?;
+    let physical_host_id = if stored_physical_host_id.trim().is_empty() {
+        physical_host_id_from_parts(
+            &id,
+            row.get::<_, Option<String>>("machine_fingerprint")?
+                .as_deref(),
+            &channel_role,
+        )
+    } else {
+        stored_physical_host_id
+    };
     Ok(json!({
         "api_version": API_VERSION,
         "kind": "Node",
         "metadata": {
-            "id": row.get::<_, String>("id")?,
+            "id": id,
             "project_id": row.get::<_, String>("project_id")?,
             "organization_id": row.get::<_, String>("organization_id")?,
             "name": row.get::<_, String>("name")?,
@@ -14727,8 +16207,10 @@ fn node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
             "os": row.get::<_, String>("os")?,
             "arch": row.get::<_, String>("arch")?,
             "address": row.get::<_, String>("address")?,
+            "channel_role": channel_role,
+            "physical_host_id": physical_host_id,
             "tags": json_text(row, "tags_json", json!([]))?,
-            "capabilities": json_text(row, "capabilities_json", json!([]))?,
+            "capabilities": capabilities,
             "local_services": json_text(row, "local_services_json", json!([]))?,
             "groups": json_text(row, "groups_json", json!([]))?,
             "weight": row.get::<_, f64>("weight")?,
@@ -14804,6 +16286,7 @@ fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     let last_heartbeat_raw: String = row.get("last_heartbeat_at")?;
     Ok(Node {
         id: row.get("id")?,
+        physical_host_id: row.get("physical_host_id")?,
         name: row.get("name")?,
         os: row.get("os")?,
         arch: row.get("arch")?,
@@ -16217,7 +17700,7 @@ fn is_allowed_port_bridge_target_host(host: &str) -> bool {
         })
 }
 
-fn port_bridge_session_json(session: PortBridgeSession) -> Value {
+pub(crate) fn port_bridge_session_json(session: PortBridgeSession) -> Value {
     json!({
         "api_version": "agentgrid.bridge/v1",
         "kind": "PortBridgeSession",
@@ -16456,7 +17939,10 @@ impl From<anyhow::Error> for ApiError {
             StatusCode::FORBIDDEN
         } else if message.contains("not found") {
             StatusCode::NOT_FOUND
-        } else if message.contains("required") || message.contains("unknown task action") {
+        } else if message.contains("required")
+            || message.contains("unknown task action")
+            || message.contains("task channel mismatch")
+        {
             StatusCode::BAD_REQUEST
         } else {
             StatusCode::INTERNAL_SERVER_ERROR
@@ -16546,7 +18032,71 @@ mod hub_core_tests {
         payload
     }
 
+    fn desktop_heartbeat_payload(
+        node_id: &str,
+        join_token: Option<&str>,
+        machine_fingerprint: &str,
+    ) -> Value {
+        let mut payload = heartbeat_payload(node_id, join_token, machine_fingerprint);
+        payload["name"] = json!(format!("{node_id} Desktop"));
+        payload["capabilities"] = json!(["desktop"]);
+        payload["tags"] = json!(["test", "desktop"]);
+        payload
+    }
+
+    fn channel_heartbeat_payload(
+        node_id: &str,
+        join_token: Option<&str>,
+        machine_fingerprint: &str,
+        channel_role: &str,
+        capabilities: &[&str],
+    ) -> Value {
+        let mut payload = heartbeat_payload(node_id, join_token, machine_fingerprint);
+        payload["channel_role"] = json!(channel_role);
+        payload["capabilities"] = json!(capabilities);
+        payload["tags"] = json!(["test", channel_role]);
+        if channel_role == "desktop" {
+            payload["name"] = json!(format!("{node_id} Desktop"));
+        }
+        payload
+    }
+
+    fn approve_test_channel_node(
+        store: &Store,
+        node_id: &str,
+        join_token: &str,
+        fingerprint: &str,
+        channel_role: &str,
+        capabilities: &[&str],
+    ) {
+        store
+            .upsert_node(channel_heartbeat_payload(
+                node_id,
+                Some(join_token),
+                fingerprint,
+                channel_role,
+                capabilities,
+            ))
+            .expect("create pending channel node join request");
+        store
+            .approve_node_join(node_id, "test-super-admin")
+            .expect("approve channel node");
+        store
+            .upsert_node(channel_heartbeat_payload(
+                node_id,
+                Some(join_token),
+                fingerprint,
+                channel_role,
+                capabilities,
+            ))
+            .expect("channel heartbeat after approval");
+    }
+
     fn create_command_task(store: &Store, id: &str) -> Value {
+        create_command_task_with_labels(store, id, vec!["compute", "command"])
+    }
+
+    fn create_command_task_with_labels(store: &Store, id: &str, labels: Vec<&str>) -> Value {
         let payload = json!({
             "type": "command",
             "program": "hostname",
@@ -16563,12 +18113,41 @@ mod hub_core_tests {
                 "owner": "worker-agent",
                 "assigned_to": ["worker-agent"],
                 "priority": "normal",
-                "labels": ["compute", "command"],
+                "labels": labels,
                 "inputs": [serde_json::to_string_pretty(&payload).unwrap()],
                 "outputs": ["stdout", "stderr", "exit_code"],
                 "acceptance_criteria": ["task is leased by an eligible node"]
             }))
             .expect("create command task")
+            .item
+    }
+
+    fn create_desktop_task(store: &Store, id: &str) -> Value {
+        create_desktop_task_with_labels(store, id, vec!["compute", "desktop"])
+    }
+
+    fn create_desktop_task_with_labels(store: &Store, id: &str, labels: Vec<&str>) -> Value {
+        let payload = json!({
+            "type": "desktop",
+            "operation": "screenshot",
+            "path": null,
+            "timeout_seconds": 30
+        });
+        store
+            .create_task(json!({
+                "id": id,
+                "title": "Capture desktop",
+                "summary": "Lease test desktop task",
+                "created_by": "test-agent",
+                "owner": "worker-agent",
+                "assigned_to": ["worker-agent"],
+                "priority": "normal",
+                "labels": labels,
+                "inputs": [serde_json::to_string_pretty(&payload).unwrap()],
+                "outputs": ["screenshot"],
+                "acceptance_criteria": ["task is leased by an eligible desktop helper"]
+            }))
+            .expect("create desktop task")
             .item
     }
 
@@ -16598,6 +18177,31 @@ mod hub_core_tests {
             node.pointer("/spec/auth_status").and_then(Value::as_str),
             Some("bound")
         );
+    }
+
+    fn approve_test_desktop_node(
+        store: &Store,
+        node_id: &str,
+        join_token: &str,
+        fingerprint: &str,
+    ) {
+        store
+            .upsert_node(desktop_heartbeat_payload(
+                node_id,
+                Some(join_token),
+                fingerprint,
+            ))
+            .expect("create pending desktop node join request");
+        store
+            .approve_node_join(node_id, "test-super-admin")
+            .expect("approve desktop node");
+        store
+            .upsert_node(desktop_heartbeat_payload(
+                node_id,
+                Some(join_token),
+                fingerprint,
+            ))
+            .expect("desktop heartbeat after approval");
     }
 
     #[test]
@@ -16798,6 +18402,538 @@ mod hub_core_tests {
             tasks[0].pointer("/status/state").and_then(Value::as_str),
             Some("in_progress")
         );
+    }
+
+    #[test]
+    fn desktop_helper_cannot_lease_background_command_task() {
+        let test = test_store();
+        let node_id = "approved-node-desktop";
+        let join_token = "agj_desktop_helper";
+        let fingerprint = "fingerprint-desktop-helper";
+        approve_test_desktop_node(&test.store, node_id, join_token, fingerprint);
+        create_command_task(&test.store, "task_command_for_worker_only");
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": node_id,
+                "join_token": join_token,
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["desktop"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("desktop helper lease response");
+
+        assert_eq!(
+            lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn desktop_helper_cannot_lease_background_task_even_if_it_reports_command_capability() {
+        let test = test_store();
+        let node_id = "misconfigured-node-desktop";
+        let join_token = "agj_desktop_misconfigured";
+        let fingerprint = "fingerprint-desktop-misconfigured";
+        approve_test_desktop_node(&test.store, node_id, join_token, fingerprint);
+        create_command_task(
+            &test.store,
+            "task_command_ignores_misreported_desktop_capability",
+        );
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": node_id,
+                "join_token": join_token,
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["desktop", "command"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("misconfigured desktop helper lease response");
+
+        assert_eq!(
+            lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn create_task_rejects_background_command_targeting_desktop_helper() {
+        let test = test_store();
+        let node_id = "creation-check-node-desktop";
+        let join_token = "agj_creation_desktop";
+        let fingerprint = "fingerprint-creation-desktop";
+        approve_test_desktop_node(&test.store, node_id, join_token, fingerprint);
+
+        let payload = json!({
+            "type": "command",
+            "program": "hostname",
+            "args": [],
+            "timeout_seconds": 30
+        });
+        let result = test.store.create_task(json!({
+                "id": "task_reject_wrong_channel",
+                "title": "Reject wrong channel",
+                "summary": "Creation should reject background task targeting a Desktop Helper",
+                "created_by": "test-agent",
+                "owner": "worker-agent",
+                "assigned_to": ["worker-agent"],
+                "priority": "normal",
+                "labels": ["compute", "command", format!("node:{node_id}")],
+                "inputs": [serde_json::to_string_pretty(&payload).unwrap()],
+                "outputs": ["stdout"],
+                "acceptance_criteria": ["Hub rejects wrong channel at submit time"]
+        }));
+        let error = match result {
+            Ok(_) => panic!("wrong channel must be rejected at task creation"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("task channel mismatch"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn background_worker_cannot_lease_desktop_task() {
+        let test = test_store();
+        let node_id = "approved-background-worker";
+        let join_token = "agj_background_worker";
+        let fingerprint = "fingerprint-background-worker";
+        approve_test_node(&test.store, node_id, join_token, fingerprint);
+        create_desktop_task(&test.store, "task_desktop_for_helper_only");
+
+        let lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": node_id,
+                "join_token": join_token,
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["command"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("background worker lease response");
+
+        assert_eq!(
+            lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn workbench_api_groups_physical_machine_channels() {
+        let test = test_store();
+        let fingerprint = "fingerprint-workbench-chengchong";
+        approve_test_channel_node(
+            &test.store,
+            "chengchong-worker",
+            "agj_workbench_worker",
+            fingerprint,
+            "worker",
+            &["command", "file", "plugin", "port_bridge"],
+        );
+        approve_test_channel_node(
+            &test.store,
+            "chengchong-desktop",
+            "agj_workbench_desktop",
+            fingerprint,
+            "desktop",
+            &["desktop"],
+        );
+        approve_test_channel_node(
+            &test.store,
+            "chengchong-service",
+            "agj_workbench_service",
+            fingerprint,
+            "service",
+            &["service_bridge"],
+        );
+        approve_test_channel_node(
+            &test.store,
+            "chengchong-bridge",
+            "agj_workbench_bridge",
+            fingerprint,
+            "bridge",
+            &["port_bridge"],
+        );
+        approve_test_channel_node(
+            &test.store,
+            "chengchong-device",
+            "agj_workbench_device",
+            fingerprint,
+            "device",
+            &["serial", "flash", "hardware"],
+        );
+
+        let workbenches = test.store.list_workbenches().unwrap();
+        let workbench = workbenches
+            .iter()
+            .find(|item| item.pointer("/metadata/id").and_then(Value::as_str) == Some(fingerprint))
+            .expect("workbench exists");
+        assert_eq!(
+            workbench.pointer("/status/state").and_then(Value::as_str),
+            Some("online")
+        );
+        assert_eq!(
+            workbench
+                .pointer("/status/online_channels")
+                .and_then(Value::as_i64),
+            Some(5)
+        );
+        for role in ["worker", "desktop", "service", "bridge", "device"] {
+            assert!(
+                workbench
+                    .pointer(&format!("/spec/channels/{role}/metadata/id"))
+                    .and_then(Value::as_str)
+                    .is_some(),
+                "missing channel {role}"
+            );
+        }
+        let capabilities = workbench
+            .pointer("/spec/capabilities")
+            .and_then(Value::as_array)
+            .unwrap();
+        for capability in [
+            "command",
+            "desktop",
+            "service_bridge",
+            "port_bridge",
+            "serial",
+        ] {
+            assert!(
+                capabilities
+                    .iter()
+                    .any(|item| item.as_str() == Some(capability)),
+                "missing capability {capability}"
+            );
+        }
+        let one = test.store.get_workbench(fingerprint).unwrap().unwrap();
+        assert_eq!(
+            one.pointer("/metadata/id").and_then(Value::as_str),
+            Some(fingerprint)
+        );
+    }
+
+    #[test]
+    fn workbench_target_command_leases_worker_channel() {
+        let test = test_store();
+        let fingerprint = "fingerprint-workbench-command";
+        approve_test_channel_node(
+            &test.store,
+            "workbench-command-worker",
+            "agj_workbench_command_worker",
+            fingerprint,
+            "worker",
+            &["command", "file"],
+        );
+        approve_test_channel_node(
+            &test.store,
+            "workbench-command-desktop",
+            "agj_workbench_command_desktop",
+            fingerprint,
+            "desktop",
+            &["desktop"],
+        );
+        create_command_task_with_labels(
+            &test.store,
+            "task_workbench_command",
+            vec![
+                "compute",
+                "command",
+                "workbench:fingerprint-workbench-command",
+            ],
+        );
+
+        let desktop_lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": "workbench-command-desktop",
+                "join_token": "agj_workbench_command_desktop",
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["desktop"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("desktop lease response");
+        assert_eq!(
+            desktop_lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let worker_lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": "workbench-command-worker",
+                "join_token": "agj_workbench_command_worker",
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["command", "file"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("worker lease response");
+        let tasks = worker_lease
+            .pointer("/tasks")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0]
+                .pointer("/status/leased_by_node_id")
+                .and_then(Value::as_str),
+            Some("workbench-command-worker")
+        );
+    }
+
+    #[test]
+    fn workbench_target_desktop_leases_desktop_channel() {
+        let test = test_store();
+        let fingerprint = "fingerprint-workbench-desktop";
+        approve_test_channel_node(
+            &test.store,
+            "workbench-desktop-worker",
+            "agj_workbench_desktop_worker",
+            fingerprint,
+            "worker",
+            &["command", "file"],
+        );
+        approve_test_channel_node(
+            &test.store,
+            "workbench-desktop-helper",
+            "agj_workbench_desktop_helper",
+            fingerprint,
+            "desktop",
+            &["desktop"],
+        );
+        create_desktop_task_with_labels(
+            &test.store,
+            "task_workbench_desktop",
+            vec![
+                "compute",
+                "desktop",
+                "workbench:fingerprint-workbench-desktop",
+            ],
+        );
+
+        let worker_lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": "workbench-desktop-worker",
+                "join_token": "agj_workbench_desktop_worker",
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["command", "file"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("worker lease response");
+        assert_eq!(
+            worker_lease
+                .pointer("/tasks")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let desktop_lease = test
+            .store
+            .lease_tasks(json!({
+                "node_id": "workbench-desktop-helper",
+                "join_token": "agj_workbench_desktop_helper",
+                "machine_fingerprint": fingerprint,
+                "capabilities": ["desktop"],
+                "max_tasks": 1,
+                "lease_seconds": 60
+            }))
+            .expect("desktop lease response");
+        let tasks = desktop_lease
+            .pointer("/tasks")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0]
+                .pointer("/status/leased_by_node_id")
+                .and_then(Value::as_str),
+            Some("workbench-desktop-helper")
+        );
+    }
+
+    #[test]
+    fn workbench_target_rejects_missing_required_channel() {
+        let test = test_store();
+        let fingerprint = "fingerprint-workbench-no-desktop";
+        approve_test_channel_node(
+            &test.store,
+            "workbench-no-desktop-worker",
+            "agj_workbench_no_desktop_worker",
+            fingerprint,
+            "worker",
+            &["command", "file"],
+        );
+
+        let payload = json!({
+            "type": "desktop",
+            "operation": "screenshot",
+            "path": null,
+            "timeout_seconds": 30
+        });
+        let result = test.store.create_task(json!({
+            "id": "task_workbench_missing_desktop",
+            "title": "Missing desktop channel",
+            "summary": "Workbench task should reject missing desktop helper",
+            "created_by": "test-agent",
+            "owner": "worker-agent",
+            "assigned_to": ["worker-agent"],
+            "priority": "normal",
+            "labels": ["compute", "desktop", "workbench:fingerprint-workbench-no-desktop"],
+            "inputs": [serde_json::to_string_pretty(&payload).unwrap()],
+            "outputs": ["screenshot"],
+            "acceptance_criteria": ["Hub rejects missing channel"]
+        }));
+        let error = match result {
+            Ok(_) => panic!("missing desktop channel must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("does not have an online desktop channel"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn workbench_and_node_target_must_match_same_physical_machine() {
+        let test = test_store();
+        approve_test_channel_node(
+            &test.store,
+            "worker-on-first-workbench",
+            "agj_first_workbench_worker",
+            "fingerprint-first-workbench",
+            "worker",
+            &["command"],
+        );
+        approve_test_channel_node(
+            &test.store,
+            "worker-on-second-workbench",
+            "agj_second_workbench_worker",
+            "fingerprint-second-workbench",
+            "worker",
+            &["command"],
+        );
+
+        let payload = json!({
+            "type": "command",
+            "program": "hostname",
+            "args": [],
+            "working_dir": null,
+            "timeout_seconds": 30
+        });
+        let result = test.store.create_task(json!({
+            "id": "task_workbench_node_mismatch",
+            "title": "Mismatch workbench and node",
+            "summary": "Workbench and node constraints must describe the same machine",
+            "created_by": "test-agent",
+            "owner": "worker-agent",
+            "assigned_to": ["worker-agent"],
+            "priority": "normal",
+            "labels": [
+                "compute",
+                "command",
+                "node:worker-on-first-workbench",
+                "workbench:fingerprint-second-workbench"
+            ],
+            "inputs": [serde_json::to_string_pretty(&payload).unwrap()],
+            "outputs": ["stdout"],
+            "acceptance_criteria": ["Hub rejects contradictory target constraints"]
+        }));
+        let error = match result {
+            Ok(_) => panic!("mismatched node/workbench must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("task target mismatch"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn service_bridge_device_channels_cannot_lease_background_tasks() {
+        let test = test_store();
+        for (node_id, token, role, capabilities) in [
+            (
+                "service-channel",
+                "agj_service_channel",
+                "service",
+                vec!["service_bridge"],
+            ),
+            (
+                "bridge-channel",
+                "agj_bridge_channel",
+                "bridge",
+                vec!["port_bridge"],
+            ),
+            (
+                "device-channel",
+                "agj_device_channel",
+                "device",
+                vec!["serial"],
+            ),
+        ] {
+            approve_test_channel_node(
+                &test.store,
+                node_id,
+                token,
+                &format!("fingerprint-{node_id}"),
+                role,
+                &capabilities,
+            );
+            create_command_task(&test.store, &format!("task_for_{node_id}"));
+
+            let lease = test
+                .store
+                .lease_tasks(json!({
+                    "node_id": node_id,
+                    "join_token": token,
+                    "machine_fingerprint": format!("fingerprint-{node_id}"),
+                    "capabilities": capabilities,
+                    "max_tasks": 1,
+                    "lease_seconds": 60
+                }))
+                .expect("channel lease response");
+
+            assert_eq!(
+                lease
+                    .pointer("/tasks")
+                    .and_then(Value::as_array)
+                    .unwrap()
+                    .len(),
+                0,
+                "{role} channel should not lease background tasks"
+            );
+        }
     }
 
     #[test]

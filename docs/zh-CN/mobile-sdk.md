@@ -32,6 +32,19 @@ Mobile SDK 不是：
 | iOS | Swift | `sdk/mobile/ios/agentgrid-mobile-sdk-swift` | iOS 15 |
 | Android | Kotlin | `sdk/mobile/android/agentgrid-mobile-sdk-kotlin` | Android API 23 |
 
+实际安装到 iPhone 的 AgentGrid App 在：
+
+```text
+apps/agentgrid-mobile-ios
+```
+
+iOS App 开发、真机构建、安装和 Codex 项目选择经验见：
+
+```text
+apps/agentgrid-mobile-ios/README.md
+docs/zh-CN/mobile-ios-app-development.md
+```
+
 默认 Hub：
 
 ```text
@@ -140,6 +153,8 @@ val tools = client.tools()
 - `runtimeStandard()`
 - `mobileSdkStandard()`
 - `workbenches()`
+- `workbench(workbenchID/workbenchId)`
+- `workbenchTimeline(workbenchID/workbenchId)`
 - `devices()`
 - `evidenceStandard()`
 - `nodes()`
@@ -148,6 +163,8 @@ val tools = client.tools()
 任务和证据：
 
 - `submitTask(request)`
+- `runCommand(program, args, nodeID/nodeId, workbenchID/workbenchId, title)`
+- `runPlugin(pluginID/pluginId, action, input, nodeID/nodeId, workbenchID/workbenchId, title)`
 - `getTask(taskID/taskId)`
 - `taskEvents(taskID/taskId)`
 - `executionRecord(taskID/taskId)`

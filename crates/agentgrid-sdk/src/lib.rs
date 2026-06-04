@@ -33,6 +33,26 @@ impl AgentGridClient {
         self.get("/api/tools")
     }
 
+    pub fn tool_probe_center(&self) -> Result<Value> {
+        self.get("/api/tools/probe-center")
+    }
+
+    pub fn tool_probes(&self) -> Result<Value> {
+        self.get("/api/tools/probes")
+    }
+
+    pub fn probe_tool(&self, tool_id: Option<&str>, node_id: Option<&str>) -> Result<Value> {
+        match (tool_id, node_id) {
+            (Some(tool_id), Some(node_id)) => self.post(
+                &format!("/api/tools/{tool_id}/nodes/{node_id}/probe"),
+                json!({}),
+            ),
+            (Some(tool_id), None) => self.post(&format!("/api/tools/{tool_id}/probe"), json!({})),
+            (None, None) => self.post("/api/tools/probe", json!({})),
+            (None, Some(_)) => anyhow::bail!("node_id requires tool_id"),
+        }
+    }
+
     pub fn runtime_standard(&self) -> Result<Value> {
         self.get("/api/runtime-standard")
     }
@@ -42,7 +62,19 @@ impl AgentGridClient {
     }
 
     pub fn workbenches(&self) -> Result<Value> {
-        self.get("/api/runtime-standard/workbench")
+        self.get("/api/workbenches")
+    }
+
+    pub fn workbench(&self, workbench_id: &str) -> Result<Value> {
+        self.get(&format!("/api/workbenches/{workbench_id}"))
+    }
+
+    pub fn workbench_timeline(&self, workbench_id: &str) -> Result<Value> {
+        self.get(&format!("/api/workbenches/{workbench_id}/timeline"))
+    }
+
+    pub fn workbench_action(&self, workbench_id: &str, request: Value) -> Result<Value> {
+        self.post(&format!("/api/workbenches/{workbench_id}/actions"), request)
     }
 
     pub fn devices(&self) -> Result<Value> {
@@ -106,6 +138,7 @@ impl AgentGridClient {
         program: &str,
         args: Vec<String>,
         node_id: Option<String>,
+        workbench_id: Option<String>,
         title: Option<String>,
     ) -> Result<Value> {
         let mut request = json!({
@@ -123,6 +156,9 @@ impl AgentGridClient {
         if let Some(node_id) = node_id {
             request["node_id"] = json!(node_id);
         }
+        if let Some(workbench_id) = workbench_id {
+            request["workbench_id"] = json!(workbench_id);
+        }
         self.submit_runtime_task(request)
     }
 
@@ -132,6 +168,7 @@ impl AgentGridClient {
         action: &str,
         input: Value,
         node_id: Option<String>,
+        workbench_id: Option<String>,
         title: Option<String>,
     ) -> Result<Value> {
         let mut request = json!({
@@ -148,6 +185,9 @@ impl AgentGridClient {
         });
         if let Some(node_id) = node_id {
             request["node_id"] = json!(node_id);
+        }
+        if let Some(workbench_id) = workbench_id {
+            request["workbench_id"] = json!(workbench_id);
         }
         self.submit_runtime_task(request)
     }

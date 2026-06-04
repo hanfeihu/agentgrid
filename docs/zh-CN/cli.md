@@ -5,7 +5,7 @@
 默认连接：
 
 ```text
-http://127.0.0.1:20181
+http://chenqi.tminos.com:20080/agentgrid
 ```
 
 指定 Hub：
@@ -19,6 +19,7 @@ agentgrid --hub https://hub.example.com/agentgrid <command>
 ```bash
 agentgrid health
 agentgrid nodes
+agentgrid workbench list
 agentgrid capabilities
 agentgrid tools
 agentgrid node-tools
@@ -45,6 +46,15 @@ agentgrid submit-command \
   --wait
 ```
 
+投递到一台物理电脑/工位。Hub 会自动选择后台 Worker 通道：
+
+```bash
+agentgrid submit-command \
+  --program hostname \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
+```
+
 文件列表：
 
 ```bash
@@ -55,6 +65,69 @@ agentgrid submit-file \
   --max-entries 100 \
   --wait
 ```
+
+## Workbench / 电脑操作
+
+当一次操作属于某台真实电脑或工位时，优先使用 `workbench`。Hub 会自动选择正确的能力通道。
+
+```bash
+agentgrid workbench list
+agentgrid workbench get --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece
+agentgrid workbench timeline --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece
+```
+
+```bash
+agentgrid workbench command \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --program hostname \
+  --wait
+```
+
+```bash
+agentgrid workbench screenshot \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
+```
+
+```bash
+agentgrid workbench file \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --operation list \
+  --path "C:\\" \
+  --max-entries 200 \
+  --wait
+```
+
+```bash
+agentgrid workbench runtime \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --tool audio.tts.clone \
+  --payload-file payload.json \
+  --wait
+```
+
+```bash
+agentgrid workbench action \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --action command.run \
+  --payload '{"program":"hostname","args":[],"timeout_seconds":30}' \
+  --wait
+```
+
+```bash
+agentgrid workbench action \
+  --id source_workbench_id \
+  --action port_bridge.create \
+  --payload '{"target_workbench_id":"target_workbench_id","target_port":8888,"source_bind_port":9999}'
+```
+
+路由规则：
+
+- 命令、文件、Runtime 工具任务走后台 `worker` 通道。
+- 截屏任务走 `desktop` 通道。
+- `workbench timeline` 可以查看这台物理电脑的操作记录。
+- `workbench action` 是面向 AI 和 SDK 的标准入口：
+  `workbench_id + action + payload`。
 
 Git：
 
@@ -91,6 +164,14 @@ agentgrid submit-browser \
 ```bash
 agentgrid submit-desktop-screenshot \
   --node windows-worker-01-desktop \
+  --wait
+```
+
+按工位截图。Hub 会自动选择 Desktop Helper 通道：
+
+```bash
+agentgrid submit-desktop-screenshot \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
   --wait
 ```
 
@@ -140,6 +221,23 @@ agentgrid submit-agent-message \
 agentgrid submit-plugin \
   --plugin-id demo.hello \
   --input '{"name":"AgentGrid"}' \
+  --wait
+```
+
+在 Windows PowerShell、CI 脚本、AI 客户端里，不建议硬拼 JSON 引号。
+可以用文件、stdin 或 base64 提交结构化 JSON：
+
+```bash
+agentgrid submit-plugin \
+  --plugin-id demo.hello \
+  --input-file payload.json \
+  --wait
+```
+
+```bash
+printf '%s\n' '{"name":"AgentGrid"}' | agentgrid submit-plugin \
+  --plugin-id demo.hello \
+  --input-stdin \
   --wait
 ```
 
@@ -194,11 +292,23 @@ agentgrid jobs recovery-scan
 ## 节点工具
 
 ```bash
+agentgrid tools probe-center
+agentgrid tools probes
+agentgrid tools probe --id command.run --node linux-worker-01
 agentgrid node-tools
 agentgrid node-tools get --id demo.hello
 agentgrid node-tools node --node linux-worker-01
 agentgrid node-tools register --node linux-worker-01 --file node-tool.json
 agentgrid node-tools probe --id demo.hello --node linux-worker-01
+```
+
+`tools probe-center` 是能力验证中心，适合 AI 和人先判断“哪个工具在哪台电脑上真的可用”；`node-tools` 是节点动态插件工具注册中心。
+
+示例：查看并验证 `jia-node` 上的 TTS 语音克隆工具：
+
+```bash
+agentgrid node-tools get --id audio.tts.clone
+agentgrid node-tools probe --id audio.tts.clone --node jia-node
 ```
 
 ## Runtime API
@@ -211,6 +321,67 @@ agentgrid runtime submit \
   --wait
 agentgrid runtime get --id task_xxx
 ```
+
+稳定的 Runtime payload 入口：
+
+```bash
+agentgrid runtime submit \
+  --tool audio.tts.clone \
+  --workbench jia-node \
+  --payload-file payload.json \
+  --wait
+```
+
+```bash
+cat payload.json | agentgrid runtime submit \
+  --tool audio.tts.clone \
+  --workbench jia-node \
+  --payload-stdin \
+  --wait
+```
+
+```bash
+agentgrid runtime submit \
+  --tool audio.tts.clone \
+  --workbench jia-node \
+  --payload-base64 eyJ0ZXh0IjoiSGVsbG8iLCJ0aW1lb3V0X3NlY29uZHMiOjYwMH0= \
+  --wait
+```
+
+`agentgrid jobs plan` 和 `agentgrid jobs submit` 也支持同一套
+`--payload`、`--payload-file`、`--payload-stdin`、`--payload-base64` 标准。
+
+`--workbench` 表示一台物理电脑/工位，`--node` 表示一个精确的
+AgentGrid 通道。面向用户和 AI 的调用优先使用 `--workbench`。
+
+## 普通 Worker / Desktop Helper 边界
+
+一台物理电脑可以暴露两个 AgentGrid 能力通道：
+
+| 通道 | 节点示例 | 用途 |
+| --- | --- | --- |
+| 后台 Worker | `CHENGCHONG-windows` | 命令、文件、软件安装、Git、Docker、会话、插件、Hub API 调用 |
+| Desktop Helper | `CHENGCHONG-windows-desktop` | 截图、点击、输入、按键、前台桌面控制 |
+
+不要把命令、文件、软件安装、插件任务交给 Desktop Helper。不要把可见桌面操作交给普通 Worker。Hub 调度器会强制执行这个通道边界。
+
+向 `jia-node` 提交语音克隆合成任务：
+
+```bash
+agentgrid runtime submit \
+  --tool audio.tts.clone \
+  --node jia-node \
+  --title "生成克隆音色语音" \
+  --payload '{"text":"AgentGrid 可以调度 jia 节点生成语音。","timeout_seconds":600}' \
+  --wait \
+  --wait-timeout-seconds 900
+```
+
+可选字段包括 `reference_audio_path`、`reference_audio_base64`、
+`emotion_mode`、`emotion_audio_path`、`emotion_audio_base64`、
+`emotion_weight`、`happy`、`angry`、`sad`、`afraid`、`disgusted`、
+`melancholic`、`surprised`、`calm`、`output_dir`，以及 `top_p`、
+`top_k`、`temperature`、`max_mel_tokens` 等生成参数。
 
 ## 节点端口桥接
 

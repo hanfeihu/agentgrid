@@ -42,6 +42,7 @@ pub struct JobRequirements {
     pub memory_mb: Option<u64>,
     pub disk_free_mb: Option<u64>,
     pub node_id: Option<String>,
+    pub workbench_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +322,7 @@ pub enum JobResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: String,
+    pub physical_host_id: String,
     pub name: String,
     pub os: String,
     pub arch: String,

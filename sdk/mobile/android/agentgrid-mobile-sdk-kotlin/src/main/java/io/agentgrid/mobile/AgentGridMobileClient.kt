@@ -22,7 +22,13 @@ class AgentGridMobileClient(
 
     suspend fun mobileSdkStandard(): JSONObject = get("/api/runtime-standard/mobile-sdk")
 
-    suspend fun workbenches(): JSONObject = get("/api/runtime-standard/workbench")
+    suspend fun workbenches(): JSONObject = get("/api/workbenches")
+
+    suspend fun workbench(workbenchId: String): JSONObject =
+        get("/api/workbenches/${urlEncode(workbenchId)}")
+
+    suspend fun workbenchTimeline(workbenchId: String): JSONObject =
+        get("/api/workbenches/${urlEncode(workbenchId)}/timeline")
 
     suspend fun devices(): JSONObject = get("/api/runtime-standard/devices")
 
@@ -91,6 +97,61 @@ class AgentGridMobileClient(
 
     suspend fun submitTask(request: JSONObject): JSONObject =
         post("/api/agent-runtime/tasks", request)
+
+    suspend fun runCommand(
+        program: String,
+        args: List<String> = emptyList(),
+        nodeId: String? = null,
+        workbenchId: String? = null,
+        title: String? = null,
+    ): JSONObject {
+        val payload = JSONObject()
+            .put("type", "command")
+            .put("program", program)
+            .put("args", org.json.JSONArray(args))
+            .put("working_dir", JSONObject.NULL)
+            .put("timeout_seconds", 30)
+        val body = JSONObject()
+            .put("tool_id", "command.run")
+            .put("title", title ?: "command $program")
+            .put("payload", payload)
+            .put("verify", JSONObject().put("presets", org.json.JSONArray(listOf("command.exit_zero"))))
+        nodeId?.let { body.put("node_id", it) }
+        workbenchId?.let { body.put("workbench_id", it) }
+        return submitTask(body)
+    }
+
+    suspend fun runPlugin(
+        pluginId: String,
+        action: String = "run",
+        input: JSONObject = JSONObject(),
+        nodeId: String? = null,
+        workbenchId: String? = null,
+        title: String? = null,
+    ): JSONObject {
+        val payload = JSONObject()
+            .put("type", "plugin")
+            .put("plugin_id", pluginId)
+            .put("action", action)
+            .put("input", input)
+            .put("timeout_seconds", 60)
+        val body = JSONObject()
+            .put("tool_id", "plugin.run")
+            .put("title", title ?: "plugin $pluginId:$action")
+            .put("payload", payload)
+            .put(
+                "verify",
+                JSONObject().put(
+                    "rules",
+                    org.json.JSONArray(
+                        listOf(JSONObject().put("path", "result.output").put("op", "exists")),
+                    ),
+                ),
+            )
+        nodeId?.let { body.put("node_id", it) }
+        workbenchId?.let { body.put("workbench_id", it) }
+        return submitTask(body)
+    }
 
     suspend fun getTask(taskId: String): JSONObject =
         get("/api/agent-runtime/tasks/$taskId")
@@ -175,4 +236,7 @@ class AgentGridMobileClient(
         }
         return URL("$baseUrl/${path.trimStart('/')}")
     }
+
+    private fun urlEncode(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name())
 }

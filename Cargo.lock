@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "agentgrid-protocol",
  "anyhow",
+ "base64",
  "clap",
  "reqwest",
  "serde_json",

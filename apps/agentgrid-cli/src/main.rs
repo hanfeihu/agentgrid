@@ -1,6 +1,12 @@
-use std::{fs, thread, time::Duration};
+use std::{
+    fs,
+    io::{self, Read},
+    thread,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
@@ -28,6 +34,10 @@ enum Commands {
     Nodes {
         #[command(subcommand)]
         command: Option<NodeCommands>,
+    },
+    Workbench {
+        #[command(subcommand)]
+        command: Option<WorkbenchCommands>,
     },
     NodeTools {
         #[command(subcommand)]
@@ -112,6 +122,12 @@ enum Commands {
         timeout_seconds: u64,
         #[arg(long, default_value_t = 65536)]
         max_response_bytes: u64,
+        #[arg(long = "node")]
+        node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
+        #[arg(long = "os")]
+        os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
         created_by: String,
         #[arg(long, default_value = "worker-agent")]
@@ -146,6 +162,8 @@ enum Commands {
         timeout_seconds: u64,
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long = "os")]
         os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
@@ -222,6 +240,8 @@ enum Commands {
         max_entries: Option<u64>,
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long = "os")]
         os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
@@ -256,6 +276,8 @@ enum Commands {
         depth: Option<u32>,
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long = "os")]
         os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
@@ -284,6 +306,8 @@ enum Commands {
         timeout_seconds: u64,
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long = "os")]
         os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
@@ -312,6 +336,8 @@ enum Commands {
         max_response_bytes: u64,
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long = "os")]
         os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
@@ -332,6 +358,8 @@ enum Commands {
     SubmitDesktopScreenshot {
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long)]
         path: Option<String>,
         #[arg(long, default_value_t = 30)]
@@ -354,6 +382,8 @@ enum Commands {
     SubmitDesktopClick {
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long)]
         x: i32,
         #[arg(long)]
@@ -380,6 +410,8 @@ enum Commands {
     SubmitDesktopTypeText {
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long)]
         text: String,
         #[arg(long)]
@@ -404,6 +436,8 @@ enum Commands {
     SubmitDesktopKey {
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long)]
         key: String,
         #[arg(long = "modifier")]
@@ -440,6 +474,8 @@ enum Commands {
         payload: Option<String>,
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long = "os")]
         os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
@@ -462,12 +498,20 @@ enum Commands {
         plugin_id: String,
         #[arg(long, default_value = "run")]
         action: String,
-        #[arg(long, default_value = "{}")]
-        input: String,
+        #[arg(long, conflicts_with_all = ["input_file", "input_stdin", "input_base64"])]
+        input: Option<String>,
+        #[arg(long = "input-file", conflicts_with_all = ["input", "input_stdin", "input_base64"])]
+        input_file: Option<String>,
+        #[arg(long = "input-stdin", default_value_t = false, conflicts_with_all = ["input", "input_file", "input_base64"])]
+        input_stdin: bool,
+        #[arg(long = "input-base64", conflicts_with_all = ["input", "input_file", "input_stdin"])]
+        input_base64: Option<String>,
         #[arg(long, default_value_t = 60)]
         timeout_seconds: u64,
         #[arg(long = "node")]
         node_id: Option<String>,
+        #[arg(long = "workbench")]
+        workbench_id: Option<String>,
         #[arg(long = "os")]
         os: Option<String>,
         #[arg(long, default_value = "architect-agent")]
@@ -516,6 +560,12 @@ enum TaskCommands {
         #[arg(long, default_value_t = 300)]
         timeout_seconds: u64,
     },
+    Cancel {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = "任务已取消")]
+        reason: String,
+    },
     Explain {
         #[arg(long)]
         id: String,
@@ -537,12 +587,20 @@ enum JobCommands {
     Plan {
         #[arg(long)]
         tool: String,
-        #[arg(long)]
-        payload: String,
+        #[arg(long, conflicts_with_all = ["payload_file", "payload_stdin", "payload_base64"])]
+        payload: Option<String>,
+        #[arg(long = "payload-file", conflicts_with_all = ["payload", "payload_stdin", "payload_base64"])]
+        payload_file: Option<String>,
+        #[arg(long = "payload-stdin", default_value_t = false, conflicts_with_all = ["payload", "payload_file", "payload_base64"])]
+        payload_stdin: bool,
+        #[arg(long = "payload-base64", conflicts_with_all = ["payload", "payload_file", "payload_stdin"])]
+        payload_base64: Option<String>,
         #[arg(long, default_value = "Job dry-run")]
         title: String,
         #[arg(long)]
         node: Option<String>,
+        #[arg(long)]
+        workbench: Option<String>,
         #[arg(long)]
         os: Option<String>,
         #[arg(long, default_value_t = 3)]
@@ -563,12 +621,20 @@ enum JobCommands {
     Submit {
         #[arg(long)]
         tool: String,
-        #[arg(long)]
-        payload: String,
+        #[arg(long, conflicts_with_all = ["payload_file", "payload_stdin", "payload_base64"])]
+        payload: Option<String>,
+        #[arg(long = "payload-file", conflicts_with_all = ["payload", "payload_stdin", "payload_base64"])]
+        payload_file: Option<String>,
+        #[arg(long = "payload-stdin", default_value_t = false, conflicts_with_all = ["payload", "payload_file", "payload_base64"])]
+        payload_stdin: bool,
+        #[arg(long = "payload-base64", conflicts_with_all = ["payload", "payload_file", "payload_stdin"])]
+        payload_base64: Option<String>,
         #[arg(long)]
         title: String,
         #[arg(long)]
         node: Option<String>,
+        #[arg(long)]
+        workbench: Option<String>,
         #[arg(long)]
         os: Option<String>,
         #[arg(long, default_value_t = 3)]
@@ -626,6 +692,127 @@ enum NodeCommands {
     Get {
         #[arg(long)]
         id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkbenchCommands {
+    List,
+    Get {
+        #[arg(long)]
+        id: String,
+    },
+    Timeline {
+        #[arg(long)]
+        id: String,
+    },
+    Command {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        program: String,
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        #[arg(long)]
+        working_dir: Option<String>,
+        #[arg(long, default_value_t = 30)]
+        timeout_seconds: u64,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value_t = false)]
+        wait: bool,
+        #[arg(long, default_value_t = 300)]
+        wait_timeout_seconds: u64,
+        #[arg(long, default_value = "text")]
+        output: String,
+    },
+    Screenshot {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, default_value_t = 30)]
+        timeout_seconds: u64,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value_t = false)]
+        wait: bool,
+        #[arg(long, default_value_t = 300)]
+        wait_timeout_seconds: u64,
+        #[arg(long, default_value = "text")]
+        output: String,
+    },
+    File {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        operation: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        content: Option<String>,
+        #[arg(long, default_value_t = false)]
+        append: bool,
+        #[arg(long, default_value_t = true)]
+        create_dirs: bool,
+        #[arg(long, default_value_t = false)]
+        recursive: bool,
+        #[arg(long)]
+        max_bytes: Option<u64>,
+        #[arg(long)]
+        max_entries: Option<u64>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value_t = false)]
+        wait: bool,
+        #[arg(long, default_value_t = 300)]
+        wait_timeout_seconds: u64,
+        #[arg(long, default_value = "text")]
+        output: String,
+    },
+    Runtime {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        tool: String,
+        #[arg(long, conflicts_with_all = ["payload_file", "payload_stdin", "payload_base64"])]
+        payload: Option<String>,
+        #[arg(long = "payload-file", conflicts_with_all = ["payload", "payload_stdin", "payload_base64"])]
+        payload_file: Option<String>,
+        #[arg(long = "payload-stdin", default_value_t = false, conflicts_with_all = ["payload", "payload_file", "payload_base64"])]
+        payload_stdin: bool,
+        #[arg(long = "payload-base64", conflicts_with_all = ["payload", "payload_file", "payload_stdin"])]
+        payload_base64: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value_t = false)]
+        wait: bool,
+        #[arg(long, default_value_t = 300)]
+        wait_timeout_seconds: u64,
+        #[arg(long, default_value = "text")]
+        output: String,
+    },
+    Action {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long, conflicts_with_all = ["payload_file", "payload_stdin", "payload_base64"])]
+        payload: Option<String>,
+        #[arg(long = "payload-file", conflicts_with_all = ["payload", "payload_stdin", "payload_base64"])]
+        payload_file: Option<String>,
+        #[arg(long = "payload-stdin", default_value_t = false, conflicts_with_all = ["payload", "payload_file", "payload_base64"])]
+        payload_stdin: bool,
+        #[arg(long = "payload-base64", conflicts_with_all = ["payload", "payload_file", "payload_stdin"])]
+        payload_base64: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value_t = false)]
+        wait: bool,
+        #[arg(long, default_value_t = 300)]
+        wait_timeout_seconds: u64,
+        #[arg(long, default_value = "text")]
+        output: String,
     },
 }
 
@@ -705,6 +892,7 @@ enum WorkflowCommands {
 #[derive(Debug, Subcommand)]
 enum ToolCommands {
     List,
+    ProbeCenter,
     Get {
         #[arg(long)]
         id: String,
@@ -752,12 +940,20 @@ enum RuntimeCommands {
     Submit {
         #[arg(long)]
         tool: String,
-        #[arg(long)]
-        payload: String,
+        #[arg(long, conflicts_with_all = ["payload_file", "payload_stdin", "payload_base64"])]
+        payload: Option<String>,
+        #[arg(long = "payload-file", conflicts_with_all = ["payload", "payload_stdin", "payload_base64"])]
+        payload_file: Option<String>,
+        #[arg(long = "payload-stdin", default_value_t = false, conflicts_with_all = ["payload", "payload_file", "payload_base64"])]
+        payload_stdin: bool,
+        #[arg(long = "payload-base64", conflicts_with_all = ["payload", "payload_file", "payload_stdin"])]
+        payload_base64: Option<String>,
         #[arg(long)]
         title: Option<String>,
         #[arg(long)]
         node: Option<String>,
+        #[arg(long)]
+        workbench: Option<String>,
         #[arg(long)]
         os: Option<String>,
         #[arg(long)]
@@ -916,6 +1112,204 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&node)?);
             }
         },
+        Commands::Workbench { command } => match command.unwrap_or(WorkbenchCommands::List) {
+            WorkbenchCommands::List => print_json(
+                client
+                    .get(format!("{base}/api/workbenches"))
+                    .send()?
+                    .text()?,
+            ),
+            WorkbenchCommands::Get { id } => print_json(
+                client
+                    .get(format!("{base}/api/workbenches/{id}"))
+                    .send()?
+                    .text()?,
+            ),
+            WorkbenchCommands::Timeline { id } => print_json(
+                client
+                    .get(format!("{base}/api/workbenches/{id}/timeline"))
+                    .send()?
+                    .text()?,
+            ),
+            WorkbenchCommands::Command {
+                id,
+                program,
+                args,
+                working_dir,
+                timeout_seconds,
+                title,
+                wait,
+                wait_timeout_seconds,
+                output,
+            } => {
+                let payload = serde_json::json!({
+                    "program": program,
+                    "args": args,
+                    "working_dir": working_dir,
+                    "timeout_seconds": timeout_seconds
+                });
+                let task_title = title.unwrap_or_else(|| {
+                    format!("{} 执行 {}", id, payload["program"].as_str().unwrap_or(""))
+                });
+                submit_workbench_action(
+                    &client,
+                    base,
+                    id,
+                    "command.run".to_string(),
+                    payload,
+                    task_title,
+                    wait,
+                    wait_timeout_seconds,
+                    &output,
+                )?;
+            }
+            WorkbenchCommands::Screenshot {
+                id,
+                path,
+                timeout_seconds,
+                title,
+                wait,
+                wait_timeout_seconds,
+                output,
+            } => {
+                let payload = serde_json::json!({
+                    "operation": "screenshot",
+                    "path": path,
+                    "timeout_seconds": timeout_seconds
+                });
+                let task_title = title.unwrap_or_else(|| format!("{id} 截取桌面"));
+                submit_workbench_action(
+                    &client,
+                    base,
+                    id,
+                    "desktop.screenshot".to_string(),
+                    payload,
+                    task_title,
+                    wait,
+                    wait_timeout_seconds,
+                    &output,
+                )?;
+            }
+            WorkbenchCommands::File {
+                id,
+                operation,
+                path,
+                content,
+                append,
+                create_dirs,
+                recursive,
+                max_bytes,
+                max_entries,
+                title,
+                wait,
+                wait_timeout_seconds,
+                output,
+            } => {
+                let payload = file_task_payload(
+                    &operation,
+                    path,
+                    content,
+                    append,
+                    create_dirs,
+                    recursive,
+                    max_bytes,
+                    max_entries,
+                )?;
+                let task_title = title.unwrap_or_else(|| {
+                    format!(
+                        "{} 文件任务 {} {}",
+                        id,
+                        operation,
+                        payload["path"].as_str().unwrap_or("")
+                    )
+                });
+                submit_workbench_action(
+                    &client,
+                    base,
+                    id,
+                    format!("file.{operation}"),
+                    payload,
+                    task_title,
+                    wait,
+                    wait_timeout_seconds,
+                    &output,
+                )?;
+            }
+            WorkbenchCommands::Runtime {
+                id,
+                tool,
+                payload,
+                payload_file,
+                payload_stdin,
+                payload_base64,
+                title,
+                wait,
+                wait_timeout_seconds,
+                output,
+            } => {
+                let payload = read_json_payload(
+                    "--payload",
+                    payload,
+                    payload_file,
+                    payload_stdin,
+                    payload_base64,
+                    Some(serde_json::json!({})),
+                )?;
+                let body = serde_json::json!({
+                    "action": "runtime.submit",
+                    "payload": {
+                        "tool_id": tool,
+                        "payload": payload
+                    },
+                    "title": title,
+                    "created_by": "workbench-cli"
+                });
+                handle_workbench_action_response(
+                    &client,
+                    base,
+                    client
+                        .post(format!("{base}/api/workbenches/{id}/actions"))
+                        .json(&body)
+                        .send()?
+                        .text()?,
+                    wait,
+                    wait_timeout_seconds,
+                    &output,
+                )?;
+            }
+            WorkbenchCommands::Action {
+                id,
+                action,
+                payload,
+                payload_file,
+                payload_stdin,
+                payload_base64,
+                title,
+                wait,
+                wait_timeout_seconds,
+                output,
+            } => {
+                let payload = read_json_payload(
+                    "--payload",
+                    payload,
+                    payload_file,
+                    payload_stdin,
+                    payload_base64,
+                    Some(serde_json::json!({})),
+                )?;
+                submit_workbench_action(
+                    &client,
+                    base,
+                    id,
+                    action,
+                    payload,
+                    title.unwrap_or_else(|| "Workbench Action".to_string()),
+                    wait,
+                    wait_timeout_seconds,
+                    &output,
+                )?;
+            }
+        },
         Commands::NodeTools { command } => match command.unwrap_or(NodeToolCommands::List) {
             NodeToolCommands::List => print_json(
                 client
@@ -996,6 +1390,12 @@ fn main() -> Result<()> {
             ToolCommands::List => {
                 print_json(client.get(format!("{base}/api/tools")).send()?.text()?)
             }
+            ToolCommands::ProbeCenter => print_json(
+                client
+                    .get(format!("{base}/api/tools/probe-center"))
+                    .send()?
+                    .text()?,
+            ),
             ToolCommands::Get { id } => print_json(
                 client
                     .get(format!("{base}/api/tools/{id}"))
@@ -1045,6 +1445,17 @@ fn main() -> Result<()> {
                 let snapshot = watch_task(&client, base, &id, timeout_seconds)?;
                 print_task_summary(&snapshot, "text");
             }
+            TaskCommands::Cancel { id, reason } => print_json(
+                client
+                    .post(format!("{base}/api/tasks/{id}/control"))
+                    .json(&serde_json::json!({
+                        "action": "cancel",
+                        "actor": "agentgrid-cli",
+                        "reason": reason
+                    }))
+                    .send()?
+                    .text()?,
+            ),
             TaskCommands::Explain { id } => print_json(
                 client
                     .get(format!("{base}/api/tasks/{id}/schedule-preview"))
@@ -1072,8 +1483,12 @@ fn main() -> Result<()> {
             JobCommands::Plan {
                 tool,
                 payload,
+                payload_file,
+                payload_stdin,
+                payload_base64,
                 title,
                 node,
+                workbench,
                 os,
                 max_attempts,
                 shards,
@@ -1083,8 +1498,14 @@ fn main() -> Result<()> {
                 partition_range,
                 idempotency_key,
             } => {
-                let payload: Value = serde_json::from_str(&payload)
-                    .with_context(|| "--payload must be valid JSON")?;
+                let payload = read_json_payload(
+                    "--payload",
+                    payload,
+                    payload_file,
+                    payload_stdin,
+                    payload_base64,
+                    Some(serde_json::json!({})),
+                )?;
                 let partition = job_partition_payload(partition_items, partition_range)?;
                 print_json(
                     client
@@ -1094,6 +1515,7 @@ fn main() -> Result<()> {
                             title,
                             payload,
                             node,
+                            workbench,
                             os,
                             max_attempts,
                             shards,
@@ -1109,8 +1531,12 @@ fn main() -> Result<()> {
             JobCommands::Submit {
                 tool,
                 payload,
+                payload_file,
+                payload_stdin,
+                payload_base64,
                 title,
                 node,
+                workbench,
                 os,
                 max_attempts,
                 shards,
@@ -1122,8 +1548,14 @@ fn main() -> Result<()> {
                 wait,
                 wait_timeout_seconds,
             } => {
-                let payload: Value = serde_json::from_str(&payload)
-                    .with_context(|| "--payload must be valid JSON")?;
+                let payload = read_json_payload(
+                    "--payload",
+                    payload,
+                    payload_file,
+                    payload_stdin,
+                    payload_base64,
+                    Some(serde_json::json!({})),
+                )?;
                 let partition = job_partition_payload(partition_items, partition_range)?;
                 let raw = client
                     .post(format!("{base}/api/jobs"))
@@ -1132,6 +1564,7 @@ fn main() -> Result<()> {
                         title,
                         payload,
                         node,
+                        workbench,
                         os,
                         max_attempts,
                         shards,
@@ -1318,22 +1751,33 @@ fn main() -> Result<()> {
             RuntimeCommands::Submit {
                 tool,
                 payload,
+                payload_file,
+                payload_stdin,
+                payload_base64,
                 title,
                 node,
+                workbench,
                 os,
                 verify_json,
                 wait,
                 wait_timeout_seconds,
                 output,
             } => {
-                let payload: Value = serde_json::from_str(&payload)
-                    .with_context(|| "--payload must be valid JSON")?;
+                let payload = read_json_payload(
+                    "--payload",
+                    payload,
+                    payload_file,
+                    payload_stdin,
+                    payload_base64,
+                    Some(serde_json::json!({})),
+                )?;
                 let verify = parse_verify_json(verify_json)?;
                 let mut body = serde_json::json!({
                     "tool_id": tool,
                     "payload": payload,
                     "title": title,
                     "node_id": node,
+                    "workbench_id": workbench,
                     "os": os,
                     "created_by": "agent-runtime-cli"
                 });
@@ -1555,6 +1999,9 @@ fn main() -> Result<()> {
             body,
             timeout_seconds,
             max_response_bytes,
+            node_id,
+            workbench_id,
+            os,
             created_by,
             owner,
             priority,
@@ -1589,6 +2036,8 @@ fn main() -> Result<()> {
                 expect_status,
                 expect_body_contains,
             )?;
+            let mut labels = vec!["compute".to_string(), "http_request".to_string()];
+            push_placement_labels(&mut labels, node_id, workbench_id, os);
             let mut body = serde_json::json!({
                 "title": task_title,
                 "summary": "提交一个 HTTP 请求任务，等待 Worker 执行并回传结果。",
@@ -1596,7 +2045,7 @@ fn main() -> Result<()> {
                 "owner": owner,
                 "assigned_to": [owner],
                 "priority": priority,
-                "labels": ["compute", "http_request"],
+                "labels": labels,
                 "inputs": [serde_json::to_string_pretty(&payload)?],
                 "outputs": ["HTTP 状态码", "响应头", "响应体", "执行耗时"],
                 "acceptance_criteria": [
@@ -1625,6 +2074,7 @@ fn main() -> Result<()> {
             working_dir,
             timeout_seconds,
             node_id,
+            workbench_id,
             os,
             created_by,
             owner,
@@ -1646,12 +2096,7 @@ fn main() -> Result<()> {
                 "timeout_seconds": timeout_seconds
             });
             let mut labels = vec!["compute".to_string(), "command".to_string()];
-            if let Some(node_id) = node_id {
-                labels.push(format!("node:{node_id}"));
-            }
-            if let Some(os) = os {
-                labels.push(format!("os:{os}"));
-            }
+            push_placement_labels(&mut labels, node_id, workbench_id, os);
             let task_title = title.unwrap_or_else(|| {
                 format!("命令任务 {}", payload["program"].as_str().unwrap_or(""))
             });
@@ -1785,6 +2230,7 @@ fn main() -> Result<()> {
             max_bytes,
             max_entries,
             node_id,
+            workbench_id,
             os,
             created_by,
             owner,
@@ -1794,30 +2240,16 @@ fn main() -> Result<()> {
             wait_timeout_seconds,
             output,
         } => {
-            let payload = match operation.as_str() {
-                "read" => serde_json::json!({
-                    "type": "file",
-                    "operation": "read",
-                    "path": path,
-                    "max_bytes": max_bytes
-                }),
-                "write" => serde_json::json!({
-                    "type": "file",
-                    "operation": "write",
-                    "path": path,
-                    "content": content.unwrap_or_default(),
-                    "append": append,
-                    "create_dirs": create_dirs
-                }),
-                "list" => serde_json::json!({
-                    "type": "file",
-                    "operation": "list",
-                    "path": path,
-                    "recursive": recursive,
-                    "max_entries": max_entries
-                }),
-                other => anyhow::bail!("unsupported file operation: {other}"),
-            };
+            let payload = file_task_payload(
+                &operation,
+                path,
+                content,
+                append,
+                create_dirs,
+                recursive,
+                max_bytes,
+                max_entries,
+            )?;
             let task_title = title.unwrap_or_else(|| {
                 format!(
                     "文件任务 {} {}",
@@ -1836,6 +2268,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 os,
                 vec!["文件内容或目录项", "执行耗时"],
                 wait,
@@ -1852,6 +2285,7 @@ fn main() -> Result<()> {
             reference,
             depth,
             node_id,
+            workbench_id,
             os,
             created_by,
             owner,
@@ -1900,6 +2334,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 os,
                 vec!["退出码", "stdout", "stderr", "执行耗时"],
                 wait,
@@ -1913,6 +2348,7 @@ fn main() -> Result<()> {
             args,
             timeout_seconds,
             node_id,
+            workbench_id,
             os,
             created_by,
             owner,
@@ -1948,6 +2384,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 os,
                 vec!["退出码", "stdout", "stderr", "执行耗时"],
                 wait,
@@ -1961,6 +2398,7 @@ fn main() -> Result<()> {
             timeout_seconds,
             max_response_bytes,
             node_id,
+            workbench_id,
             os,
             created_by,
             owner,
@@ -1991,6 +2429,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 os,
                 vec!["页面状态码", "标题", "文本内容", "执行耗时"],
                 wait,
@@ -2000,6 +2439,7 @@ fn main() -> Result<()> {
         }
         Commands::SubmitDesktopScreenshot {
             node_id,
+            workbench_id,
             path,
             timeout_seconds,
             created_by,
@@ -2028,6 +2468,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 Some("windows".to_string()),
                 vec!["截图文件路径", "屏幕尺寸", "执行耗时"],
                 wait,
@@ -2037,6 +2478,7 @@ fn main() -> Result<()> {
         }
         Commands::SubmitDesktopClick {
             node_id,
+            workbench_id,
             x,
             y,
             button,
@@ -2069,6 +2511,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 Some("windows".to_string()),
                 vec!["点击坐标", "按钮", "执行耗时"],
                 wait,
@@ -2078,6 +2521,7 @@ fn main() -> Result<()> {
         }
         Commands::SubmitDesktopTypeText {
             node_id,
+            workbench_id,
             text,
             interval_ms,
             timeout_seconds,
@@ -2108,6 +2552,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 Some("windows".to_string()),
                 vec!["输入字符数", "执行耗时"],
                 wait,
@@ -2117,6 +2562,7 @@ fn main() -> Result<()> {
         }
         Commands::SubmitDesktopKey {
             node_id,
+            workbench_id,
             key,
             modifiers,
             timeout_seconds,
@@ -2147,6 +2593,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 Some("windows".to_string()),
                 vec!["按键", "修饰键", "执行耗时"],
                 wait,
@@ -2162,6 +2609,7 @@ fn main() -> Result<()> {
             summary,
             payload,
             node_id,
+            workbench_id,
             os,
             created_by,
             owner,
@@ -2194,6 +2642,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 os,
                 vec!["投递状态", "消息编号", "执行耗时"],
                 wait,
@@ -2205,8 +2654,12 @@ fn main() -> Result<()> {
             plugin_id,
             action,
             input,
+            input_file,
+            input_stdin,
+            input_base64,
             timeout_seconds,
             node_id,
+            workbench_id,
             os,
             created_by,
             owner,
@@ -2216,8 +2669,14 @@ fn main() -> Result<()> {
             wait_timeout_seconds,
             output,
         } => {
-            let input: Value =
-                serde_json::from_str(&input).with_context(|| "--input must be valid JSON")?;
+            let input = read_json_payload(
+                "--input",
+                input,
+                input_file,
+                input_stdin,
+                input_base64,
+                Some(serde_json::json!({})),
+            )?;
             let payload = serde_json::json!({
                 "type": "plugin",
                 "plugin_id": plugin_id,
@@ -2243,6 +2702,7 @@ fn main() -> Result<()> {
                 owner,
                 priority,
                 node_id,
+                workbench_id,
                 os,
                 vec!["插件输出", "执行耗时"],
                 wait,
@@ -2291,6 +2751,7 @@ fn submit_compute_task(
     owner: String,
     priority: String,
     node_id: Option<String>,
+    workbench_id: Option<String>,
     os: Option<String>,
     outputs: Vec<&str>,
     wait: bool,
@@ -2298,12 +2759,7 @@ fn submit_compute_task(
     output: &str,
 ) -> Result<()> {
     let mut labels = vec!["compute".to_string(), task_label.to_string()];
-    if let Some(node_id) = node_id {
-        labels.push(format!("node:{node_id}"));
-    }
-    if let Some(os) = os {
-        labels.push(format!("os:{os}"));
-    }
+    push_placement_labels(&mut labels, node_id, workbench_id, os);
     let body = serde_json::json!({
         "title": title,
         "summary": summary,
@@ -2335,6 +2791,138 @@ fn submit_compute_task(
     Ok(())
 }
 
+fn submit_workbench_action(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    workbench_id: String,
+    action: String,
+    payload: Value,
+    title: String,
+    wait: bool,
+    wait_timeout_seconds: u64,
+    output: &str,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "action": action,
+        "payload": payload,
+        "title": title,
+        "created_by": "workbench-cli"
+    });
+    let raw = client
+        .post(format!("{base}/api/workbenches/{workbench_id}/actions"))
+        .json(&body)
+        .send()?
+        .text()?;
+    handle_workbench_action_response(client, base, raw, wait, wait_timeout_seconds, output)
+}
+
+fn handle_workbench_action_response(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    raw: String,
+    wait: bool,
+    wait_timeout_seconds: u64,
+    output: &str,
+) -> Result<()> {
+    let value: Value = serde_json::from_str(&raw)?;
+    if value.get("ok").and_then(Value::as_bool) == Some(false) {
+        print_json(raw);
+        return Ok(());
+    }
+    if output == "json" && !wait {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    if let Some(task_id) = value.pointer("/item/task_id").and_then(Value::as_str) {
+        let message_id = value.pointer("/item/message_id").and_then(Value::as_str);
+        if !wait {
+            println!("Task ID: {task_id}");
+            if let Some(message_id) = message_id {
+                println!("Message ID: {message_id}");
+            }
+            if let Some(node_id) = value
+                .pointer("/item/selected_channel/node_id")
+                .and_then(Value::as_str)
+            {
+                println!("Selected Node: {node_id}");
+            }
+            if let Some(reason) = value
+                .pointer("/item/routing_reason")
+                .and_then(Value::as_str)
+            {
+                println!("Routing: {reason}");
+            }
+            println!();
+            println!("查看结果: agentgrid tasks get --id {task_id}");
+            println!("等待完成: agentgrid tasks watch --id {task_id}");
+            return Ok(());
+        }
+        let snapshot = wait_for_task(client, base, task_id, wait_timeout_seconds)?;
+        print_task_summary(&snapshot, output);
+        return Ok(());
+    }
+    if value.pointer("/item/port_bridge").is_some() {
+        print_port_bridge_create(value.get("item").unwrap_or(&value), output)?;
+        return Ok(());
+    }
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn file_task_payload(
+    operation: &str,
+    path: String,
+    content: Option<String>,
+    append: bool,
+    create_dirs: bool,
+    recursive: bool,
+    max_bytes: Option<u64>,
+    max_entries: Option<u64>,
+) -> Result<Value> {
+    match operation {
+        "read" => Ok(serde_json::json!({
+            "type": "file",
+            "operation": "read",
+            "path": path,
+            "max_bytes": max_bytes
+        })),
+        "write" => Ok(serde_json::json!({
+            "type": "file",
+            "operation": "write",
+            "path": path,
+            "content": content.unwrap_or_default(),
+            "append": append,
+            "create_dirs": create_dirs
+        })),
+        "list" => Ok(serde_json::json!({
+            "type": "file",
+            "operation": "list",
+            "path": path,
+            "recursive": recursive,
+            "max_entries": max_entries
+        })),
+        other => anyhow::bail!("unsupported file operation: {other}"),
+    }
+}
+
+fn push_placement_labels(
+    labels: &mut Vec<String>,
+    node_id: Option<String>,
+    workbench_id: Option<String>,
+    os: Option<String>,
+) {
+    if let Some(node_id) = node_id.filter(|value| !value.trim().is_empty()) {
+        labels.push(format!("node:{node_id}"));
+    }
+    if let Some(workbench_id) = workbench_id.filter(|value| !value.trim().is_empty()) {
+        labels.push(format!("workbench:{workbench_id}"));
+    }
+    if let Some(os) = os.filter(|value| !value.trim().is_empty()) {
+        labels.push(format!("os:{os}"));
+    }
+}
+
 fn parse_headers(values: Vec<String>) -> Result<Vec<(String, String)>> {
     values
         .into_iter()
@@ -2351,6 +2939,51 @@ fn parse_body(value: Option<String>) -> Result<Option<Value>> {
     value
         .map(|raw| serde_json::from_str(&raw).map_err(Into::into))
         .transpose()
+}
+
+fn read_json_payload(
+    flag_name: &str,
+    inline: Option<String>,
+    file: Option<String>,
+    stdin_enabled: bool,
+    base64_value: Option<String>,
+    default: Option<Value>,
+) -> Result<Value> {
+    let source_count = inline.is_some() as u8
+        + file.is_some() as u8
+        + stdin_enabled as u8
+        + base64_value.is_some() as u8;
+    if source_count == 0 {
+        return default.ok_or_else(|| anyhow::anyhow!("{flag_name} is required"));
+    }
+    if source_count > 1 {
+        anyhow::bail!(
+            "use only one of {flag_name}, {flag_name}-file, {flag_name}-stdin, or {flag_name}-base64"
+        );
+    }
+
+    let raw = if let Some(raw) = inline {
+        raw
+    } else if let Some(path) = file {
+        fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {flag_name}-file: {path}"))?
+    } else if stdin_enabled {
+        let mut raw = String::new();
+        io::stdin()
+            .read_to_string(&mut raw)
+            .with_context(|| format!("failed to read {flag_name}-stdin"))?;
+        raw
+    } else if let Some(encoded) = base64_value {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .with_context(|| format!("{flag_name}-base64 must be valid base64"))?;
+        String::from_utf8(bytes)
+            .with_context(|| format!("{flag_name}-base64 must decode to UTF-8 JSON"))?
+    } else {
+        unreachable!();
+    };
+
+    serde_json::from_str(&raw).with_context(|| format!("{flag_name} must be valid JSON"))
 }
 
 fn parse_verify_json(value: Option<String>) -> Result<Option<Value>> {
@@ -2434,6 +3067,7 @@ fn job_request_json(
     title: String,
     payload: Value,
     node: Option<String>,
+    workbench: Option<String>,
     os: Option<String>,
     max_attempts: i64,
     shards: i64,
@@ -2449,6 +3083,7 @@ fn job_request_json(
         "payload": payload,
         "placement": {
             "node_id": node,
+            "workbench_id": workbench,
             "os": os
         },
         "strategy": if shards > 1 {
@@ -2742,6 +3377,10 @@ fn handle_task_submit_response(
     output: &str,
 ) -> Result<()> {
     let value: Value = serde_json::from_str(&raw)?;
+    if value.get("ok").and_then(Value::as_bool) == Some(false) {
+        print_json(raw);
+        return Ok(());
+    }
     let task_id = value
         .pointer("/item/metadata/id")
         .and_then(Value::as_str)

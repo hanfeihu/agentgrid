@@ -67,6 +67,40 @@ Rules:
 This lets a phone or web console talk to Codex running on a real workstation
 without exposing the workstation's local port to the network.
 
+## Workbench Model
+
+AgentGrid treats a real computer or station as a `Workbench`. A Workbench can
+have multiple node channels:
+
+| Channel | Purpose |
+| --- | --- |
+| `worker` | background command, file, plugin, Git, Docker, session, software install |
+| `desktop` | visible desktop screenshot, click, type text, key press |
+| `service` | node-local service bridge such as Codex local bridge |
+| `bridge` | node-to-node port bridge control channel |
+| `device` | serial, flashing, hardware bench, board, camera, SDK station |
+
+Hub APIs:
+
+```text
+GET /api/workbenches
+GET /api/workbenches/{id}
+```
+
+The Workbench response aggregates channels, resources, capabilities, local
+services, node tools, online state, and routing metadata. Web, Mobile, MCP, and
+SDK clients should use Workbench APIs for product views, while Workers still
+register and heartbeat as channels through `/api/nodes`.
+
+Scheduling rules:
+
+- A desktop task must use a `desktop` channel.
+- Background tasks must use a `worker` channel.
+- Hub rejects channel mismatches at submit time when a hard node target is
+  provided.
+- Schedule previews include both the required channel role and each candidate
+  node channel role.
+
 ## Node Port Bridge
 
 Node Port Bridge is an AgentGrid kernel capability for temporarily mapping a

@@ -141,6 +141,8 @@ Cluster and standards:
 - `runtimeStandard()`
 - `mobileSdkStandard()`
 - `workbenches()`
+- `workbench(workbenchID/workbenchId)`
+- `workbenchTimeline(workbenchID/workbenchId)`
 - `devices()`
 - `evidenceStandard()`
 - `nodes()`
@@ -149,6 +151,8 @@ Cluster and standards:
 Tasks and evidence:
 
 - `submitTask(request)`
+- `runCommand(program, args, nodeID/nodeId, workbenchID/workbenchId, title)`
+- `runPlugin(pluginID/pluginId, action, input, nodeID/nodeId, workbenchID/workbenchId, title)`
 - `getTask(taskID/taskId)`
 - `taskEvents(taskID/taskId)`
 - `executionRecord(taskID/taskId)`

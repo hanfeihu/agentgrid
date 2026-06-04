@@ -35,6 +35,7 @@ import {
   Input,
   Modal,
   InputNumber,
+  Drawer,
   Tabs,
   Select,
   Progress,
@@ -107,7 +108,7 @@ const { Title, Text } = Typography;
 
 const menuRoutes = [
   { path: '/overview', key: 'overview', name: '集群总览', icon: <DashboardOutlined /> },
-  { path: '/nodes', key: 'nodes', name: '节点管理', icon: <CloudServerOutlined /> },
+  { path: '/nodes', key: 'nodes', name: '电脑管理', icon: <CloudServerOutlined /> },
   { path: '/capabilities', key: 'capabilities', name: '能力清单', icon: <ApiOutlined /> },
   { path: '/tools', key: 'tools', name: '工具目录', icon: <ToolOutlined /> },
   { path: '/node-tools', key: 'nodeTools', name: '节点工具', icon: <DeploymentUnitOutlined /> },
@@ -138,6 +139,176 @@ const menuRoutes = [
 ];
 
 const pageNames = Object.fromEntries(menuRoutes.map((item) => [item.key, item.name]));
+
+function nodeChannelRole(node) {
+  const explicit = node?.spec?.channel_role;
+  if (explicit) return explicit;
+  const capabilities = node?.spec?.capabilities || [];
+  if ((node?.metadata?.id || '').endsWith('-desktop') || capabilities.includes('desktop')) return 'desktop';
+  return 'worker';
+}
+
+function physicalHostKey(node) {
+  return node?.spec?.physical_host_id
+    || node?.spec?.machine_fingerprint
+    || (node?.metadata?.id || '').replace(/-desktop$/, '');
+}
+
+function physicalHostName(node) {
+  return (node?.metadata?.name || node?.metadata?.id || '-').replace(/\s+Desktop$/i, '').replace(/-desktop$/i, '');
+}
+
+function mergeUnique(values) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function groupPhysicalHosts(nodes) {
+  return nodes.reduce((hosts, node) => {
+    const key = physicalHostKey(node);
+    const role = nodeChannelRole(node);
+    const existing = hosts.get(key) || {
+      id: key,
+      name: physicalHostName(node),
+      nodes: [],
+      channels: {},
+      capabilities: [],
+      state: 'offline',
+      primary: node,
+    };
+    existing.nodes.push(node);
+    existing.channels[role] = node;
+    existing.capabilities = mergeUnique([...existing.capabilities, ...(node.spec?.capabilities || [])]);
+    if (role === 'worker' || !existing.primary || node.status?.state === 'online') {
+      existing.primary = node;
+    }
+    if (existing.nodes.some((item) => item.status?.state === 'online')) existing.state = 'online';
+    else if (existing.nodes.some((item) => item.status?.state === 'unknown')) existing.state = 'unknown';
+    else existing.state = existing.nodes[0]?.status?.state || 'offline';
+    hosts.set(key, existing);
+    return hosts;
+  }, new Map());
+}
+
+function normalizeWorkbenchRows(workbenches, nodes) {
+  if (!workbenches?.length) return Array.from(groupPhysicalHosts(nodes).values());
+  return workbenches.map((workbench) => {
+    const channels = workbench.spec?.channels || {};
+    const channelNodes = Object.values(channels).filter(Boolean);
+    const primary = channels.worker
+      || channelNodes.find((node) => node.status?.state === 'online')
+      || channelNodes[0]
+      || {};
+    return {
+      id: workbench.metadata?.id,
+      name: workbench.metadata?.name || workbench.metadata?.id,
+      state: workbench.status?.state || 'offline',
+      nodes: channelNodes,
+      channels,
+      capabilities: workbench.spec?.capabilities || [],
+      primary,
+      resources: workbench.resources || {},
+      workbench,
+    };
+  });
+}
+
+const channelRoles = ['worker', 'desktop', 'service', 'bridge', 'device'];
+
+function channelLabel(role) {
+  if (role === 'desktop') return '桌面通道';
+  if (role === 'service') return '服务通道';
+  if (role === 'bridge') return '桥接通道';
+  if (role === 'device') return '设备通道';
+  return '后台通道';
+}
+
+function channelDuty(role) {
+  if (role === 'desktop') return '截图、点击、输入、按键、前台应用控制';
+  if (role === 'service') return 'Codex、本地服务、WebSocket/SSE 服务桥接';
+  if (role === 'bridge') return '节点到节点端口桥接和临时网络通道';
+  if (role === 'device') return '串口、烧录、硬件工位、设备 SDK';
+  return '命令、文件、插件、Git、Docker、软件安装';
+}
+
+function channelColor(role, node) {
+  if (!node) return 'default';
+  if (node.status?.state !== 'online') return 'default';
+  return {
+    worker: 'green',
+    desktop: 'blue',
+    service: 'cyan',
+    bridge: 'purple',
+    device: 'volcano',
+  }[role] || 'green';
+}
+
+function ChannelStatus({ role, node }) {
+  return (
+    <Tag color={channelColor(role, node)}>
+      {channelLabel(role)}：{node ? stateLabel(node.status?.state) : '未安装'}
+    </Tag>
+  );
+}
+
+function taskStateColor(state) {
+  return {
+    assigned: 'blue',
+    todo: 'blue',
+    in_progress: 'processing',
+    stopping: 'orange',
+    done: 'green',
+    failed: 'red',
+    cancelled: 'default',
+    stopped: 'default',
+    blocked: 'orange',
+  }[state] || 'default';
+}
+
+function operationEventLabel(type) {
+  if (type === 'task.created') return '已提交';
+  if (type === 'task.leased') return '已分配';
+  if (type === 'task.completed') return '已完成';
+  if (type === 'task.failed') return '失败';
+  if (type === 'task.done') return '结果';
+  if (type === 'artifact.created') return '产物';
+  return type || '事件';
+}
+
+function operationEventColor(type) {
+  if (type === 'task.completed' || type === 'task.done') return 'green';
+  if (type === 'task.failed') return 'red';
+  if (type === 'task.leased') return 'blue';
+  if (type === 'artifact.created') return 'purple';
+  return 'default';
+}
+
+function workbenchResource(row, key) {
+  return row.resources?.[key] ?? row.primary?.spec?.[key] ?? 0;
+}
+
+function workbenchOptions(workbenches, nodes) {
+  return normalizeWorkbenchRows(workbenches, nodes).map((workbench) => ({
+    value: workbench.id,
+    label: `${workbench.name} / ${stateLabel(workbench.state)}`,
+  }));
+}
+
+function workbenchActionPlacement(action, workbench) {
+  const normalized = action || 'command';
+  const role = normalized === 'screenshot' ? 'desktop' : 'worker';
+  const node = workbench?.channels?.[role];
+  return {
+    role,
+    node,
+    title: role === 'desktop' ? 'Hub 会派到桌面通道' : 'Hub 会派到后台通道',
+    reason: role === 'desktop'
+      ? '截图、点击、输入、按键必须发生在用户前台桌面会话里。'
+      : '命令、文件、工具运行属于后台执行，适合由普通 Worker 处理。',
+    blocked: role === 'desktop'
+      ? '不会派到后台通道，因为后台 Worker 通常没有真实用户桌面。'
+      : '不会派到桌面通道，因为这个动作不需要前台桌面控制。',
+  };
+}
 
 function BootstrapAdmin({ onDone }) {
   const [loading, setLoading] = useState(false);
@@ -243,12 +414,14 @@ function App() {
   const [active, setActive] = useState('overview');
   const [loading, setLoading] = useState(false);
   const [nodes, setNodes] = useState([]);
+  const [workbenches, setWorkbenches] = useState([]);
   const [agents, setAgents] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [artifacts, setArtifacts] = useState([]);
   const [workflows, setWorkflows] = useState([]);
   const [tools, setTools] = useState([]);
+  const [probeCenter, setProbeCenter] = useState(null);
   const [runtimeManifest, setRuntimeManifest] = useState({});
   const [runtimeStandard, setRuntimeStandard] = useState({});
   const [workflowTemplates, setWorkflowTemplates] = useState([]);
@@ -279,11 +452,13 @@ function App() {
         bootstrapRes,
         healthRes,
         nodeRes,
+        workbenchRes,
         agentRes,
         taskRes,
         jobRes,
         workflowRes,
         toolRes,
+        probeCenterRes,
         nodeToolRes,
         capabilityRes,
         runtimeRes,
@@ -305,11 +480,13 @@ function App() {
         fetchJson('/bootstrap'),
         fetchJson('/health'),
         fetchJson('/nodes'),
+        fetchJson('/workbenches'),
         fetchJson('/agents'),
         fetchJson('/tasks?limit=100'),
         fetchJson('/jobs?limit=100'),
         fetchJson('/workflows?limit=100'),
         fetchJson('/tools'),
+        fetchOptionalJson('/tools/probe-center'),
         fetchJson('/node-tools'),
         fetchJson('/capabilities/manifest'),
         fetchJson('/agent-runtime/manifest'),
@@ -331,11 +508,13 @@ function App() {
       setBootstrap(bootstrapRes);
       setHealth(healthRes);
       setNodes(nodeRes.items || []);
+      setWorkbenches(workbenchRes.items || []);
       setAgents(agentRes.items || []);
       setTasks(taskRes.items || []);
       setJobs(jobRes.items || []);
       setWorkflows(workflowRes.items || []);
       setTools(toolRes.items || []);
+      setProbeCenter(probeCenterRes.item || null);
       setNodeTools(nodeToolRes.items || []);
       setCapabilities(capabilityRes || {});
       setRuntimeManifest(runtimeRes || {});
@@ -476,6 +655,7 @@ function App() {
               <Overview
                 health={health}
                 nodes={nodes}
+                workbenches={workbenches}
                 onlineNodes={onlineNodes}
                 offlineNodes={offlineNodes}
                 agents={agents}
@@ -484,9 +664,9 @@ function App() {
                 messages={messages}
               />
             )}
-            {active === 'nodes' && <Nodes nodes={nodes} onDone={refresh} />}
+            {active === 'nodes' && <Nodes nodes={nodes} workbenches={workbenches} onOpenTask={setSelectedTaskId} onDone={refresh} />}
             {active === 'capabilities' && <Capabilities manifest={capabilities} />}
-            {active === 'tools' && <Tools tools={tools} onDone={refresh} />}
+            {active === 'tools' && <Tools tools={tools} probeCenter={probeCenter} onDone={refresh} />}
             {active === 'nodeTools' && <NodeTools nodeTools={nodeTools} nodes={nodes} onDone={refresh} />}
             {active === 'runtime' && <AgentRuntime manifest={runtimeManifest} />}
             {active === 'standard' && <RuntimeStandard standard={runtimeStandard} />}
@@ -511,7 +691,7 @@ function App() {
             {active === 'docs' && <CommandDocs doc={commandDoc} setDoc={setCommandDoc} />}
             {active === 'agents' && <Agents agents={agents} />}
             {active === 'submit' && <SubmitHttp onDone={refresh} />}
-            {active === 'command' && <SubmitCommand nodes={nodes} onDone={refresh} />}
+            {active === 'command' && <SubmitCommand nodes={nodes} workbenches={workbenches} onDone={refresh} />}
             <TaskDetailModal
               taskId={selectedTaskId}
               tasks={tasks}
@@ -526,7 +706,7 @@ function App() {
   );
 }
 
-function Overview({ health, nodes, onlineNodes, offlineNodes, agents, tasks, workflows, messages }) {
+function Overview({ health, nodes, workbenches, onlineNodes, offlineNodes, agents, tasks, workflows, messages }) {
   const runningTasks = tasks.filter((task) => ['assigned', 'todo', 'in_progress', 'stopping'].includes(task.status?.state)).length;
   const doneTasks = tasks.filter((task) => task.status?.state === 'done').length;
   const latestTask = latestByTime(tasks, (task) => task.metadata?.created_at || task.metadata?.updated_at);
@@ -549,7 +729,7 @@ function Overview({ health, nodes, onlineNodes, offlineNodes, agents, tasks, wor
       </section>
       <Row gutter={[16, 16]}>
         <Col xs={24} md={12} xl={6}>
-          <Metric title="节点总数" value={nodes.length} suffix={offlineNodes ? `离线 ${offlineNodes}` : '全部在线'} prefix={<CloudServerOutlined />} tone="blue" />
+          <Metric title="电脑/工位" value={workbenches.length || nodes.length} suffix={offlineNodes ? `离线 ${offlineNodes}` : '全部在线'} prefix={<CloudServerOutlined />} tone="blue" />
         </Col>
         <Col xs={24} md={12} xl={6}>
           <Metric title="在线节点" value={onlineNodes.length} suffix="可接任务" prefix={<CheckCircleOutlined />} tone="green" />
@@ -563,8 +743,8 @@ function Overview({ health, nodes, onlineNodes, offlineNodes, agents, tasks, wor
       </Row>
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={15}>
-          <ProCard title="节点资源" bordered extra={<Tag color="blue">{nodes.length} 台机器</Tag>}>
-            <NodeResourceList nodes={nodes} />
+          <ProCard title="电脑资源" bordered extra={<Tag color="blue">{workbenches.length || nodes.length} 台电脑/工位</Tag>}>
+            <NodeResourceList nodes={nodes} workbenches={workbenches} />
           </ProCard>
         </Col>
         <Col xs={24} xl={9}>
@@ -592,8 +772,10 @@ function Metric({ prefix, tone = 'blue', ...props }) {
   );
 }
 
-function Nodes({ nodes, onDone }) {
+function Nodes({ nodes, workbenches, onOpenTask, onDone }) {
   const [editingNode, setEditingNode] = useState(null);
+  const [selectedWorkbench, setSelectedWorkbench] = useState(null);
+  const physicalHosts = normalizeWorkbenchRows(workbenches, nodes);
   const approve = async (node) => {
     try {
       await fetchJson(`/nodes/${node.metadata.id}/approve`, {
@@ -608,12 +790,12 @@ function Nodes({ nodes, onDone }) {
     }
   };
   return (
-    <ProCard title="节点管理" bordered>
+    <ProCard title="电脑管理" bordered extra={<Tag color="blue">{physicalHosts.length} 台电脑 / {nodes.length} 个能力通道</Tag>}>
       <Table
         size="middle"
         className="nodes-table"
-        rowKey={(row) => row.metadata.id}
-        dataSource={nodes}
+        rowKey={(row) => row.id}
+        dataSource={physicalHosts}
         pagination={false}
         tableLayout="fixed"
         scroll={{ x: 1320 }}
@@ -622,16 +804,21 @@ function Nodes({ nodes, onDone }) {
             title: '状态',
             width: 86,
             render: (_, row) => (
-              <Badge status={row.status.state === 'online' ? 'success' : 'default'} text={stateLabel(row.status.state)} />
+              <Badge status={row.state === 'online' ? 'success' : 'default'} text={stateLabel(row.state)} />
             ),
           },
           {
-            title: '节点',
-            width: 180,
+            title: '电脑',
+            width: 220,
             render: (_, row) => (
               <Space direction="vertical" size={1} className="node-identity">
-                <Text strong>{row.metadata.name}</Text>
-                <Text type="secondary">{row.metadata.id}</Text>
+                <Text strong>{row.name}</Text>
+                <Text type="secondary">{row.primary?.metadata?.id || row.id}</Text>
+                <Space size={4} wrap>
+                  {channelRoles.map((role) => (
+                    <ChannelStatus key={role} role={role} node={row.channels[role]} />
+                  ))}
+                </Space>
               </Space>
             ),
           },
@@ -640,23 +827,23 @@ function Nodes({ nodes, onDone }) {
             width: 118,
             render: (_, row) => (
               <Space direction="vertical" size={1}>
-                <Text>{row.spec.os || '-'}</Text>
-                <Text type="secondary">{row.spec.arch || '-'}</Text>
+                <Text>{row.primary?.spec?.os || '-'}</Text>
+                <Text type="secondary">{row.primary?.spec?.arch || '-'}</Text>
               </Space>
             ),
           },
           {
             title: '主机 / IP',
             width: 230,
-            render: (_, row) => <Text copyable className="mono-cell">{row.spec.address || '-'}</Text>,
+            render: (_, row) => <Text copyable className="mono-cell">{row.primary?.spec?.address || '-'}</Text>,
           },
           {
             title: 'CPU',
             width: 138,
             render: (_, row) => (
               <ResourceCell
-                percent={round(row.spec.cpu_usage_percent)}
-                detail={`${row.spec.cpu_cores || 0} 核`}
+                percent={round(workbenchResource(row, 'cpu_usage_percent'))}
+                detail={`${workbenchResource(row, 'cpu_cores')} 核`}
               />
             ),
           },
@@ -665,8 +852,8 @@ function Nodes({ nodes, onDone }) {
             width: 170,
             render: (_, row) => (
               <ResourceCell
-                percent={percent(row.spec.memory_used_mb, row.spec.memory_mb)}
-                detail={`${formatMb(row.spec.memory_used_mb)} / ${formatMb(row.spec.memory_mb)}`}
+                percent={percent(workbenchResource(row, 'memory_used_mb'), workbenchResource(row, 'memory_mb'))}
+                detail={`${formatMb(workbenchResource(row, 'memory_used_mb'))} / ${formatMb(workbenchResource(row, 'memory_mb'))}`}
               />
             ),
           },
@@ -675,8 +862,11 @@ function Nodes({ nodes, onDone }) {
             width: 170,
             render: (_, row) => (
               <ResourceCell
-                percent={diskUsedPercent(row)}
-                detail={`${formatMb((row.spec.disk_total_mb || 0) - (row.spec.disk_free_mb || 0))} / ${formatMb(row.spec.disk_total_mb)}`}
+                percent={percent(
+                  workbenchResource(row, 'disk_total_mb') - workbenchResource(row, 'disk_free_mb'),
+                  workbenchResource(row, 'disk_total_mb'),
+                )}
+                detail={`${formatMb(workbenchResource(row, 'disk_total_mb') - workbenchResource(row, 'disk_free_mb'))} / ${formatMb(workbenchResource(row, 'disk_total_mb'))}`}
               />
             ),
           },
@@ -685,7 +875,7 @@ function Nodes({ nodes, onDone }) {
             width: 280,
             render: (_, row) => (
               <div className="capability-list">
-                {row.spec.capabilities.map((item) => <Tag key={item}>{item}</Tag>)}
+                {row.capabilities.map((item) => <Tag key={item}>{item}</Tag>)}
               </div>
             ),
           },
@@ -694,12 +884,12 @@ function Nodes({ nodes, onDone }) {
             width: 150,
             render: (_, row) => (
               <Space direction="vertical" size={1}>
-                <Text>权重 {row.spec.weight}</Text>
+                <Text>权重 {row.primary?.spec?.weight}</Text>
                 <Text type="secondary">
-                  槽位 {row.status.running_jobs || 0}/{row.spec.max_concurrent_jobs || 1}
+                  槽位 {workbenchResource(row, 'running_jobs')}/{workbenchResource(row, 'max_concurrent_jobs') || 1}
                 </Text>
                 <Text type="secondary">
-                  成功 {row.status.success_count || 0} / 失败 {row.status.failure_count || 0}
+                  成功 {row.primary?.status?.success_count || 0} / 失败 {row.primary?.status?.failure_count || 0}
                 </Text>
               </Space>
             ),
@@ -709,11 +899,11 @@ function Nodes({ nodes, onDone }) {
             width: 190,
             render: (_, row) => (
               <Space direction="vertical" size={1}>
-                <Text>{row.spec.worker_version || '-'}</Text>
-                <Text type="secondary">{row.spec.worker_target || row.spec.arch || '-'}</Text>
-                <Text type="secondary">授权：{nodeAuthLabel(row.spec.auth_status)}</Text>
+                <Text>{row.primary?.spec?.worker_version || '-'}</Text>
+                <Text type="secondary">{row.primary?.spec?.worker_target || row.primary?.spec?.arch || '-'}</Text>
+                <Text type="secondary">授权：{nodeAuthLabel(row.primary?.spec?.auth_status)}</Text>
                 <Text type="secondary">
-                  glibc {row.spec.glibc_version || '-'} · {row.spec.auto_update_enabled ? '自动更新' : '手动更新'}
+                  glibc {row.primary?.spec?.glibc_version || '-'} · {row.primary?.spec?.auto_update_enabled ? '自动更新' : '手动更新'}
                 </Text>
               </Space>
             ),
@@ -721,22 +911,54 @@ function Nodes({ nodes, onDone }) {
           {
             title: '最后心跳',
             width: 170,
-            render: (_, row) => <Text type="secondary">{formatTime(row.status.last_heartbeat_at)}</Text>,
+            render: (_, row) => <Text type="secondary">{formatTime(row.primary?.status?.last_heartbeat_at)}</Text>,
           },
           {
             title: '操作',
-            width: 150,
+            width: 220,
             fixed: 'right',
             render: (_, row) => (
-              <Space>
-                {row.spec.auth_status === 'pending' && <Button size="small" type="primary" onClick={() => approve(row)}>授权</Button>}
-                <Button size="small" icon={<SettingOutlined />} onClick={() => setEditingNode(row)}>
-                  配置
+              <Space wrap>
+                <Button size="small" type="primary" onClick={() => setSelectedWorkbench(row)}>
+                  详情
                 </Button>
+                {row.nodes.filter((node) => node.spec.auth_status === 'pending').map((node) => (
+                  <Button key={node.metadata.id} size="small" type="primary" onClick={() => approve(node)}>授权</Button>
+                ))}
+                {row.channels.worker && (
+                  <Button size="small" icon={<SettingOutlined />} onClick={() => setEditingNode(row.channels.worker)}>
+                    配置后台
+                  </Button>
+                )}
               </Space>
             ),
           },
         ]}
+        expandable={{
+          expandedRowRender: (row) => (
+            <Table
+              size="small"
+              pagination={false}
+              rowKey={(node) => node.metadata.id}
+              dataSource={row.nodes}
+              columns={[
+                { title: '通道', width: 120, render: (_, node) => <Tag>{channelLabel(nodeChannelRole(node))}</Tag> },
+                { title: '节点 ID', render: (_, node) => <Text copyable>{node.metadata.id}</Text> },
+                { title: '状态', width: 120, render: (_, node) => <Badge status={node.status.state === 'online' ? 'success' : 'default'} text={stateLabel(node.status.state)} /> },
+                { title: '职责', width: 220, render: (_, node) => <Text type="secondary">{channelDuty(nodeChannelRole(node))}</Text> },
+                { title: '能力', render: (_, node) => <Space wrap>{(node.spec.capabilities || []).map((item) => <Tag key={item}>{item}</Tag>)}</Space> },
+                { title: '授权', width: 120, render: (_, node) => nodeAuthLabel(node.spec.auth_status) },
+                { title: '心跳', width: 170, render: (_, node) => formatTime(node.status.last_heartbeat_at) },
+              ]}
+            />
+          ),
+        }}
+      />
+      <WorkbenchDetailDrawer
+        workbench={selectedWorkbench}
+        onClose={() => setSelectedWorkbench(null)}
+        onOpenTask={onOpenTask}
+        onDone={onDone}
       />
       <NodeConfigModal
         node={editingNode}
@@ -760,6 +982,334 @@ function ResourceCell({ percent: valuePercent, detail }) {
       <Progress percent={valuePercent} size="small" showInfo={false} />
     </div>
   );
+}
+
+function WorkbenchDetailDrawer({ workbench, onClose, onOpenTask, onDone }) {
+  const [form] = Form.useForm();
+  const [timeline, setTimeline] = useState(null);
+  const [loadingTimeline, setLoadingTimeline] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const workbenchId = workbench?.id;
+  const selectedAction = Form.useWatch('action', form);
+  const selectedPlacement = workbenchActionPlacement(selectedAction, workbench);
+
+  const loadTimeline = async () => {
+    if (!workbenchId) return;
+    setLoadingTimeline(true);
+    try {
+      const data = await fetchJson(`/workbenches/${encodeURIComponent(workbenchId)}/timeline`);
+      setTimeline(data.item);
+    } catch (error) {
+      message.error(`读取时间线失败：${error.message}`);
+    } finally {
+      setLoadingTimeline(false);
+    }
+  };
+
+  useEffect(() => {
+    setTimeline(null);
+    if (!workbenchId) return;
+    form.setFieldsValue({
+      action: 'command',
+      program: 'hostname',
+      path: '',
+      tool: '',
+      title: '',
+      args: '',
+      payload: '{}',
+    });
+    loadTimeline();
+  }, [workbenchId]);
+
+  const submit = async (values) => {
+    setSubmitting(true);
+    try {
+      const request = buildWorkbenchActionRequest(workbenchId, values);
+      const response = await fetchJson(request.path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(request.body),
+      });
+      message.success('已提交到这台电脑');
+      onDone();
+      loadTimeline();
+      const taskId = response?.item?.task_id;
+      if (taskId) onOpenTask?.(taskId);
+    } catch (error) {
+      message.error(`提交失败：${error.message}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const timelineEvents = timeline?.events || [];
+  const channelRows = channelRoles.map((role) => ({
+    role,
+    node: workbench?.channels?.[role],
+  }));
+
+  return (
+    <Drawer
+      title={workbench ? `${workbench.name} / 电脑详情` : '电脑详情'}
+      open={Boolean(workbench)}
+      onClose={onClose}
+      width={980}
+    >
+      {workbench && (
+        <Space direction="vertical" className="full" size={16}>
+          <Row gutter={12}>
+            <Col span={6}><Card size="small"><Statistic title="状态" value={stateLabel(workbench.state)} /></Card></Col>
+            <Col span={6}><Card size="small"><Statistic title="在线通道" value={workbench.workbench?.status?.online_channels || workbench.nodes.filter((node) => node.status?.state === 'online').length} /></Card></Col>
+            <Col span={6}><Card size="small"><Statistic title="CPU" value={`${workbenchResource(workbench, 'cpu_cores')} 核`} /></Card></Col>
+            <Col span={6}><Card size="small"><Statistic title="内存" value={formatMb(workbenchResource(workbench, 'memory_mb'))} /></Card></Col>
+          </Row>
+
+          <ProCard title="通道" bordered>
+            <Table
+              size="small"
+              pagination={false}
+              rowKey={(row) => row.role}
+              dataSource={channelRows}
+              columns={[
+                { title: '通道', width: 120, render: (_, row) => <Tag color={channelColor(row.role, row.node)}>{channelLabel(row.role)}</Tag> },
+                { title: '节点', render: (_, row) => row.node ? <Text copyable>{row.node.metadata.id}</Text> : <Text type="secondary">未安装</Text> },
+                { title: '用途', render: (_, row) => channelDuty(row.role) },
+                { title: '状态', width: 120, render: (_, row) => row.node ? stateLabel(row.node.status?.state) : '-' },
+              ]}
+            />
+          </ProCard>
+
+          <ProCard title="工具验证" bordered>
+            <WorkbenchToolProbeSummary workbench={workbench} />
+          </ProCard>
+
+          <ProCard title="操作这台电脑" bordered>
+            <Form form={form} layout="vertical" onFinish={submit}>
+              <Row gutter={12}>
+                <Col span={6}>
+                  <Form.Item name="action" label="动作" rules={[{ required: true }]}>
+                    <Select
+                      options={[
+                        { value: 'command', label: '执行命令' },
+                        { value: 'screenshot', label: '截屏' },
+                        { value: 'file_list', label: '查看文件' },
+                        { value: 'runtime', label: '运行工具' },
+                      ]}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item noStyle shouldUpdate>
+                    {({ getFieldValue }) => {
+                      const action = getFieldValue('action');
+                      if (action === 'runtime') {
+                        return <Form.Item name="tool" label="工具 ID" rules={[{ required: true }]}><Input placeholder="audio.tts.clone" /></Form.Item>;
+                      }
+                      if (action === 'file_list') {
+                        return <Form.Item name="path" label="路径" rules={[{ required: true }]}><Input placeholder="C:\\ 或 /tmp" /></Form.Item>;
+                      }
+                      return <Form.Item name="program" label="命令"><Input placeholder="hostname" /></Form.Item>;
+                    }}
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="title" label="标题">
+                    <Input placeholder="可选" />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Form.Item noStyle shouldUpdate>
+                {({ getFieldValue }) => {
+                  const action = getFieldValue('action');
+                  if (action === 'runtime') {
+                    return <Form.Item name="payload" label="Payload JSON"><Input.TextArea rows={5} /></Form.Item>;
+                  }
+                  if (action === 'command') {
+                    return <Form.Item name="args" label="参数，每行一个"><Input.TextArea rows={3} /></Form.Item>;
+                  }
+                  return null;
+                }}
+              </Form.Item>
+              <Space>
+                <Button type="primary" htmlType="submit" loading={submitting}>提交</Button>
+                <Button icon={<ReloadOutlined />} onClick={loadTimeline} loading={loadingTimeline}>刷新记录</Button>
+              </Space>
+            </Form>
+          </ProCard>
+
+          <ProCard title="调度解释" bordered>
+            <Space direction="vertical" size={6}>
+              <Text strong>{selectedPlacement.title}</Text>
+              <Text>
+                目标通道：<Tag color={channelColor(selectedPlacement.role, selectedPlacement.node)}>{channelLabel(selectedPlacement.role)}</Tag>
+                {selectedPlacement.node ? <Text copyable>{selectedPlacement.node.metadata.id}</Text> : <Text type="secondary">当前未安装或未在线</Text>}
+              </Text>
+              <Text>{selectedPlacement.reason}</Text>
+              <Text type="secondary">{selectedPlacement.blocked}</Text>
+              <Text type="secondary">用户和 AI 只需要选择这台电脑，Hub 会根据任务契约选择具体通道。</Text>
+            </Space>
+          </ProCard>
+
+          <ProCard title="最近操作" bordered extra={<Tag>{timelineEvents.length} 条</Tag>}>
+            <WorkbenchOperationFeed events={timelineEvents} loading={loadingTimeline} onOpenTask={onOpenTask} />
+          </ProCard>
+
+          <ProCard title="操作明细" bordered>
+            <Table
+              size="small"
+              loading={loadingTimeline}
+              pagination={{ pageSize: 8 }}
+              rowKey={(row) => row.id}
+              dataSource={timelineEvents}
+              columns={[
+                { title: '时间', width: 170, render: (_, row) => formatTime(row.time) },
+                { title: '类型', width: 130, render: (_, row) => <Tag>{row.type}</Tag> },
+                { title: '节点', width: 210, render: (_, row) => row.node_id || '-' },
+                {
+                  title: '任务',
+                  width: 210,
+                  render: (_, row) => row.task_id ? (
+                    <Button size="small" type="link" onClick={() => onOpenTask?.(row.task_id)}>
+                      {row.task_id}
+                    </Button>
+                  ) : '-',
+                },
+                { title: '说明', render: (_, row) => row.summary || '-' },
+              ]}
+              expandable={{
+                expandedRowRender: (row) => <pre className="result-json">{JSON.stringify(row.payload, null, 2)}</pre>,
+              }}
+            />
+          </ProCard>
+        </Space>
+      )}
+    </Drawer>
+  );
+}
+
+function WorkbenchToolProbeSummary({ workbench }) {
+  const tools = workbench?.tools || [];
+  const rows = tools.map((tool) => ({
+    key: `${tool.metadata?.node_id || tool.metadata?.id}:${tool.spec?.tool_id}`,
+    tool_id: tool.spec?.tool_id,
+    name: tool.spec?.name,
+    executor: tool.spec?.executor,
+    node_id: tool.metadata?.node_id,
+    state: tool.status?.probe_state || 'declared_unverified',
+    last_probe_at: tool.status?.last_probe_at,
+    next_probe_at: tool.status?.next_probe_at,
+    error: tool.status?.probe_error,
+  }));
+  if (!rows.length) {
+    return <div className="empty-panel">这台电脑还没有注册动态工具。内置能力会在工具目录里统一验证。</div>;
+  }
+  const verified = rows.filter((row) => row.state === 'verified').length;
+  const failed = rows.filter((row) => row.state === 'failed').length;
+  return (
+    <Space direction="vertical" className="full">
+      <Space wrap>
+        <Tag color="green">已验证 {verified}</Tag>
+        <Tag color={failed ? 'red' : 'default'}>失败 {failed}</Tag>
+        <Tag>总数 {rows.length}</Tag>
+      </Space>
+      <Table
+        size="small"
+        pagination={false}
+        rowKey={(row) => row.key}
+        dataSource={rows}
+        columns={[
+          { title: '工具', render: (_, row) => <Text code>{row.tool_id}</Text> },
+          { title: '节点通道', render: (_, row) => <Text copyable>{row.node_id}</Text> },
+          { title: '执行器', render: (_, row) => <Text code>{row.executor}</Text> },
+          { title: '验证', render: (_, row) => <Tag color={probeStateColor(row.state)}>{probeStateLabel(row.state)}</Tag> },
+          { title: '最近验证', render: (_, row) => formatTime(row.last_probe_at) || '-' },
+          { title: '下次验证', render: (_, row) => formatTime(row.next_probe_at) || '-' },
+          { title: '错误', render: (_, row) => compactJson(row.error) },
+        ]}
+      />
+    </Space>
+  );
+}
+
+function WorkbenchOperationFeed({ events, loading, onOpenTask }) {
+  if (loading && !events.length) {
+    return <div className="empty-panel">正在读取这台电脑的操作记录...</div>;
+  }
+  if (!events.length) {
+    return <div className="empty-panel">这台电脑还没有操作记录。</div>;
+  }
+  return (
+    <div className="operation-feed">
+      {events.slice(0, 10).map((event) => (
+        <div key={event.id} className={`operation-item operation-${event.state || 'unknown'}`}>
+          <div className="operation-dot" />
+          <div className="operation-main">
+            <div className="operation-head">
+              <Space wrap>
+                <Tag color={operationEventColor(event.type)}>{operationEventLabel(event.type)}</Tag>
+                {event.state && <Tag color={taskStateColor(event.state)}>{stateLabel(event.state)}</Tag>}
+                <Text strong>{event.summary || '-'}</Text>
+              </Space>
+              <Text type="secondary">{formatTime(event.time)}</Text>
+            </div>
+            <div className="operation-meta">
+              {event.node_id && <Text type="secondary">节点：{event.node_id}</Text>}
+              {event.task_id && (
+                <Button size="small" type="link" onClick={() => onOpenTask?.(event.task_id)}>
+                  查看任务
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function buildWorkbenchActionRequest(workbenchId, values) {
+  const action = values.action || 'command';
+  if (action === 'runtime') {
+    return {
+      path: `/workbenches/${encodeURIComponent(workbenchId)}/actions`,
+      body: {
+        action: 'runtime.submit',
+        payload: {
+          tool_id: values.tool,
+          payload: parseJsonOrDefault(values.payload, {}),
+        },
+        title: values.title || `运行工具 ${values.tool}`,
+        created_by: 'web-console',
+      },
+    };
+  }
+  let payload;
+  let apiAction;
+  if (action === 'screenshot') {
+    apiAction = 'desktop.screenshot';
+    payload = { operation: 'screenshot', path: null, timeout_seconds: 30 };
+  } else if (action === 'file_list') {
+    apiAction = 'file.list';
+    payload = { operation: 'list', path: values.path, recursive: false, max_entries: 200 };
+  } else {
+    apiAction = 'command.run';
+    payload = {
+      program: values.program || 'hostname',
+      args: values.args ? values.args.split('\n').map((item) => item.trim()).filter(Boolean) : [],
+      working_dir: null,
+      timeout_seconds: 30,
+    };
+  }
+  return {
+    path: `/workbenches/${encodeURIComponent(workbenchId)}/actions`,
+    body: {
+      action: apiAction,
+      payload,
+      title: values.title || `${workbenchId} ${action}`,
+      created_by: 'web-console',
+      priority: 'normal',
+    },
+  };
 }
 
 function NodeConfigModal({ node, onClose, onDone }) {
@@ -835,26 +1385,31 @@ function NodeConfigModal({ node, onClose, onDone }) {
   );
 }
 
-function NodeResourceList({ nodes }) {
-  if (!nodes.length) {
+function NodeResourceList({ nodes, workbenches = [] }) {
+  const physicalHosts = normalizeWorkbenchRows(workbenches, nodes);
+  if (!physicalHosts.length) {
     return <div className="empty-panel">暂无节点。安装 Worker 后，这里会显示 CPU、内存、硬盘和可用能力。</div>;
   }
 
   return (
     <div className="node-resource-list">
-      {nodes.map((node) => (
-        <div key={node.metadata.id} className={`node-resource-row node-state-${node.status.state || 'unknown'}`}>
+      {physicalHosts.map((host) => {
+        const node = host.primary;
+        return (
+        <div key={host.id} className={`node-resource-row node-state-${host.state || 'unknown'}`}>
           <div className="node-summary">
             <div className="node-status-line">
-              <Text strong className="node-title">{node.metadata.name}</Text>
-              <Badge status={node.status.state === 'online' ? 'success' : 'default'} text={stateLabel(node.status.state)} />
+              <Text strong className="node-title">{host.name}</Text>
+              <Badge status={host.state === 'online' ? 'success' : 'default'} text={stateLabel(host.state)} />
             </div>
             <Text type="secondary" className="node-meta">
               {node.spec.os || '-'} · {node.spec.cpu_cores || 0} 核 · {node.spec.address || '-'}
             </Text>
             <div className="node-badges">
-              {(node.spec.capabilities || []).slice(0, 4).map((item) => <Tag key={item}>{item}</Tag>)}
-              {(node.spec.capabilities || []).length > 4 && <Tag>+{node.spec.capabilities.length - 4}</Tag>}
+              <ChannelStatus role="worker" node={host.channels.worker} />
+              <ChannelStatus role="desktop" node={host.channels.desktop} />
+              {host.capabilities.slice(0, 3).map((item) => <Tag key={item}>{item}</Tag>)}
+              {host.capabilities.length > 3 && <Tag>+{host.capabilities.length - 3}</Tag>}
             </div>
           </div>
           <ResourceMeter
@@ -876,7 +1431,8 @@ function NodeResourceList({ nodes }) {
             percent={diskUsedPercent(node)}
           />
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1115,29 +1671,70 @@ function Capabilities({ manifest }) {
   );
 }
 
-function Tools({ tools, onDone }) {
+function Tools({ tools, probeCenter, onDone }) {
   const [selected, setSelected] = useState(null);
+  const [probing, setProbing] = useState(null);
   const categories = Array.from(new Set(tools.map((tool) => tool.category || 'other')));
   const riskCounts = {
     high: tools.filter((tool) => tool.risk === 'high').length,
     medium: tools.filter((tool) => tool.risk === 'medium').length,
     low: tools.filter((tool) => tool.risk === 'low').length,
   };
+  const summary = probeCenter?.summary || {};
+  const centerTools = probeCenter?.tools || tools;
+  const workbenchRows = probeCenter?.workbenches || [];
+
+  const runProbe = async (toolId) => {
+    const key = toolId || '__all__';
+    setProbing(key);
+    try {
+      const path = toolId ? `/tools/${toolId}/probe` : '/tools/probe';
+      await fetchJson(path, { method: 'POST' });
+      message.success('已提交验证任务');
+      onDone?.();
+    } catch (error) {
+      message.error(`验证失败：${error.message}`);
+    } finally {
+      setProbing(null);
+    }
+  };
 
   return (
     <Space direction="vertical" size={16} className="full">
       <Row gutter={[16, 16]}>
-        <Col xs={24} md={12} xl={6}><Metric title="工具数量" value={tools.length} prefix={<ToolOutlined />} /></Col>
-        <Col xs={24} md={12} xl={6}><Metric title="能力分类" value={categories.length} /></Col>
-        <Col xs={24} md={12} xl={6}><Metric title="高风险工具" value={riskCounts.high} /></Col>
-        <Col xs={24} md={12} xl={6}><Metric title="需策略控制" value={tools.filter((tool) => tool.requires_policy).length} /></Col>
+        <Col xs={24} md={12} xl={6}><Metric title="工具数量" value={summary.tool_count ?? tools.length} prefix={<ToolOutlined />} /></Col>
+        <Col xs={24} md={12} xl={6}><Metric title="已验证链路" value={summary.verified_edges || 0} tone="green" /></Col>
+        <Col xs={24} md={12} xl={6}><Metric title="待验证链路" value={summary.declared_unverified_edges || 0} tone="orange" /></Col>
+        <Col xs={24} md={12} xl={6}><Metric title="失败链路" value={summary.failed_edges || 0} tone={summary.failed_edges ? 'red' : 'blue'} /></Col>
       </Row>
-      <ProCard title="AI 可发现工具目录" bordered>
+
+      <ProCard
+        title="能力验证中心"
+        bordered
+        extra={<Button icon={<ReloadOutlined />} loading={probing === '__all__'} onClick={() => runProbe(null)}>验证全部</Button>}
+      >
+        <Space direction="vertical" className="full" size={12}>
+          <ProbeReadiness summary={summary} />
+          <Row gutter={[12, 12]}>
+            {(summary.recommendations || []).map((item) => (
+              <Col xs={24} md={12} key={item.code}>
+                <Alert
+                  showIcon
+                  type={item.level === 'warning' ? 'warning' : item.level === 'ok' ? 'success' : 'info'}
+                  message={item.message}
+                />
+              </Col>
+            ))}
+          </Row>
+        </Space>
+      </ProCard>
+
+      <ProCard title="工具验证矩阵" bordered>
         <Table
           rowKey={(row) => row.id}
-          dataSource={tools}
+          dataSource={centerTools}
           tableLayout="fixed"
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1320 }}
           columns={[
             {
               title: '工具',
@@ -1156,13 +1753,23 @@ function Tools({ tools, onDone }) {
             { title: '在线节点', width: 110, render: (_, row) => <Tag color={row.node_count ? 'green' : 'red'}>{row.node_count || 0}</Tag> },
             { title: '已验证', width: 110, render: (_, row) => <Tag color={row.verified_node_count ? 'green' : 'default'}>{row.verified_node_count || 0}</Tag> },
             {
+              title: 'Probe',
+              width: 180,
+              render: (_, row) => <ProbeStateStrip nodes={row.nodes || []} />,
+            },
+            {
               title: '说明',
               render: (_, row) => <Text type="secondary">{row.summary}</Text>,
             },
             {
               title: '操作',
-              width: 100,
-              render: (_, row) => <Button size="small" onClick={() => setSelected(row)}>详情</Button>,
+              width: 160,
+              render: (_, row) => (
+                <Space>
+                  <Button size="small" onClick={() => setSelected(row)}>详情</Button>
+                  <Button size="small" loading={probing === row.id} onClick={() => runProbe(row.id)}>验证</Button>
+                </Space>
+              ),
             },
           ]}
           expandable={{
@@ -1171,12 +1778,129 @@ function Tools({ tools, onDone }) {
                 <Space wrap>{(row.labels || []).map((label) => <Tag key={label}>{label}</Tag>)}</Space>
                 <Text type="secondary">支持节点：{(row.supported_nodes || []).join(', ') || '暂无在线节点'}</Text>
                 <Text type="secondary">验证状态：{row.verification_status || '-'}</Text>
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey={(node) => node.id}
+                  dataSource={row.nodes || []}
+                  columns={[
+                    { title: '节点', render: (_, node) => node.name || node.id },
+                    { title: '系统', render: (_, node) => `${node.os || '-'} / ${node.arch || '-'}` },
+                    { title: '验证', render: (_, node) => <Tag color={probeStateColor(node.verification_status)}>{probeStateLabel(node.verification_status)}</Tag> },
+                    { title: '最后验证', render: (_, node) => formatTime(node.probe?.metadata?.updated_at) || '-' },
+                    { title: '错误', render: (_, node) => compactJson(node.probe?.status?.error) },
+                  ]}
+                />
               </Space>
             ),
           }}
         />
       </ProCard>
+
+      <ProCard title="电脑覆盖" bordered>
+        <Table
+          rowKey={(row) => row.metadata.id}
+          dataSource={workbenchRows}
+          tableLayout="fixed"
+          scroll={{ x: 1120 }}
+          columns={[
+            {
+              title: '电脑',
+              width: 240,
+              render: (_, row) => (
+                <Space direction="vertical" size={1}>
+                  <Text strong>{row.metadata.name}</Text>
+                  <Text type="secondary">{row.metadata.id}</Text>
+                </Space>
+              ),
+            },
+            { title: '状态', width: 100, render: (_, row) => <Tag>{stateLabel(row.status.state)}</Tag> },
+            { title: '系统', width: 120, render: (_, row) => row.spec.os || '-' },
+            { title: '已验证', width: 100, render: (_, row) => <Tag color="green">{row.status.verified_tools || 0}</Tag> },
+            { title: '失败', width: 90, render: (_, row) => <Tag color={row.status.failed_tools ? 'red' : 'default'}>{row.status.failed_tools || 0}</Tag> },
+            { title: '待验证', width: 100, render: (_, row) => <Tag color={row.status.unverified_tools ? 'orange' : 'default'}>{row.status.unverified_tools || 0}</Tag> },
+            {
+              title: '工具',
+              render: (_, row) => (
+                <Space wrap>
+                  {(row.tools || []).slice(0, 10).map((item) => (
+                    <Tag key={`${item.tool_id}:${item.node?.id}`} color={probeStateColor(item.verification_status)}>
+                      {item.tool_id}
+                    </Tag>
+                  ))}
+                  {(row.tools || []).length > 10 && <Tag>+{(row.tools || []).length - 10}</Tag>}
+                </Space>
+              ),
+            },
+          ]}
+          expandable={{
+            expandedRowRender: (row) => (
+              <Table
+                size="small"
+                pagination={false}
+                rowKey={(item) => `${item.tool_id}:${item.node?.id}`}
+                dataSource={row.tools || []}
+                columns={[
+                  { title: '工具', render: (_, item) => <Text code>{item.tool_id}</Text> },
+                  { title: '能力', dataIndex: 'capability' },
+                  { title: '节点', render: (_, item) => item.node?.name || item.node?.id },
+                  { title: '验证', render: (_, item) => <Tag color={probeStateColor(item.verification_status)}>{probeStateLabel(item.verification_status)}</Tag> },
+                  { title: '最近任务', render: (_, item) => item.probe?.metadata?.task_id || '-' },
+                ]}
+              />
+            ),
+          }}
+        />
+      </ProCard>
+
       <ToolDetailModal tool={selected} onClose={() => setSelected(null)} onDone={onDone} />
+    </Space>
+  );
+}
+
+function ProbeReadiness({ summary }) {
+  const readiness = summary.readiness || 'needs_probe';
+  const meta = {
+    verified: { color: 'green', label: '已验证' },
+    probing: { color: 'blue', label: '验证中' },
+    attention_required: { color: 'red', label: '需要处理' },
+    needs_probe: { color: 'orange', label: '需要验证' },
+  }[readiness] || { color: 'default', label: readiness };
+  return (
+    <section className="probe-readiness">
+      <div>
+        <Text className="eyebrow">Tool Probe Center</Text>
+        <Title level={5}>工具真实可用性</Title>
+        <Text type="secondary">
+          Hub 通过 Probe 把“节点声明有能力”升级成“运行时确认可用”，调度器会优先选择已验证链路。
+        </Text>
+      </div>
+      <Space>
+        <Tag color={meta.color}>{meta.label}</Tag>
+        <Tag>工具 {summary.tool_count || 0}</Tag>
+        <Tag>电脑 {summary.workbench_count || 0}</Tag>
+        <Tag>注册工具 {summary.registered_node_tool_count || 0}</Tag>
+      </Space>
+    </section>
+  );
+}
+
+function ProbeStateStrip({ nodes }) {
+  const counts = nodes.reduce((acc, node) => {
+    const key = node.verification_status || 'declared_unverified';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const entries = ['verified', 'pending', 'failed', 'declared_unverified', 'unsupported']
+    .filter((key) => counts[key]);
+  if (!entries.length) return <Text type="secondary">无节点</Text>;
+  return (
+    <Space size={4} wrap>
+      {entries.map((key) => (
+        <Tag key={key} color={probeStateColor(key)}>
+          {probeStateLabel(key)} {counts[key]}
+        </Tag>
+      ))}
     </Space>
   );
 }
@@ -2572,6 +3296,7 @@ function ExecutionRecords({ tasks, workflows }) {
   const [recordType, setRecordType] = useState('task');
   const [recordId, setRecordId] = useState(tasks[0]?.metadata.id || '');
   const [record, setRecord] = useState(null);
+  const [preview, setPreview] = useState(null);
   const [loadingRecord, setLoadingRecord] = useState(false);
   const options = recordType === 'task'
     ? tasks.map((task) => ({ value: task.metadata.id, label: task.spec.title || task.metadata.id }))
@@ -2634,18 +3359,75 @@ function ExecutionRecords({ tasks, workflows }) {
             <Col span={6}><Metric title="执行节点" value={record.summary?.leased_by_node_id || '-'} /></Col>
             <Col span={6}><Metric title="生成时间" value={formatTime(record.generated_at)} /></Col>
           </Row>
-          <ProCard title="档案摘要" bordered>
-            <pre className="result-json">{JSON.stringify(record.summary || {}, null, 2)}</pre>
+          <ProCard title="执行摘要" bordered>
+            <Table
+              size="small"
+              pagination={false}
+              rowKey={(row) => row.label}
+              dataSource={executionRecordRows(record)}
+              columns={[
+                { title: '项目', width: 140, dataIndex: 'label' },
+                { title: '内容', render: (_, row) => <Text>{row.value}</Text> },
+              ]}
+            />
+          </ProCard>
+          <ProCard title="执行结果" bordered>
+            <Row gutter={12}>
+              <Col span={12}>
+                <Text strong>stdout / result</Text>
+                <pre className="result-json live-log">{record.execution?.result?.stdout || resultText(record.execution?.result)}</pre>
+              </Col>
+              <Col span={12}>
+                <Text strong>stderr / error</Text>
+                <pre className="result-json live-log">{record.execution?.result?.stderr || resultText(record.execution?.error)}</pre>
+              </Col>
+            </Row>
+          </ProCard>
+          <ProCard title="证据产物" bordered>
+            <EvidenceGrid artifacts={record.execution?.artifacts || []} onPreview={setPreview} />
+          </ProCard>
+          <ProCard title="审计链路" bordered>
+            <Table
+              size="small"
+              pagination={{ pageSize: 8 }}
+              rowKey={(row) => row.metadata.id}
+              dataSource={record.audit || []}
+              columns={[
+                { title: '时间', width: 180, render: (_, row) => formatTime(row.metadata.created_at) },
+                { title: '事件', width: 140, render: (_, row) => <Tag color={operationEventColor(row.spec.type)}>{operationEventLabel(row.spec.type)}</Tag> },
+                { title: '操作者', width: 180, render: (_, row) => row.spec.actor || '-' },
+                { title: '说明', render: (_, row) => row.spec.summary || '-' },
+              ]}
+            />
           </ProCard>
           <ProCard title="完整执行档案 JSON" bordered>
             <pre className="result-json execution-record-json">{JSON.stringify(record, null, 2)}</pre>
           </ProCard>
+          <ArtifactPreview artifact={preview} onClose={() => setPreview(null)} />
         </>
       ) : (
         <ProCard bordered><Text type="secondary">请选择任务或工作流。</Text></ProCard>
       )}
     </Space>
   );
+}
+
+function executionRecordRows(record) {
+  const summary = record.summary || {};
+  const execution = record.execution || {};
+  const result = execution.result || {};
+  return [
+    ['标题', summary.title || '-'],
+    ['提交人', summary.created_by || '-'],
+    ['负责人', summary.owner || '-'],
+    ['优先级', summary.priority || '-'],
+    ['开始时间', formatTime(summary.started_at) || '-'],
+    ['完成时间', formatTime(summary.completed_at) || '-'],
+    ['尝试次数', summary.attempts ?? '-'],
+    ['退出码', result.exit_code ?? '-'],
+    ['耗时', result.duration_ms != null ? `${result.duration_ms} ms` : '-'],
+    ['产物', execution.artifacts?.length ? `${execution.artifacts.length} 个` : '无'],
+  ].map(([label, value]) => ({ label, value }));
 }
 
 function Artifacts({ artifacts, tasks }) {
@@ -3781,6 +4563,13 @@ function TaskDetailModal({ taskId, tasks, artifacts, auditEvents, onClose }) {
   const taskArtifacts = live?.artifacts || artifacts.filter((artifact) => artifact.spec.task_id === taskId);
   const inputPayload = parseTaskInputPayload(task);
   const taskOperation = taskOperationLabel(inputPayload);
+  const actionLabel = task?.spec.labels?.find((label) => label.startsWith('action:'))?.replace('action:', '') || taskOperation;
+  const workbenchId = task?.spec.labels?.find((label) => label.startsWith('workbench:'))?.replace('workbench:', '');
+  const channelRole = schedulePreview?.decision?.required_channel_role
+    || schedulePreview?.candidates?.find((item) => item.node_id === leasedNode)?.channel_role
+    || (inputPayload?.type === 'desktop' ? 'desktop' : 'worker');
+  const durationMs = result?.duration_ms ?? error?.result?.duration_ms;
+  const exitCode = result?.exit_code ?? error?.result?.exit_code;
   const desktopTimeline = buildDesktopTimeline({
     task,
     inputPayload,
@@ -3793,7 +4582,9 @@ function TaskDetailModal({ taskId, tasks, artifacts, auditEvents, onClose }) {
     ['提交人', task?.metadata.created_by || '-'],
     ['负责人', task?.spec.owner || '-'],
     ['执行节点', leasedNode || '-'],
+    ['通道类型', channelLabel(channelRole)],
     ['执行动作', taskOperation],
+    ['Workbench', workbenchId || '-'],
     ['调度原因', schedulePreview?.decision?.reason || scheduler?.reason || '暂无调度说明'],
     ['产物', taskArtifacts.length ? `${taskArtifacts.length} 个` : '无'],
     ['失败原因', error?.message || task?.status.blocked_reason || '-'],
@@ -3829,11 +4620,27 @@ function TaskDetailModal({ taskId, tasks, artifacts, auditEvents, onClose }) {
     >
       {task ? (
         <Space direction="vertical" className="full" size={14}>
+          <section className="task-hero">
+            <div className="task-hero-main">
+              <Space wrap>
+                <Tag color={taskStateColor(state)}>{stateLabel(state)}</Tag>
+                <Tag color={channelColor(channelRole, { status: { state: leasedNode ? 'online' : 'unknown' } })}>{channelLabel(channelRole)}</Tag>
+                <Tag>{actionLabel}</Tag>
+              </Space>
+              <Title level={4}>{task.spec.title}</Title>
+              <Text type="secondary">{task.spec.summary || 'AgentGrid 结构化任务'}</Text>
+            </div>
+            <div className="task-hero-side">
+              <Progress type="circle" percent={taskStateProgress(state) || progress} size={74} />
+              <Text type="secondary">进度 {progress}%</Text>
+            </div>
+          </section>
+
           <Row gutter={12}>
-            <Col span={6}><Card size="small"><Statistic title="状态" value={stateLabel(state)} /></Card></Col>
             <Col span={6}><Card size="small"><Statistic title="执行节点" value={leasedNode || '-'} /></Card></Col>
-            <Col span={6}><Card size="small"><Statistic title="尝试次数" value={task.status.attempts || 0} /></Card></Col>
-            <Col span={6}><Card size="small"><Statistic title="验收" value={verificationLabel(verification?.state)} /></Card></Col>
+            <Col span={6}><Card size="small"><Statistic title="耗时" value={durationMs != null ? `${durationMs} ms` : '-'} /></Card></Col>
+            <Col span={6}><Card size="small"><Statistic title="退出码" value={exitCode != null ? exitCode : '-'} /></Card></Col>
+            <Col span={6}><Card size="small"><Statistic title="证据产物" value={taskArtifacts.length} suffix="个" /></Card></Col>
           </Row>
 
           <ProCard title="执行记录" bordered>
@@ -3862,31 +4669,9 @@ function TaskDetailModal({ taskId, tasks, artifacts, auditEvents, onClose }) {
             </Row>
           </ProCard>
 
-          <ProCard title="调度原因" bordered>
+          <ProCard title="调度决策" bordered>
             {schedulePreview ? (
-              <Space direction="vertical" className="full">
-                <Text>
-                  当前预览选择：
-                  <Text strong>{schedulePreview.selected_node_id || '暂无可用节点'}</Text>
-                </Text>
-                <Text type="secondary">{schedulePreview.decision?.reason}</Text>
-                <Table
-                  size="small"
-                  pagination={false}
-                  rowKey={(row) => row.node_id}
-                  dataSource={schedulePreview.candidates || []}
-                  columns={[
-                    { title: '节点', render: (_, row) => <Text strong>{row.node_name || row.node_id}</Text> },
-                    { title: '状态', render: (_, row) => <Tag color={row.eligible ? 'green' : 'default'}>{row.eligible ? '可调度' : '跳过'}</Tag> },
-                    { title: '评分', render: (_, row) => Number(row.score || 0).toFixed(2) },
-                    { title: '基础分', render: (_, row) => Number(row.base_resource_score || row.score || 0).toFixed(2) },
-                    { title: '风险', render: (_, row) => <Tag color={riskLabel(row.trust?.risk)}>{row.trust?.risk || '-'}</Tag> },
-                    { title: 'Probe', render: (_, row) => <Tag color={probeStateColor(row.trust?.state)}>{probeStateLabel(row.trust?.state)}</Tag> },
-                    { title: '槽位', dataIndex: 'available_slots' },
-                    { title: '原因', render: (_, row) => (row.reasons || []).join('；') },
-                  ]}
-                />
-              </Space>
+              <SchedulingDecisionPanel preview={schedulePreview} leasedNode={leasedNode} scheduler={scheduler} />
             ) : scheduler ? (
               <Space direction="vertical" className="full">
                 <Text>{scheduler.reason}</Text>
@@ -3944,36 +4729,8 @@ function TaskDetailModal({ taskId, tasks, artifacts, auditEvents, onClose }) {
             <pre className="result-json">{JSON.stringify(result || error || {}, null, 2)}</pre>
           </ProCard>
 
-          <ProCard title="任务产物" bordered>
-            <Table
-              size="small"
-              pagination={false}
-              rowKey={(row) => row.metadata.id}
-              dataSource={taskArtifacts}
-              columns={[
-                { title: '名称', render: (_, row) => <Text strong>{row.spec.name}</Text> },
-                { title: '类型', render: (_, row) => <Tag>{artifactTypeLabel(row.spec.type)}</Tag> },
-                { title: '大小', render: (_, row) => formatBytes(row.spec.size_bytes) },
-                { title: '预览', render: (_, row) => <Tag>{row.spec.v2?.preview?.kind || previewKind(row)}</Tag> },
-                { title: '哈希', render: (_, row) => row.spec.v2?.sha256 ? <Text copyable code>{shortHash(row.spec.v2.sha256)}</Text> : '-' },
-                { title: '节点', render: (_, row) => row.spec.node_id || '-' },
-                {
-                  title: '操作',
-                  render: (_, row) => (
-                    <Space>
-                      {isImageArtifact(row) && (
-                        <Button size="small" onClick={() => setPreview(row)}>
-                          预览
-                        </Button>
-                      )}
-                      <Button size="small" icon={<DownloadOutlined />} disabled={!row.spec.content_base64} href={artifactDownloadUrl(row)}>
-                        下载
-                      </Button>
-                    </Space>
-                  ),
-                },
-              ]}
-            />
+          <ProCard title="证据产物" bordered extra={<Tag>{taskArtifacts.length} 个</Tag>}>
+            <EvidenceGrid artifacts={taskArtifacts} onPreview={setPreview} />
           </ProCard>
 
           {desktopTimeline.length > 0 && (
@@ -4034,6 +4791,227 @@ function TaskDetailModal({ taskId, tasks, artifacts, auditEvents, onClose }) {
       )}
     </Modal>
   );
+}
+
+function SchedulingDecisionPanel({ preview, leasedNode, scheduler }) {
+  const candidates = preview.candidates || [];
+  const selectedNodeId = preview.selected_node_id || preview.decision?.node_id || leasedNode;
+  const selected = candidates.find((item) => item.node_id === selectedNodeId);
+  const eligible = candidates.filter((item) => item.eligible);
+  const skipped = candidates.filter((item) => !item.eligible);
+  const requirements = preview.requirements || {};
+  const required = selected?.task_requires || candidates[0]?.task_requires || {};
+  const suggestions = schedulingSuggestions(candidates, preview);
+  return (
+    <Space direction="vertical" className="full" size={14}>
+      <section className="schedule-summary">
+        <div>
+          <Text className="eyebrow">Placement Decision</Text>
+          <Title level={5}>{selectedNodeId ? `选择 ${selectedNodeId}` : '暂无可用节点'}</Title>
+          <Text type="secondary">{preview.decision?.reason || scheduler?.reason || '等待调度器写回决策原因'}</Text>
+        </div>
+        <div className="schedule-score">
+          <Statistic title="调度评分" value={Number(preview.decision?.score ?? selected?.score ?? 0).toFixed(2)} />
+          <Text type="secondary">分数越低越优</Text>
+        </div>
+      </section>
+
+      <div className="schedule-requirements">
+        <RequirementPill label="任务类型" value={required.task_type || preview.payload_type || '-'} />
+        <RequirementPill label="目标通道" value={channelLabel(required.channel_role || selected?.required_channel_role || 'worker')} />
+        <RequirementPill label="工具" value={required.tool_id || '-'} />
+        <RequirementPill label="电脑" value={requirements.workbench_id || '不限'} />
+        <RequirementPill label="指定节点" value={requirements.node_id || '不限'} />
+        <RequirementPill label="操作系统" value={(requirements.os || []).join(', ') || '不限'} />
+        <RequirementPill label="能力" value={(requirements.capabilities || []).join(', ') || '不限'} />
+      </div>
+
+      {selected && (
+        <section className="selected-node-card">
+          <div>
+            <Space wrap>
+              <Tag color="green">最终选择</Tag>
+              <Tag color={channelColor(selected.channel_role, { status: { state: selected.state } })}>{channelLabel(selected.channel_role)}</Tag>
+              <Tag>{selected.os}</Tag>
+              <Tag color={probeStateColor(selected.trust?.state)}>{probeStateLabel(selected.trust?.state)}</Tag>
+              <Tag color={riskColor(selected.trust?.risk)}>{riskLabel(selected.trust?.risk)}风险</Tag>
+            </Space>
+            <Title level={5}>{selected.node_name || selected.node_id}</Title>
+            <Text type="secondary">{selected.channel_explanation}</Text>
+          </div>
+          <div className="selected-node-metrics">
+            <Statistic title="可用槽位" value={selected.available_slots ?? 0} />
+            <Statistic title="资源分" value={Number(selected.base_resource_score ?? selected.score ?? 0).toFixed(2)} />
+          </div>
+        </section>
+      )}
+
+      {!!suggestions.length && (
+        <Alert
+          type={selectedNodeId ? 'info' : 'warning'}
+          showIcon
+          message="调度建议"
+          description={
+            <Space direction="vertical" size={4}>
+              {suggestions.map((item) => <Text key={item}>{item}</Text>)}
+            </Space>
+          }
+        />
+      )}
+
+      <Row gutter={12}>
+        <Col span={12}><Card size="small"><Statistic title="可调度节点" value={eligible.length} suffix="个" /></Card></Col>
+        <Col span={12}><Card size="small"><Statistic title="被排除节点" value={skipped.length} suffix="个" /></Card></Col>
+      </Row>
+
+      <Table
+        className="schedule-candidate-table"
+        size="small"
+        pagination={{ pageSize: 8 }}
+        rowKey={(row) => row.node_id}
+        dataSource={candidates}
+        columns={[
+          {
+            title: '节点',
+            width: 220,
+            render: (_, row) => (
+              <Space direction="vertical" size={1}>
+                <Text strong>{row.node_name || row.node_id}</Text>
+                <Text type="secondary">{row.node_id}</Text>
+              </Space>
+            ),
+          },
+          { title: '通道', width: 120, render: (_, row) => <Tag color={channelColor(row.channel_role, { status: { state: row.state } })}>{channelLabel(row.channel_role)}</Tag> },
+          { title: '状态', width: 110, render: (_, row) => <Tag color={row.eligible ? 'green' : 'default'}>{row.eligible ? '可调度' : '跳过'}</Tag> },
+          { title: '系统', width: 120, render: (_, row) => row.os || '-' },
+          { title: '槽位', width: 80, dataIndex: 'available_slots' },
+          { title: '评分', width: 95, render: (_, row) => Number(row.score || 0).toFixed(2) },
+          { title: '资源分', width: 95, render: (_, row) => Number(row.base_resource_score || row.score || 0).toFixed(2) },
+          { title: 'Probe', width: 110, render: (_, row) => <Tag color={probeStateColor(row.trust?.state)}>{probeStateLabel(row.trust?.state)}</Tag> },
+          { title: '风险', width: 90, render: (_, row) => <Tag color={riskColor(row.trust?.risk)}>{riskLabel(row.trust?.risk)}</Tag> },
+          { title: '原因', render: (_, row) => <CandidateReasons row={row} /> },
+        ]}
+        expandable={{
+          expandedRowRender: (row) => (
+            <pre className="result-json">{JSON.stringify({
+              task_requires: row.task_requires,
+              trust: row.trust,
+              worker: row.worker,
+              reasons: row.reasons,
+            }, null, 2)}</pre>
+          ),
+        }}
+      />
+    </Space>
+  );
+}
+
+function RequirementPill({ label, value }) {
+  return (
+    <div className="requirement-pill">
+      <Text type="secondary">{label}</Text>
+      <Text strong>{value}</Text>
+    </div>
+  );
+}
+
+function CandidateReasons({ row }) {
+  const reasons = row.reasons || [];
+  if (!reasons.length) return <Text type="secondary">暂无说明</Text>;
+  const primary = reasons[0];
+  return (
+    <Space direction="vertical" size={2}>
+      <Text>{primary}</Text>
+      {reasons.slice(1, 3).map((reason) => <Text key={reason} type="secondary">{reason}</Text>)}
+      {reasons.length > 3 && <Text type="secondary">还有 {reasons.length - 3} 条原因，展开查看</Text>}
+    </Space>
+  );
+}
+
+function schedulingSuggestions(candidates, preview) {
+  const suggestions = new Set();
+  if (!candidates.some((item) => item.eligible)) {
+    suggestions.add('没有可调度节点：优先检查节点是否在线、能力是否注册、通道是否匹配。');
+  }
+  if (candidates.some((item) => item.reasons?.some((reason) => reason.includes('节点状态是 Offline')))) {
+    suggestions.add('有节点离线：启动对应 Worker，或等待心跳恢复后再提交任务。');
+  }
+  if (candidates.some((item) => item.reasons?.some((reason) => reason.includes('缺少执行能力')))) {
+    suggestions.add('有节点缺少能力：在 Worker 注册能力或安装对应插件/工具。');
+  }
+  if (candidates.some((item) => item.reasons?.some((reason) => reason.includes('通道')))) {
+    suggestions.add('通道不匹配：后台命令走 Worker，截图/点击/输入走 Desktop Helper。');
+  }
+  if (candidates.some((item) => item.reasons?.some((reason) => reason.includes('Probe') || reason.includes('未通过运行时验证') || reason.includes('未验证')))) {
+    suggestions.add('可信度较低：运行 Tool Probe，把节点工具状态从声明提升为已验证。');
+  }
+  if (preview?.requirements?.workbench_id) {
+    suggestions.add('这个任务锁定了指定电脑/工位，其他电脑即使在线也不会被选中。');
+  }
+  return Array.from(suggestions).slice(0, 4);
+}
+
+function EvidenceGrid({ artifacts, onPreview }) {
+  if (!artifacts.length) {
+    return <div className="empty-panel">这个任务还没有产物。命令输出、截图、报告和文件会在这里归档。</div>;
+  }
+  return (
+    <div className="evidence-grid">
+      {artifacts.map((artifact) => {
+        const isImage = isImageArtifact(artifact);
+        const text = artifactTextPreview(artifact);
+        return (
+          <div key={artifact.metadata.id} className="evidence-card">
+            <div className="evidence-head">
+              <Space wrap>
+                <Tag color={isImage ? 'blue' : 'purple'}>{artifactTypeLabel(artifact.spec.type)}</Tag>
+                <Tag>{artifact.spec.v2?.preview?.kind || previewKind(artifact)}</Tag>
+              </Space>
+              <Text type="secondary">{formatBytes(artifact.spec.size_bytes)}</Text>
+            </div>
+            <Text strong className="evidence-title">{artifact.spec.name}</Text>
+            <Text type="secondary" className="evidence-meta">
+              {artifact.spec.node_id || '-'} · {formatTime(artifact.metadata.created_at)}
+            </Text>
+            {isImage ? (
+              <button type="button" className="evidence-image" onClick={() => onPreview(artifact)}>
+                <img src={artifactDataUrl(artifact)} alt={artifact.spec.name} />
+              </button>
+            ) : (
+              <pre className="evidence-text">{text || '无内联预览'}</pre>
+            )}
+            <div className="evidence-actions">
+              {artifact.spec.v2?.sha256 && <Text code>{shortHash(artifact.spec.v2.sha256)}</Text>}
+              <Button size="small" icon={<DownloadOutlined />} disabled={!artifact.spec.content_base64} href={artifactDownloadUrl(artifact)}>
+                下载
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function artifactTextPreview(artifact) {
+  if (!artifact?.spec?.content_base64) return '';
+  const contentType = artifact.spec.content_type || '';
+  if (!contentType.startsWith('text/') && !contentType.includes('json')) return '';
+  try {
+    const decoded = decodeURIComponent(
+      Array.from(window.atob(artifact.spec.content_base64))
+        .map((char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`)
+        .join('')
+    );
+    return decoded.length > 1600 ? `${decoded.slice(0, 1600)}\n...` : decoded;
+  } catch {
+    try {
+      const decoded = window.atob(artifact.spec.content_base64);
+      return decoded.length > 1600 ? `${decoded.slice(0, 1600)}\n...` : decoded;
+    } catch {
+      return '';
+    }
+  }
 }
 
 function CommandDocs({ doc, setDoc }) {
@@ -4264,9 +5242,10 @@ function stringifyShort(value) {
   return text.length > 80 ? `${text.slice(0, 80)}...` : text;
 }
 
-function SubmitCommand({ nodes, onDone, initialOverride }) {
+function SubmitCommand({ nodes, workbenches = [], onDone, initialOverride }) {
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const targetWorkbenches = useMemo(() => workbenchOptions(workbenches, nodes), [workbenches, nodes]);
   const initialValues = useMemo(() => ({
     title: '主机命令任务',
     taskType: 'command',
@@ -4287,6 +5266,7 @@ function SubmitCommand({ nodes, onDone, initialOverride }) {
       const taskType = values.taskType || 'command';
       const labels = ['compute', taskType === 'http_request' ? 'http_request' : taskType];
       if (values.targetMode === 'node' && values.node_id) labels.push(`node:${values.node_id}`);
+      if (values.targetMode === 'workbench' && values.workbench_id) labels.push(`workbench:${values.workbench_id}`);
       if (values.targetMode === 'os' && values.os) labels.push(`os:${values.os}`);
       if (values.group) labels.push(`group:${values.group}`);
       if (values.prefer_node_id) labels.push(`prefer:${values.prefer_node_id}`);
@@ -4329,6 +5309,7 @@ function SubmitCommand({ nodes, onDone, initialOverride }) {
               <Select
                 options={[
                   { value: 'best', label: '自动选择最优节点' },
+                  { value: 'workbench', label: '指定电脑/工位' },
                   { value: 'node', label: '指定节点' },
                   { value: 'os', label: '指定操作系统' },
                 ]}
@@ -4362,6 +5343,20 @@ function SubmitCommand({ nodes, onDone, initialOverride }) {
           </Col>
         </Row>
         <Row gutter={16}>
+          <Col span={8}>
+            <Form.Item noStyle shouldUpdate>
+              {({ getFieldValue }) => getFieldValue('targetMode') === 'workbench' ? (
+                <Form.Item name="workbench_id" label="指定电脑/工位" rules={[{ required: true }]}>
+                  <Select
+                    showSearch
+                    options={targetWorkbenches}
+                    placeholder="选择一台电脑"
+                    optionFilterProp="label"
+                  />
+                </Form.Item>
+              ) : null}
+            </Form.Item>
+          </Col>
           <Col span={8}>
             <Form.Item noStyle shouldUpdate>
               {({ getFieldValue }) => getFieldValue('targetMode') === 'node' ? (

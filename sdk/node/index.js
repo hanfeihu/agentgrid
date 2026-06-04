@@ -27,7 +27,19 @@ export class AgentGridClient {
   }
 
   async workbenches() {
-    return this.get('/api/runtime-standard/workbench');
+    return this.get('/api/workbenches');
+  }
+
+  async workbench(workbenchId) {
+    return this.get(`/api/workbenches/${encodeURIComponent(workbenchId)}`);
+  }
+
+  async workbenchTimeline(workbenchId) {
+    return this.get(`/api/workbenches/${encodeURIComponent(workbenchId)}/timeline`);
+  }
+
+  async workbenchAction(workbenchId, request = {}) {
+    return this.post(`/api/workbenches/${encodeURIComponent(workbenchId)}/actions`, request);
   }
 
   async devices() {
@@ -82,21 +94,23 @@ export class AgentGridClient {
     return this.get('/api/webhooks/deliveries');
   }
 
-  async runCommand({ program, args = [], nodeId, title }) {
+  async runCommand({ program, args = [], nodeId, workbenchId, title }) {
     return this.submitTask({
       tool_id: 'command.run',
       title: title || `command ${program}`,
       node_id: nodeId,
+      workbench_id: workbenchId,
       payload: { type: 'command', program, args, working_dir: null, timeout_seconds: 30 },
       verify: { presets: ['command.exit_zero'] },
     });
   }
 
-  async runPlugin({ pluginId, action = 'run', input = {}, nodeId, title }) {
+  async runPlugin({ pluginId, action = 'run', input = {}, nodeId, workbenchId, title }) {
     return this.submitTask({
       tool_id: 'plugin.run',
       title: title || `plugin ${pluginId}:${action}`,
       node_id: nodeId,
+      workbench_id: workbenchId,
       payload: {
         type: 'plugin',
         plugin_id: pluginId,

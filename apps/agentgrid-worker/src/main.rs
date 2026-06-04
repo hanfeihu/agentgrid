@@ -87,6 +87,8 @@ struct Cli {
     tags: Vec<String>,
     #[arg(long = "capability")]
     capabilities: Vec<String>,
+    #[arg(long, env = "AGENTGRID_CHANNEL_ROLE")]
+    channel_role: Option<String>,
     #[arg(long, default_value_t = false)]
     once: bool,
     #[arg(long, default_value_t = 300)]
@@ -124,20 +126,9 @@ fn main() -> Result<()> {
     } else {
         cli.tags
     };
+    let channel_role = normalize_node_channel_role(cli.channel_role.as_deref(), &node_id);
     let capabilities = if cli.capabilities.is_empty() {
-        vec![
-            "http".to_string(),
-            "command".to_string(),
-            "file".to_string(),
-            "git".to_string(),
-            "docker".to_string(),
-            "browser".to_string(),
-            "desktop".to_string(),
-            "session".to_string(),
-            "agentmessage".to_string(),
-            "plugin".to_string(),
-            "port_bridge".to_string(),
-        ]
+        default_capabilities_for_channel(&channel_role)
     } else {
         cli.capabilities
     };
@@ -188,6 +179,7 @@ fn main() -> Result<()> {
             cli.auto_update && !cli.no_auto_update,
             &cli.update_channel,
             &machine_fingerprint,
+            &channel_role,
             join_token.as_deref(),
         );
         if let Err(error) = client
@@ -2501,6 +2493,7 @@ fn collect_report(
     auto_update_enabled: bool,
     update_channel: &str,
     machine_fingerprint: &str,
+    channel_role: &str,
     join_token: Option<&str>,
 ) -> serde_json::Value {
     let mut system = System::new_all();
@@ -2538,6 +2531,8 @@ fn collect_report(
         "worker_target": worker_target(),
         "glibc_version": glibc_version(),
         "machine_fingerprint": machine_fingerprint,
+        "physical_host_id": machine_fingerprint,
+        "channel_role": channel_role,
         "join_token": join_token,
         "auto_update_enabled": auto_update_enabled,
         "update_channel": update_channel,
@@ -2555,6 +2550,43 @@ fn collect_report(
         "max_concurrent_jobs": max_concurrent_jobs as i64,
         "status": "online"
     })
+}
+
+fn normalize_node_channel_role(explicit: Option<&str>, id: &str) -> String {
+    let explicit = explicit.unwrap_or("").trim().to_ascii_lowercase();
+    if matches!(
+        explicit.as_str(),
+        "worker" | "desktop" | "service" | "bridge" | "device"
+    ) {
+        return explicit;
+    }
+    if id.ends_with("-desktop") {
+        "desktop".to_string()
+    } else {
+        "worker".to_string()
+    }
+}
+
+fn default_capabilities_for_channel(channel_role: &str) -> Vec<String> {
+    let items = match channel_role {
+        "desktop" => vec!["desktop"],
+        "service" => vec!["service_bridge"],
+        "bridge" => vec!["port_bridge"],
+        "device" => vec!["device"],
+        _ => vec![
+            "http",
+            "command",
+            "file",
+            "git",
+            "docker",
+            "browser",
+            "session",
+            "agentmessage",
+            "plugin",
+            "port_bridge",
+        ],
+    };
+    items.into_iter().map(ToString::to_string).collect()
 }
 
 fn discover_local_services() -> Vec<Value> {

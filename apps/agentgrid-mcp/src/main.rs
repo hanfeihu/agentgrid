@@ -73,6 +73,45 @@ fn mcp_tools() -> Vec<Value> {
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
+            "agentgrid_list_workbenches",
+            "列出物理电脑/工位，以及每台电脑的 worker、desktop、service、bridge、device 通道。",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "agentgrid_get_workbench",
+            "查询一台物理电脑/工位详情。",
+            json!({
+                "type": "object",
+                "required": ["workbench_id"],
+                "properties": { "workbench_id": { "type": "string" } }
+            }),
+        ),
+        tool(
+            "agentgrid_workbench_timeline",
+            "查询一台物理电脑/工位的操作记录时间线。",
+            json!({
+                "type": "object",
+                "required": ["workbench_id"],
+                "properties": { "workbench_id": { "type": "string" } }
+            }),
+        ),
+        tool(
+            "agentgrid_run_workbench_action",
+            "按 workbench_id + action + payload 操作一台物理电脑/工位，由 Hub 自动选择 worker、desktop、bridge、service 或 device 通道。",
+            json!({
+                "type": "object",
+                "required": ["workbench_id", "action"],
+                "properties": {
+                    "workbench_id": { "type": "string" },
+                    "action": { "type": "string" },
+                    "payload": { "type": "object" },
+                    "title": { "type": "string" },
+                    "priority": { "type": "string" },
+                    "verify": { "type": "object" }
+                }
+            }),
+        ),
+        tool(
             "agentgrid_list_task_templates",
             "列出 AgentGrid 任务模板商店。",
             json!({ "type": "object", "properties": {} }),
@@ -103,6 +142,7 @@ fn mcp_tools() -> Vec<Value> {
                     "payload": { "type": "object" },
                     "title": { "type": "string" },
                     "node_id": { "type": "string" },
+                    "workbench_id": { "type": "string" },
                     "verify": { "type": "object" }
                 }
             }),
@@ -126,6 +166,7 @@ fn mcp_tools() -> Vec<Value> {
                     "program": { "type": "string" },
                     "args": { "type": "array", "items": { "type": "string" } },
                     "node_id": { "type": "string" },
+                    "workbench_id": { "type": "string" },
                     "title": { "type": "string" }
                 }
             }),
@@ -141,6 +182,7 @@ fn mcp_tools() -> Vec<Value> {
                     "action": { "type": "string" },
                     "input": { "type": "object" },
                     "node_id": { "type": "string" },
+                    "workbench_id": { "type": "string" },
                     "title": { "type": "string" }
                 }
             }),
@@ -182,6 +224,39 @@ fn call_tool(client: &AgentGridClient, params: Value) -> std::result::Result<Val
         "agentgrid_runtime_manifest" => client.runtime_manifest(),
         "agentgrid_list_tools" => client.tools(),
         "agentgrid_list_nodes" => client.nodes(),
+        "agentgrid_list_workbenches" => client.workbenches(),
+        "agentgrid_get_workbench" => {
+            let workbench_id = args
+                .get("workbench_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            client.workbench(workbench_id)
+        }
+        "agentgrid_workbench_timeline" => {
+            let workbench_id = args
+                .get("workbench_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            client.workbench_timeline(workbench_id)
+        }
+        "agentgrid_run_workbench_action" => {
+            let workbench_id = args
+                .get("workbench_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let action = args.get("action").and_then(Value::as_str).unwrap_or("");
+            let mut request = json!({
+                "action": action,
+                "payload": args.get("payload").cloned().unwrap_or_else(|| json!({})),
+                "title": args.get("title").and_then(Value::as_str),
+                "priority": args.get("priority").and_then(Value::as_str).unwrap_or("normal"),
+                "created_by": "agentgrid-mcp"
+            });
+            if let Some(verify) = args.get("verify").cloned() {
+                request["verify"] = verify;
+            }
+            client.workbench_action(workbench_id, request)
+        }
         "agentgrid_list_task_templates" => client.task_templates(),
         "agentgrid_start_task_template" => {
             let template_id = args
@@ -216,11 +291,15 @@ fn call_tool(client: &AgentGridClient, params: Value) -> std::result::Result<Val
                 .get("node_id")
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
+            let workbench_id = args
+                .get("workbench_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
             let title = args
                 .get("title")
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
-            client.submit_command(program, cmd_args, node_id, title)
+            client.submit_command(program, cmd_args, node_id, workbench_id, title)
         }
         "agentgrid_run_plugin" => {
             let plugin_id = args.get("plugin_id").and_then(Value::as_str).unwrap_or("");
@@ -230,11 +309,15 @@ fn call_tool(client: &AgentGridClient, params: Value) -> std::result::Result<Val
                 .get("node_id")
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
+            let workbench_id = args
+                .get("workbench_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
             let title = args
                 .get("title")
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
-            client.submit_plugin(plugin_id, action, input, node_id, title)
+            client.submit_plugin(plugin_id, action, input, node_id, workbench_id, title)
         }
         "agentgrid_list_webhooks" => client.webhooks(),
         "agentgrid_create_webhook" => client.create_webhook(args),

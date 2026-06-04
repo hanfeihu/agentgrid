@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		AG0000000000000000000001 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = AG0000000000000000000011 /* App.swift */; };
 		AG0000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AG0000000000000000000012 /* ContentView.swift */; };
+		AG0000000000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AG0000000000000000000014 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -16,6 +17,7 @@
 		AG0000000000000000000011 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		AG0000000000000000000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		AG0000000000000000000013 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AG0000000000000000000014 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -42,6 +44,7 @@
 			children = (
 				AG0000000000000000000011 /* App.swift */,
 				AG0000000000000000000012 /* ContentView.swift */,
+				AG0000000000000000000014 /* Assets.xcassets */,
 				AG0000000000000000000013 /* Info.plist */,
 			);
 			path = AgentGridMobile;
@@ -113,6 +116,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AG0000000000000000000003 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,16 +251,16 @@
 		AG0000000000000000000110 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 89WQDGT35K;
+				DEVELOPMENT_TEAM = H94QWZT6K6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AgentGridMobile/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.agentgrid.mobile;
-				PRODUCT_NAME = AgentGridMobile;
+				PRODUCT_NAME = AgentGrid;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -269,16 +273,16 @@
 		AG0000000000000000000111 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 89WQDGT35K;
+				DEVELOPMENT_TEAM = H94QWZT6K6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AgentGridMobile/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.agentgrid.mobile;
-				PRODUCT_NAME = AgentGridMobile;
+				PRODUCT_NAME = AgentGrid;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;

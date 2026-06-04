@@ -31,6 +31,14 @@ pub fn choose_node(job: &Job, nodes: &[Node]) -> ScheduleDecision {
         .filter(|node| {
             job.spec
                 .requirements
+                .workbench_id
+                .as_ref()
+                .map(|required| &node.physical_host_id == required)
+                .unwrap_or(true)
+        })
+        .filter(|node| {
+            job.spec
+                .requirements
                 .os
                 .iter()
                 .all(|os| os_matches(&node.os, os))
@@ -355,6 +363,7 @@ mod tests {
     ) -> Node {
         Node {
             id: id.to_string(),
+            physical_host_id: id.to_string(),
             name: id.to_string(),
             os: "macos".to_string(),
             arch: "aarch64".to_string(),

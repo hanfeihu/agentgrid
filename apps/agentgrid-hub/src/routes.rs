@@ -5,7 +5,7 @@ use crate::{
     create_bridge_session, create_port_bridge, diagnostics, get_port_bridge, health, home, jobs,
     list_local_services, list_port_bridges, messages, nodes, runtime_standard, settings,
     static_asset, tasks, terminal_client_ws, terminal_worker_ws, tools, webhooks,
-    windows_install_script, workflows, AppState,
+    windows_install_script, workbenches, workflows, AppState,
 };
 
 pub(crate) fn router(state: AppState) -> Router {
@@ -16,6 +16,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(auth::router())
         .merge(settings::router())
         .merge(nodes::router())
+        .merge(workbenches::router())
         .merge(tasks::router())
         .merge(jobs::router())
         .merge(artifacts::router())

@@ -31,14 +31,135 @@ agentgrid <command>
 Use this decision rule:
 
 - Use `agentgrid capabilities` first when you need to discover what the current cluster can run.
-- Use `agentgrid standard workbench` when a task depends on a real machine, desktop, device, local SDK, or hardware station.
+- Use `GET /api/workbenches` when a task depends on a real machine, desktop, device, local SDK, or hardware station.
 - Use `agentgrid submit-http` for one simple HTTP request.
 - Use `agentgrid submit-command` for one simple host command.
 - Use `agentgrid tasks` when you already know the low-level AgentTask shape.
 - Use `agentgrid jobs submit` for recoverable work, batch work, partitioned work, or work that needs reduce/final aggregation.
 - Use `agentgrid workflows` when multiple different steps depend on each other.
 
-## 1.2 Capability Manifest
+## 1.2 Workbench and Node Channel Contract
+
+AgentGrid models a real physical computer or station as a `Workbench`.
+A Workbench can contain multiple node channels. Users should see the
+Workbench. AI clients and the Hub may select the exact channel.
+
+Node channel roles:
+
+| Role | Use for | Do not use for |
+| --- | --- | --- |
+| `worker` | command, file, plugin, Git, Docker, session, software install | visible desktop click/type |
+| `desktop` | screenshot, click, type text, key press, foreground app control | background command/file/software install |
+| `service` | Codex local bridge, node-local service bridge | normal task execution |
+| `bridge` | node-to-node port bridge control | normal task execution |
+| `device` | serial, flashing, hardware station, device SDK | normal task execution |
+
+REST:
+
+```http
+GET /api/workbenches
+GET /api/workbenches/{id}
+GET /api/workbenches/{id}/timeline
+POST /api/workbenches/{id}/actions
+```
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "api_version": "agentgrid.workbench/v1",
+  "kind": "WorkbenchList",
+  "items": [
+    {
+      "api_version": "agentgrid.workbench/v1",
+      "kind": "Workbench",
+      "metadata": {
+        "id": "physical-machine-id",
+        "name": "CHENGCHONG"
+      },
+      "spec": {
+        "channels": {
+          "worker": { "kind": "Node" },
+          "desktop": { "kind": "Node" },
+          "service": { "kind": "Node" },
+          "bridge": { "kind": "Node" },
+          "device": { "kind": "Node" }
+        },
+        "capabilities": ["command", "file", "desktop", "port_bridge"],
+        "tools": [],
+        "local_services": []
+      },
+      "resources": {
+        "cpu_cores": 8,
+        "memory_mb": 16384,
+        "memory_used_mb": 4096,
+        "disk_total_mb": 512000,
+        "disk_free_mb": 300000
+      },
+      "status": {
+        "state": "online",
+        "online_channels": 2,
+        "total_channels": 5
+      }
+    }
+  ]
+}
+```
+
+Scheduling explanation:
+
+- Task detail and schedule preview include `channel_role`,
+  `required_channel_role`, `channel_explanation`, and `task_requires`.
+- Command/file/plugin/session tasks require `worker`.
+- Desktop screenshot/click/type/key tasks require `desktop`.
+- `service`, `bridge`, and `device` are specialized channels and do not lease
+  normal background tasks unless a future task contract explicitly targets that
+  channel.
+
+Workbench Action API is the standard product and AI-client entry point for
+operating one physical computer. The caller provides `workbench_id`, `action`,
+and a structured `payload`. Hub validates the Workbench, selects the correct
+channel, creates the task or stateful bridge session, and returns a routing
+explanation.
+
+```http
+POST /api/workbenches/{workbench_id}/actions
+Content-Type: application/json
+```
+
+```json
+{
+  "action": "command.run",
+  "payload": {
+    "program": "hostname",
+    "args": [],
+    "working_dir": null,
+    "timeout_seconds": 30
+  },
+  "title": "Run hostname on this computer",
+  "created_by": "agentgrid-mcp"
+}
+```
+
+Supported v1 actions:
+
+| Action | Channel | Payload |
+| --- | --- | --- |
+| `command.run` | `worker` | `program`, `args`, `working_dir`, `timeout_seconds` |
+| `file.list` / `file.read` / `file.write` | `worker` | `operation`, `path`, file options |
+| `runtime.submit` | `worker` | `tool_id`, `payload` |
+| `desktop.screenshot` | `desktop` | `path`, `timeout_seconds` |
+| `desktop.click` | `desktop` | `x`, `y`, `timeout_seconds` |
+| `desktop.type_text` | `desktop` | `text`, `timeout_seconds` |
+| `desktop.key` | `desktop` | `key`, `modifiers`, `timeout_seconds` |
+| `port_bridge.create` | `bridge` or `worker` | `target_node_id` or `target_workbench_id`, `target_port`, bridge options |
+
+Task-backed actions return `task_id`, `message_id`, `selected_channel`, and
+`routing_reason`. Stateful bridge actions return `port_bridge_id` and
+`port_bridge`.
+
+## 1.3 Capability Manifest
 
 Capability Manifest is the canonical discovery contract for AI clients. It answers one question:
 
@@ -166,6 +287,18 @@ agentgrid jobs submit \
   --wait
 ```
 
+Submit a recoverable Job to a physical Workbench. Hub keeps the Workbench
+constraint when it creates replacement attempts:
+
+```bash
+agentgrid jobs submit \
+  --tool command.run \
+  --title "hostname on CHENGCHONG" \
+  --payload '{"type":"command","program":"hostname","args":[],"timeout_seconds":30}' \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
+```
+
 Minimum items partition Job:
 
 ```bash
@@ -217,7 +350,8 @@ Content-Type: application/json
     "max_response_bytes": 65536
   },
   "placement": {
-    "os": "linux"
+    "os": "linux",
+    "workbench_id": "optional-physical-machine-id"
   },
   "strategy": {
     "type": "sharded",
@@ -354,6 +488,7 @@ Required executable labels:
 Optional routing labels:
 
 - node:<node_id>
+- workbench:<workbench_id>
 - os:linux
 - os:mac
 - os:windows
@@ -369,15 +504,27 @@ Examples:
 ```
 
 ```json
+["compute", "command", "workbench:sha256:091c56d7..."]
+```
+
+```json
 ["compute", "http_request", "os:linux"]
 ```
 
 Business classification:
 
 - `node:<node_id>` is a hard placement constraint. It means "run on this exact node", not "prefer this node".
+- `workbench:<workbench_id>` is a hard physical-machine constraint. It means
+  "run on this physical computer or station"; Hub then selects the correct
+  `worker`, `desktop`, `service`, `bridge`, or `device` channel for the task.
+- If both `node:<node_id>` and `workbench:<workbench_id>` are present, the node
+  must belong to that Workbench or Hub rejects the task.
 - OS, capability, dynamic tool availability, node state, avoid list, slot availability, and high-load rejection are also hard constraints.
 - CPU, memory, disk, weight, historical success rate, preferred nodes, and Tool Probe trust are optimization inputs after eligibility is decided.
-- Node operations that mutate a specific machine, such as software install, service restart, configuration change, or local file write, should always include `node:<node_id>`.
+- Most user-facing and AI-facing tasks should prefer `workbench:<workbench_id>`
+  so people do not need to remember split channel node IDs.
+- Node operations that mutate one exact channel runtime can still include
+  `node:<node_id>`.
 
 This prevents a task targeting a Windows machine from being optimized onto a Linux node just because the Linux node has a better resource score.
 
@@ -1052,6 +1199,71 @@ Get one node:
 agentgrid nodes get --id linux-worker-01
 ```
 
+Workbench/computer entry points:
+
+```bash
+agentgrid workbench list
+agentgrid workbench get --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece
+agentgrid workbench timeline --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece
+```
+
+Operate a physical computer/workbench. Hub chooses the concrete channel:
+
+```bash
+agentgrid workbench command \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --program hostname \
+  --wait
+```
+
+```bash
+agentgrid workbench screenshot \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
+```
+
+```bash
+agentgrid workbench file \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --operation list \
+  --path "C:\\" \
+  --max-entries 200 \
+  --wait
+```
+
+```bash
+agentgrid workbench runtime \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --tool audio.tts.clone \
+  --payload-file payload.json \
+  --wait
+```
+
+Generic Workbench Action entry point:
+
+```bash
+agentgrid workbench action \
+  --id sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --action command.run \
+  --payload '{"program":"hostname","args":[],"timeout_seconds":30}' \
+  --wait
+```
+
+Workbench-based port bridge:
+
+```bash
+agentgrid workbench action \
+  --id source_workbench_id \
+  --action port_bridge.create \
+  --payload '{"target_workbench_id":"target_workbench_id","target_port":8888,"source_bind_port":9999}'
+```
+
+Channel routing rule:
+
+- `workbench command`, `workbench file`, and `workbench runtime` route to the `worker` channel.
+- `workbench screenshot` routes to the `desktop` channel.
+- The task timeline shows submitted tasks, selected channels, audit events, and execution state changes for that computer.
+
 Show current policy:
 
 ```bash
@@ -1086,6 +1298,16 @@ agentgrid submit-command \
   --expect-exit-code 0 \
   --expect-stdout-contains hanfeihu \
   --title "Run hostname on jia"
+```
+
+Submit command task to a physical computer/workbench. Hub chooses the
+background `worker` channel automatically:
+
+```bash
+agentgrid submit-command \
+  --program hostname \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
 ```
 
 Submit command with raw verification JSON:
@@ -2295,9 +2517,41 @@ Dynamic Runtime submit:
 agentgrid runtime submit \
   --tool demo.hello \
   --payload '{"name":"AgentGrid"}' \
-  --node hub-node \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
   --wait
 ```
+
+Stable CLI payload input standard:
+
+```bash
+agentgrid runtime submit \
+  --tool demo.hello \
+  --payload-file payload.json \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
+```
+
+```bash
+cat payload.json | agentgrid runtime submit \
+  --tool demo.hello \
+  --payload-stdin \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
+```
+
+```bash
+agentgrid runtime submit \
+  --tool demo.hello \
+  --payload-base64 eyJuYW1lIjoiQWdlbnRHcmlkIn0= \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
+  --wait
+```
+
+`--payload-file`, `--payload-stdin`, and `--payload-base64` are designed for
+Windows PowerShell, CI, and AI clients where inline JSON quoting is fragile.
+The same payload input standard applies to `agentgrid jobs plan` and
+`agentgrid jobs submit`. `agentgrid submit-plugin` uses the same pattern with
+`--input-file`, `--input-stdin`, and `--input-base64`.
 
 Dynamic task payload generated by Hub:
 
@@ -2309,6 +2563,45 @@ Dynamic task payload generated by Hub:
   "name": "AgentGrid"
 }
 ```
+
+Production-style node tool example: `audio.tts.clone`
+
+`audio.tts.clone` is a business capability/tool contract for voice-clone text
+to speech. The current `jia-node` implementation is backed by the
+`index-tts-clone` Worker plugin and the node-local IndexTTS-2 service.
+
+Tool boundary:
+
+- Capability: `audio.tts`
+- Tool: `audio.tts.clone`
+- Plugin implementation: `index-tts-clone`
+- Primary node today: `jia-node`
+- Required input: `text`
+- Optional voice input: `reference_audio_path` or `reference_audio_base64`
+- Output: `audio_tts_clone_result` with generated wav path, mime type, bytes,
+  duration, and audio evidence.
+
+Example:
+
+```bash
+agentgrid runtime submit \
+  --tool audio.tts.clone \
+  --node jia-node \
+  --title "Generate cloned voice audio" \
+  --payload '{"text":"AgentGrid can schedule voice synthesis on jia-node.","timeout_seconds":600}' \
+  --wait \
+  --wait-timeout-seconds 900
+```
+
+Node-local generated audio is written under:
+
+```text
+/tmp/agentgrid-artifacts/audio.tts.clone/
+```
+
+The Worker plugin must write exactly one JSON object to stdout. Logs from
+underlying clients, SDKs, model loaders, or web UI adapters must go to stderr,
+otherwise the Worker cannot parse the plugin result as structured output.
 
 Worker execution rule:
 
@@ -2397,6 +2690,7 @@ Tool Probe verifies whether a declared tool actually works on a node. Probe v1 c
 API:
 
 ```http
+GET /api/tools/probe-center
 GET /api/tools/probes
 POST /api/tools/probe
 POST /api/tools/{tool_id}/probe
@@ -2406,11 +2700,48 @@ POST /api/tools/{tool_id}/nodes/{node_id}/probe
 CLI:
 
 ```bash
+agentgrid tools probe-center
 agentgrid tools probes
 agentgrid tools probe
 agentgrid tools probe --id command.run
 agentgrid tools probe --id command.run --node linux-worker-01
 ```
+
+Probe Center response:
+
+```json
+{
+  "api_version": "agentgrid.probe-center/v1",
+  "kind": "ToolProbeCenter",
+  "summary": {
+    "readiness": "needs_probe",
+    "tool_count": 18,
+    "node_count": 6,
+    "workbench_count": 4,
+    "verified_edges": 5,
+    "failed_edges": 0,
+    "pending_edges": 2,
+    "declared_unverified_edges": 12,
+    "recommendations": [
+      {
+        "level": "info",
+        "code": "declared_unverified",
+        "message": "有工具只是节点声明可用，还没有运行时验证。建议在能力验证中心执行 Probe。"
+      }
+    ]
+  },
+  "tools": [],
+  "workbenches": [],
+  "recent_probes": []
+}
+```
+
+Use Probe Center when an AI client needs one machine-readable view of:
+
+- which tools exist;
+- which workbenches and nodes can run them;
+- which tool-node edges are verified, pending, failed, unsupported, or only declared;
+- what the scheduler should trust.
 
 Probe states:
 
@@ -2647,7 +2978,7 @@ Rust:
 use agentgrid_sdk::AgentGridClient;
 
 let client = AgentGridClient::default_hub();
-let result = client.submit_command("hostname", vec![], Some("hub-node".into()), None)?;
+let result = client.submit_command("hostname", vec![], Some("hub-node".into()), None, None)?;
 ```
 
 Node:
@@ -2656,7 +2987,8 @@ Node:
 import { AgentGridClient } from './sdk/node/index.js';
 
 const client = new AgentGridClient();
-const result = await client.runCommand({ program: 'hostname', nodeId: 'hub-node' });
+const workbenches = await client.workbenches();
+const result = await client.runCommand({ program: 'hostname', workbenchId: 'sha256:...' });
 ```
 
 Python:
@@ -2665,7 +2997,8 @@ Python:
 from agentgrid_sdk import AgentGridClient
 
 client = AgentGridClient()
-result = client.run_command('hostname', node_id='hub-node')
+workbenches = client.workbenches()
+result = client.run_command('hostname', workbench_id='sha256:...')
 ```
 
 Mobile console clients:
@@ -2683,7 +3016,8 @@ iOS:
 import AgentGridMobileSDK
 
 let client = AgentGridMobileClient()
-let nodes = try await client.nodes()
+let workbenches = try await client.workbenches()
+let timeline = try await client.workbenchTimeline("sha256:...")
 let record = try await client.executionRecord(taskID: "task_xxx")
 ```
 
@@ -2691,7 +3025,8 @@ Android:
 
 ```kotlin
 val client = AgentGridMobileClient()
-val nodes = client.nodes()
+val workbenches = client.workbenches()
+val timeline = client.workbenchTimeline("sha256:...")
 val record = client.executionRecord("task_xxx")
 ```
 
@@ -2700,6 +3035,7 @@ Common SDK methods:
 - `runtime_manifest()` / `runtimeManifest()`
 - `tools()`
 - `nodes()`
+- `workbenches()` / `workbench()` / `workbench_timeline()` / `workbenchTimeline()`
 - `submit_task()` / `submitTask()`
 - `get_task()` / `getTask()`
 - `run_command()` / `runCommand()`
@@ -2716,11 +3052,15 @@ Mobile SDK methods:
 - `runtimeStandard()`
 - `mobileSdkStandard()`
 - `workbenches()`
+- `workbench(workbenchID/workbenchId)`
+- `workbenchTimeline(workbenchID/workbenchId)`
 - `devices()`
 - `evidenceStandard()`
 - `nodes()`
 - `tools()`
 - `submitTask(request)`
+- `runCommand(program, args, nodeID/nodeId, workbenchID/workbenchId, title)`
+- `runPlugin(pluginID/pluginId, action, input, nodeID/nodeId, workbenchID/workbenchId, title)`
 - `getTask(taskId)`
 - `taskEvents(taskId)`
 - `executionRecord(taskId)`
@@ -3387,6 +3727,12 @@ Use this boundary:
 | Normal Worker `<node_id>` | Background service / `NT AUTHORITY\SYSTEM` | command, file, service, software install, Git, Docker, session, plugin | visible desktop screenshot/click/type |
 | Desktop Helper `<node_id>-desktop` | Logged-in Windows user session | screenshot, click, type text, key press, foreground app control | service install, background maintenance |
 
+Product view:
+
+- Treat `<node_id>` and `<node_id>-desktop` as two channels of one physical computer.
+- The Hub scheduler enforces the channel boundary: background tasks require the Worker channel; visible desktop tasks require the Desktop Helper channel.
+- Web and mobile consoles should show one physical computer with channel states, not two unrelated machines.
+
 For screenshot, click, type, and key desktop control, install the optional Desktop Helper from an elevated PowerShell while the target Windows user is logged in:
 
 ```powershell
@@ -3415,6 +3761,15 @@ Submit a screenshot task to the desktop helper node:
 ```bash
 agentgrid submit-desktop-screenshot \
   --node ZZH0610-windows-desktop \
+  --wait
+```
+
+Submit a screenshot task to a physical computer/workbench. Hub chooses the
+`desktop` channel automatically:
+
+```bash
+agentgrid submit-desktop-screenshot \
+  --workbench sha256:091c56d7a82c696b759efbf8836b6f8e82cf507deeda35e170fc42134a2caece \
   --wait
 ```
 
@@ -3608,7 +3963,8 @@ Content-Type: application/json
     "timeout_seconds": 30
   },
   "placement": {
-    "os": "linux"
+    "os": "linux",
+    "workbench_id": "optional-physical-machine-id"
   },
   "retry_policy": {
     "max_attempts": 3,

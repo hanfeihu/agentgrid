@@ -392,21 +392,86 @@ Workbench types:
 - `compute_bench`: a background compute/tool station. Typical capabilities
   include `command`, `git`, `docker`, `session`, and `plugin`.
 
+Node channel roles:
+
+| Role | Responsibility |
+| --- | --- |
+| `worker` | Background command, file, plugin, Git, Docker, session, software install |
+| `desktop` | Visible desktop screenshot, click, type text, key press, foreground app control |
+| `service` | Node-local service bridge such as Codex local service |
+| `bridge` | Node-to-node port bridge control and temporary network channel |
+| `device` | Serial, flashing, hardware bench, camera, device SDK station |
+
+Workbench APIs:
+
+```text
+GET /api/workbenches
+GET /api/workbenches/{id}
+```
+
+Response shape:
+
+```json
+{
+  "api_version": "agentgrid.workbench/v1",
+  "kind": "Workbench",
+  "metadata": { "id": "physical-machine-id", "name": "CHENGCHONG" },
+  "spec": {
+    "channels": {
+      "worker": { "kind": "Node" },
+      "desktop": { "kind": "Node" },
+      "service": { "kind": "Node" },
+      "bridge": { "kind": "Node" },
+      "device": { "kind": "Node" }
+    },
+    "capabilities": ["command", "desktop", "port_bridge"],
+    "tools": [],
+    "local_services": []
+  },
+  "resources": {
+    "cpu_cores": 8,
+    "memory_mb": 16384,
+    "disk_total_mb": 512000
+  },
+  "status": {
+    "state": "online",
+    "online_channels": 2,
+    "total_channels": 5
+  }
+}
+```
+
+Scheduling explanation:
+
+- Each schedule preview candidate includes `channel_role`,
+  `required_channel_role`, `channel_explanation`, and `task_requires`.
+- A command/file/plugin/session task requires `worker`.
+- A screenshot/click/type/key desktop task requires `desktop`.
+- `service`, `bridge`, and `device` channels are specialized channels and do
+  not lease normal background tasks unless a future task contract explicitly
+  targets that channel.
+
 Routing rule:
 
 ```text
 task depends on a real machine/device/desktop/account/local SDK/path
-=> use node:<workbench_id>
+=> prefer workbench:<workbench_id>
+
+task depends on one exact execution channel
+=> use node:<node_id>
 ```
 
 AI client flow:
 
-1. Discover workbenches from `/api/runtime-standard/workbench`.
+1. Discover physical machines from `/api/workbenches`.
 2. Discover tools from `/api/capabilities/manifest` or `/api/tools`.
 3. Prefer verified tools and online workbenches.
-4. Submit structured tasks with hard placement when the operation is tied to a
-   physical station.
-5. Read execution record and evidence before deciding the next step.
+4. Submit structured tasks with `workbench:<workbench_id>` or
+   `placement.workbench_id` when the operation is tied to a physical station.
+   Hub chooses the required `worker`, `desktop`, `service`, `bridge`, or
+   `device` channel from the task contract.
+5. Read `schedule-preview`, execution record, and evidence before deciding the
+   next step.
 
 ## 13. Device Standard v1
 
@@ -707,7 +772,9 @@ GET /api/runtime-standard/evidence-pipeline
 
 ## 22. Node Capability Probe Engine Standard v1
 
-Probe Engine checks whether declared node tools are truly usable.
+Probe Engine checks whether declared tools are truly usable. It covers both
+built-in Tool Registry entries such as `command.run` and dynamic node tools
+registered by plugins such as `audio.tts.clone`.
 
 Probe states:
 
@@ -721,17 +788,25 @@ Probe states:
 
 Flow:
 
-1. Hub reads node tool registration.
-2. Hub creates a probe AgentTask with hard node placement.
-3. Worker executes the same tool path real tasks use.
-4. Hub verifies the result.
-5. Scheduler prefers verified tools and avoids failed tools.
+1. Hub reads Tool Registry and Node Tool registration.
+2. Hub builds the Tool Probe Center snapshot.
+3. Hub creates a probe AgentTask with hard node placement.
+4. Worker executes the same tool path real tasks use.
+5. Hub verifies the result and updates `tool_probes`.
+6. Dynamic node tools also update their `node_tools.probe_state`.
+7. Scheduler prefers verified tools and avoids failed tools.
 
 Endpoint:
 
 ```http
+GET /api/tools/probe-center
 GET /api/runtime-standard/probe-engine
 ```
+
+The Probe Center is the AI-facing verification snapshot. It returns summary
+readiness, recommendations, tool-node edges, workbench coverage, dynamic
+node tools, and recent probe records. AI clients should consult it before
+submitting high-value jobs.
 
 ## 23. Placement Engine Standard v1
 

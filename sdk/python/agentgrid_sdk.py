@@ -1,5 +1,6 @@
 import json
 import urllib.request
+import urllib.parse
 
 
 DEFAULT_HUB_URL = "http://127.0.0.1:20181"
@@ -25,7 +26,19 @@ class AgentGridClient:
         return self._get("/api/runtime-standard/mobile-sdk")
 
     def workbenches(self):
-        return self._get("/api/runtime-standard/workbench")
+        return self._get("/api/workbenches")
+
+    def workbench(self, workbench_id):
+        quoted = urllib.parse.quote(workbench_id, safe="")
+        return self._get(f"/api/workbenches/{quoted}")
+
+    def workbench_timeline(self, workbench_id):
+        quoted = urllib.parse.quote(workbench_id, safe="")
+        return self._get(f"/api/workbenches/{quoted}/timeline")
+
+    def workbench_action(self, workbench_id, request):
+        quoted = urllib.parse.quote(workbench_id, safe="")
+        return self._post(f"/api/workbenches/{quoted}/actions", request)
 
     def devices(self):
         return self._get("/api/runtime-standard/devices")
@@ -66,11 +79,12 @@ class AgentGridClient:
     def webhook_deliveries(self):
         return self._get("/api/webhooks/deliveries")
 
-    def run_command(self, program, args=None, node_id=None, title=None):
+    def run_command(self, program, args=None, node_id=None, workbench_id=None, title=None):
         request = {
             "tool_id": "command.run",
             "title": title or f"command {program}",
             "node_id": node_id,
+            "workbench_id": workbench_id,
             "payload": {
                 "type": "command",
                 "program": program,
@@ -82,11 +96,12 @@ class AgentGridClient:
         }
         return self.submit_task(request)
 
-    def run_plugin(self, plugin_id, action="run", input=None, node_id=None, title=None):
+    def run_plugin(self, plugin_id, action="run", input=None, node_id=None, workbench_id=None, title=None):
         request = {
             "tool_id": "plugin.run",
             "title": title or f"plugin {plugin_id}:{action}",
             "node_id": node_id,
+            "workbench_id": workbench_id,
             "payload": {
                 "type": "plugin",
                 "plugin_id": plugin_id,

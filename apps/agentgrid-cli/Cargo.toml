@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 agentgrid-protocol = { path = "../../crates/agentgrid-protocol" }
 anyhow.workspace = true
+base64 = "0.22"
 clap.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
-

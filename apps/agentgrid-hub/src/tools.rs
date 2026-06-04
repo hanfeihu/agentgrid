@@ -11,6 +11,7 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/tools", get(list_tools))
         .route("/api/tools/probes", get(list_tool_probes))
+        .route("/api/tools/probe-center", get(get_probe_center))
         .route("/api/tools/probe", post(probe_all_tools))
         .route("/api/tools/{id}", get(get_tool))
         .route("/api/tools/{id}/nodes", get(list_tool_nodes))
@@ -19,6 +20,14 @@ pub(crate) fn router() -> Router<AppState> {
             "/api/tools/{id}/nodes/{node_id}/probe",
             post(probe_tool_node),
         )
+}
+
+async fn get_probe_center(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let store = store(&state)?;
+    Ok(Json(json!({
+        "ok": true,
+        "item": store.tool_probe_center()?
+    })))
 }
 
 async fn list_tools(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {

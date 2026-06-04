@@ -57,7 +57,15 @@ public struct AgentGridMobileClient {
     }
 
     public func workbenches() async throws -> AgentGridJSONObject {
-        try await get("/api/runtime-standard/workbench")
+        try await get("/api/workbenches")
+    }
+
+    public func workbench(_ workbenchID: String) async throws -> AgentGridJSONObject {
+        try await get("/api/workbenches/\(Self.pathComponent(workbenchID))")
+    }
+
+    public func workbenchTimeline(_ workbenchID: String) async throws -> AgentGridJSONObject {
+        try await get("/api/workbenches/\(Self.pathComponent(workbenchID))/timeline")
     }
 
     public func devices() async throws -> AgentGridJSONObject {
@@ -149,6 +157,63 @@ public struct AgentGridMobileClient {
 
     public func submitTask(_ request: AgentGridJSONObject) async throws -> AgentGridJSONObject {
         try await post("/api/agent-runtime/tasks", body: request)
+    }
+
+    public func runCommand(
+        program: String,
+        args: [String] = [],
+        nodeID: String? = nil,
+        workbenchID: String? = nil,
+        title: String? = nil
+    ) async throws -> AgentGridJSONObject {
+        var body: AgentGridJSONObject = [
+            "tool_id": "command.run",
+            "title": title ?? "command \(program)",
+            "payload": [
+                "type": "command",
+                "program": program,
+                "args": args,
+                "working_dir": NSNull(),
+                "timeout_seconds": 30
+            ],
+            "verify": ["presets": ["command.exit_zero"]]
+        ]
+        if let nodeID {
+            body["node_id"] = nodeID
+        }
+        if let workbenchID {
+            body["workbench_id"] = workbenchID
+        }
+        return try await submitTask(body)
+    }
+
+    public func runPlugin(
+        pluginID: String,
+        action: String = "run",
+        input: AgentGridJSONObject = [:],
+        nodeID: String? = nil,
+        workbenchID: String? = nil,
+        title: String? = nil
+    ) async throws -> AgentGridJSONObject {
+        var body: AgentGridJSONObject = [
+            "tool_id": "plugin.run",
+            "title": title ?? "plugin \(pluginID):\(action)",
+            "payload": [
+                "type": "plugin",
+                "plugin_id": pluginID,
+                "action": action,
+                "input": input,
+                "timeout_seconds": 60
+            ],
+            "verify": ["rules": [["path": "result.output", "op": "exists"]]]
+        ]
+        if let nodeID {
+            body["node_id"] = nodeID
+        }
+        if let workbenchID {
+            body["workbench_id"] = workbenchID
+        }
+        return try await submitTask(body)
     }
 
     public func getTask(_ taskID: String) async throws -> AgentGridJSONObject {
@@ -243,5 +308,9 @@ public struct AgentGridMobileClient {
             throw AgentGridMobileError.invalidURL(path)
         }
         return url
+    }
+
+    private static func pathComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
     }
 }

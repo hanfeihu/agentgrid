@@ -16,6 +16,7 @@ tags:
   - name: Auth
   - name: Admin
   - name: Nodes
+  - name: Workbenches
   - name: PortBridges
   - name: Tasks
   - name: Jobs
@@ -479,6 +480,126 @@ paths:
                     const: true
                   item:
                     $ref: "#/components/schemas/Node"
+        default:
+          $ref: "#/components/responses/Error"
+  /workbenches:
+    get:
+      tags: [Workbenches]
+      summary: List physical computers/workbenches.
+      operationId: listWorkbenches
+      responses:
+        "200":
+          description: Workbench list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, api_version, kind, items]
+                properties:
+                  ok:
+                    const: true
+                  api_version:
+                    const: agentgrid.workbench/v1
+                  kind:
+                    const: WorkbenchList
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Workbench"
+        default:
+          $ref: "#/components/responses/Error"
+  /workbenches/{workbench_id}:
+    get:
+      tags: [Workbenches]
+      summary: Get one physical computer/workbench.
+      operationId: getWorkbench
+      parameters:
+        - $ref: "#/components/parameters/WorkbenchId"
+      responses:
+        "200":
+          description: Workbench details.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, api_version, kind, item]
+                properties:
+                  ok:
+                    const: true
+                  api_version:
+                    const: agentgrid.workbench/v1
+                  kind:
+                    const: WorkbenchDetail
+                  item:
+                    $ref: "#/components/schemas/Workbench"
+        default:
+          $ref: "#/components/responses/Error"
+  /workbenches/{workbench_id}/timeline:
+    get:
+      tags: [Workbenches]
+      summary: Read the operation timeline for one physical computer/workbench.
+      operationId: getWorkbenchTimeline
+      parameters:
+        - $ref: "#/components/parameters/WorkbenchId"
+      responses:
+        "200":
+          description: Workbench timeline.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, api_version, kind, item]
+                properties:
+                  ok:
+                    const: true
+                  api_version:
+                    const: agentgrid.workbench-timeline/v1
+                  kind:
+                    const: WorkbenchTimeline
+                  item:
+                    type: object
+                    additionalProperties: true
+        default:
+          $ref: "#/components/responses/Error"
+  /workbenches/{workbench_id}/actions:
+    post:
+      tags: [Workbenches]
+      summary: Operate a physical computer/workbench through a structured action.
+      description: |
+        This is the standard product and AI-client entry point. The caller
+        provides a Workbench, an action, and a structured payload. Hub chooses
+        the correct node channel such as worker, desktop, bridge, service, or
+        device.
+      operationId: createWorkbenchAction
+      parameters:
+        - $ref: "#/components/parameters/WorkbenchId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkbenchActionRequest"
+      responses:
+        "201":
+          description: Workbench action submitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, api_version, kind, item]
+                properties:
+                  ok:
+                    const: true
+                  api_version:
+                    const: agentgrid.workbench-action/v1
+                  kind:
+                    const: WorkbenchActionSubmission
+                  item:
+                    $ref: "#/components/schemas/WorkbenchAction"
         default:
           $ref: "#/components/responses/Error"
   /port-bridges:
@@ -1073,6 +1194,73 @@ paths:
                       $ref: "#/components/schemas/Tool"
         default:
           $ref: "#/components/responses/Error"
+  /tools/probe-center:
+    get:
+      tags: [Tools]
+      summary: Get the Tool Probe Center snapshot.
+      operationId: getToolProbeCenter
+      responses:
+        "200":
+          description: Tool probe center snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, item]
+                properties:
+                  ok:
+                    const: true
+                  item:
+                    $ref: "#/components/schemas/ToolProbeCenter"
+        default:
+          $ref: "#/components/responses/Error"
+  /tools/probes:
+    get:
+      tags: [Tools]
+      summary: List recent tool probe records.
+      operationId: listToolProbes
+      responses:
+        "200":
+          description: Tool probe records.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ToolProbe"
+        default:
+          $ref: "#/components/responses/Error"
+  /tools/probe:
+    post:
+      tags: [Tools]
+      summary: Probe all tools on all eligible online nodes.
+      operationId: probeAllTools
+      responses:
+        "200":
+          description: Probe tasks created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProbeSubmission"
+        default:
+          $ref: "#/components/responses/Error"
   /tools/{tool_id}:
     get:
       tags: [Tools]
@@ -1121,6 +1309,31 @@ paths:
                       $ref: "#/components/schemas/ToolNode"
         default:
           $ref: "#/components/responses/Error"
+  /tools/{tool_id}/probe:
+    post:
+      tags: [Tools]
+      summary: Probe one tool on all eligible online nodes.
+      operationId: probeTool
+      parameters:
+        - $ref: "#/components/parameters/ToolId"
+      responses:
+        "200":
+          description: Probe tasks created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, items]
+                properties:
+                  ok:
+                    const: true
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProbeSubmission"
+        default:
+          $ref: "#/components/responses/Error"
   /tools/{tool_id}/nodes/{node_id}/probe:
     post:
       tags: [Tools]
@@ -1137,12 +1350,14 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [ok, item]
+                required: [ok, items]
                 properties:
                   ok:
                     const: true
-                  item:
-                    $ref: "#/components/schemas/AgentTask"
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProbeSubmission"
         default:
           $ref: "#/components/responses/Error"
   /events:
@@ -1293,6 +1508,13 @@ components:
         pattern: "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"
     UserId:
       name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    WorkbenchId:
+      name: workbench_id
       in: path
       required: true
       schema:
@@ -2067,6 +2289,162 @@ components:
               type: string
             last_error:
               type: [string, "null"]
+    Workbench:
+      type: object
+      additionalProperties: true
+      required: [api_version, kind, metadata, spec, status]
+      properties:
+        api_version:
+          const: agentgrid.workbench/v1
+        kind:
+          const: Workbench
+        metadata:
+          type: object
+          additionalProperties: true
+          required: [id, name]
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        spec:
+          type: object
+          additionalProperties: true
+          properties:
+            channels:
+              type: object
+              additionalProperties:
+                $ref: "#/components/schemas/Node"
+            capabilities:
+              type: array
+              items:
+                type: string
+            tools:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            local_services:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+        resources:
+          type: object
+          additionalProperties: true
+        status:
+          type: object
+          additionalProperties: true
+          properties:
+            state:
+              type: string
+              enum: [online, offline, unknown]
+            online_channels:
+              type: integer
+              minimum: 0
+            total_channels:
+              type: integer
+              minimum: 0
+    WorkbenchActionRequest:
+      type: object
+      additionalProperties: true
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum:
+            - command.run
+            - command
+            - file.list
+            - file.read
+            - file.write
+            - file
+            - runtime.submit
+            - runtime
+            - desktop.screenshot
+            - desktop.click
+            - desktop.type_text
+            - desktop.key
+            - desktop
+            - port_bridge.create
+            - port_bridge
+        payload:
+          type: object
+          additionalProperties: true
+          default: {}
+        title:
+          type: [string, "null"]
+        priority:
+          $ref: "#/components/schemas/Priority"
+        created_by:
+          type: string
+          default: workbench-action-api
+        verify:
+          type: object
+          additionalProperties: true
+    WorkbenchAction:
+      type: object
+      additionalProperties: true
+      required:
+        - api_version
+        - kind
+        - operation_id
+        - workbench_id
+        - action
+        - selected_channel
+        - routing_reason
+        - state
+      properties:
+        api_version:
+          const: agentgrid.workbench-action/v1
+        kind:
+          const: WorkbenchAction
+        operation_id:
+          type: string
+        workbench_id:
+          type: string
+        action:
+          type: string
+        selected_channel:
+          type: object
+          additionalProperties: false
+          required: [role, node_id]
+          properties:
+            role:
+              type: string
+              enum: [worker, desktop, service, bridge, device]
+            node_id:
+              type: [string, "null"]
+        routing_reason:
+          type: string
+        state:
+          type: [string, "null"]
+        task_id:
+          type: [string, "null"]
+        message_id:
+          type: [string, "null"]
+        task:
+          oneOf:
+            - $ref: "#/components/schemas/AgentTask"
+            - type: "null"
+        port_bridge_id:
+          type: [string, "null"]
+        port_bridge:
+          oneOf:
+            - $ref: "#/components/schemas/PortBridgeSession"
+            - type: "null"
+        artifacts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        timeline:
+          type: object
+          additionalProperties: true
+        links:
+          type: object
+          additionalProperties:
+            type: string
     OkResponse:
       type: object
       additionalProperties: true
@@ -2194,6 +2572,108 @@ components:
         last_probe_at:
           type: [string, "null"]
           format: date-time
+    ToolProbe:
+      type: object
+      additionalProperties: true
+      required: [metadata, spec, status]
+      properties:
+        metadata:
+          type: object
+          additionalProperties: true
+          properties:
+            id:
+              type: string
+            tool_id:
+              type: string
+            node_id:
+              type: string
+            task_id:
+              type: [string, "null"]
+        spec:
+          type: object
+          additionalProperties: true
+          properties:
+            support_basis:
+              type: string
+        status:
+          type: object
+          additionalProperties: true
+          properties:
+            state:
+              type: string
+              enum: [declared_unverified, pending, verified, failed, expired, unsupported, unavailable]
+            started_at:
+              type: [string, "null"]
+            completed_at:
+              type: [string, "null"]
+            expires_at:
+              type: [string, "null"]
+            result:
+              nullable: true
+            error:
+              nullable: true
+    ProbeSubmission:
+      type: object
+      additionalProperties: true
+      required: [tool_id, node_id, status]
+      properties:
+        tool_id:
+          type: string
+        node_id:
+          type: string
+        task_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, unsupported]
+    ToolProbeCenter:
+      type: object
+      additionalProperties: true
+      required: [api_version, kind, summary, tools, workbenches, recent_probes]
+      properties:
+        api_version:
+          const: agentgrid.probe-center/v1
+        kind:
+          const: ToolProbeCenter
+        summary:
+          type: object
+          additionalProperties: true
+          properties:
+            readiness:
+              type: string
+              enum: [verified, probing, needs_probe, attention_required]
+            tool_count:
+              type: integer
+            node_count:
+              type: integer
+            workbench_count:
+              type: integer
+            verified_edges:
+              type: integer
+            failed_edges:
+              type: integer
+            pending_edges:
+              type: integer
+            declared_unverified_edges:
+              type: integer
+            recommendations:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tool"
+        workbenches:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        recent_probes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolProbe"
     User:
       type: object
       additionalProperties: true

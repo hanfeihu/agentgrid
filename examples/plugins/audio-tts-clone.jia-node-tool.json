@@ -1,0 +1,158 @@
+{
+  "tools": [
+    {
+      "tool_id": "audio.tts.clone",
+      "name": "IndexTTS Voice Clone",
+      "version": "0.1.0",
+      "executor": "plugin:index-tts-clone",
+      "status": "available",
+      "confidence": "declared",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Target text to synthesize."
+          },
+          "reference_audio_path": {
+            "type": "string",
+            "description": "Path to a reference audio file on the target node."
+          },
+          "reference_audio_base64": {
+            "type": "string",
+            "description": "Base64 or data URL encoded reference audio."
+          },
+          "emotion_mode": {
+            "type": "string",
+            "enum": [
+              "same_as_reference",
+              "emotion_reference",
+              "emotion_vector"
+            ],
+            "default": "same_as_reference"
+          },
+          "emotion_audio_path": {
+            "type": "string"
+          },
+          "emotion_audio_base64": {
+            "type": "string"
+          },
+          "emotion_weight": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.65
+          },
+          "emotion_text": {
+            "type": "string"
+          },
+          "emotion_random": {
+            "type": "boolean",
+            "default": false
+          },
+          "happy": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "angry": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "sad": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "afraid": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "disgusted": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "melancholic": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "surprised": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "calm": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+          "max_text_tokens_per_segment": {
+            "type": "integer",
+            "minimum": 20,
+            "maximum": 600,
+            "default": 120
+          },
+          "output_dir": {
+            "type": "string",
+            "default": "/tmp/agentgrid-artifacts/audio.tts.clone"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 1800,
+            "default": 600
+          }
+        },
+        "required": ["text"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "type": { "const": "audio_tts_clone_result" },
+          "engine": { "type": "string" },
+          "output_audio_path": { "type": "string" },
+          "mime_type": { "type": "string" },
+          "bytes": { "type": "integer" },
+          "duration_ms": { "type": "integer" },
+          "evidence": { "type": "array" },
+          "error": { "type": "object" }
+        },
+        "required": ["ok", "type"]
+      },
+      "constraints": {
+        "os": ["linux"],
+        "requires_gpu": true,
+        "service_url": "http://127.0.0.1:18194/index-tts/"
+      },
+      "labels": [
+        "compute",
+        "plugin",
+        "audio",
+        "tts",
+        "voice_clone",
+        "tool:audio.tts.clone",
+        "node:jia-node"
+      ],
+      "default_verify": {
+        "rules": [
+          {
+            "path": "result.output.ok",
+            "op": "eq",
+            "value": true,
+            "description": "TTS plugin must return ok=true."
+          }
+        ]
+      },
+      "probe": {
+        "enabled": true,
+        "interval_seconds": 300,
+        "timeout_seconds": 30,
+        "payload": {
+          "action": "health"
+        },
+        "verify": {
+          "rules": [
+            {
+              "path": "result.output.ok",
+              "op": "eq",
+              "value": true,
+              "description": "IndexTTS service must be reachable."
+            },
+            {
+              "path": "result.output.service_ready",
+              "op": "eq",
+              "value": true,
+              "description": "IndexTTS gen_single API must be available."
+            }
+          ]
+        }
+      },
+      "metadata": {
+        "category": "audio",
+        "runtime": "agentgrid.plugin-runtime/v1",
+        "capability": "audio.tts",
+        "plugin_id": "index-tts-clone",
+        "engine": "IndexTTS-2",
+        "risk": "high",
+        "business_summary": "Generate speech from target text using the voice timbre of a reference audio file.",
+        "example": {
+          "text": "AgentGrid voice synthesis test.",
+          "reference_audio_path": "/root/ai-tests/index-tts/user_voice.wav"
+        }
+      }
+    }
+  ]
+}

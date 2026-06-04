@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct AgentGridMobileApp: App {
+struct AgentGridApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
