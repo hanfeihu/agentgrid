@@ -1,5 +1,10 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{Query, State},
+    routing::get,
+    Json, Router,
+};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use crate::{
     artifact_store_standard, capability_graph_standard, capability_standard, device_standard,
@@ -102,11 +107,27 @@ async fn capabilities_manifest(State(state): State<AppState>) -> Result<Json<Val
     Ok(Json(store.capabilities_manifest()?))
 }
 
-async fn get_policy(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({
-        "ok": true,
-        "policy": store(&state)?.security_policy()?
-    })))
+async fn get_policy(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    let store = store(&state)?;
+    let policy = store.security_policy()?;
+    // 默认不强制；仅当策略里 require_node_auth=true 时才校验 worker 身份（修 E，可控放量）。
+    let require_auth = policy
+        .get("require_node_auth")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if require_auth {
+        let authenticated = match (params.get("node_id"), params.get("token")) {
+            (Some(node_id), Some(token)) => store.verify_node_token(node_id, token),
+            _ => false,
+        };
+        if !authenticated {
+            return Err(anyhow::anyhow!("policy access denied: node authentication required").into());
+        }
+    }
+    Ok(Json(json!({ "ok": true, "policy": policy })))
 }
 
 async fn runtime_standard(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {

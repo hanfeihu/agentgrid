@@ -62,7 +62,10 @@ struct HttpPolicy {
 #[derive(Debug, Clone)]
 struct CommandPolicy {
     enabled: bool,
+    /// locked = 全拒；allowlist = 仅名单内（默认）；unrestricted = 全放行（denylist 仍拦）
+    mode: String,
     command_allowlist: Vec<String>,
+    denylist: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -162,10 +165,11 @@ fn main() -> Result<()> {
             cli.require_update_signature || env_truthy("AGENTGRID_REQUIRE_UPDATE_SIGNATURE"),
         );
     }
-    let mut policy = fetch_policy(&client, &base).unwrap_or_else(|error| {
-        eprintln!("policy fetch failed, using locked down defaults: {error:#}");
-        locked_down_policy()
-    });
+    let (mut policy, mut policy_version) =
+        fetch_policy(&client, &base, &node_id, join_token.as_deref()).unwrap_or_else(|error| {
+            eprintln!("policy fetch failed, using locked down defaults: {error:#}");
+            (locked_down_policy(), 0)
+        });
 
     loop {
         let running_count = running.lock().expect("running lock").len();
@@ -195,7 +199,16 @@ fn main() -> Result<()> {
             thread::sleep(Duration::from_secs(cli.interval_seconds.max(2)));
             continue;
         }
-        if let Ok(next_policy) = fetch_policy(&client, &base) {
+        if let Ok((next_policy, next_version)) =
+            fetch_policy(&client, &base, &node_id, join_token.as_deref())
+        {
+            if next_version != policy_version {
+                eprintln!(
+                    "security policy updated: v{policy_version} -> v{next_version} (command mode={})",
+                    next_policy.command.mode
+                );
+                policy_version = next_version;
+            }
             policy = next_policy;
         }
 
@@ -214,7 +227,19 @@ fn main() -> Result<()> {
                 .send()
                 .and_then(|response| response.error_for_status());
             let lease = match lease_response {
-                Ok(response) => response.json::<Value>()?,
+                Ok(response) => match response.json::<Value>() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        // 响应体不是合法 JSON(代理错误页/截断等)时别用 ? 退出整个进程,
+                        // 与其它失败一样跳过本轮重试。
+                        eprintln!("lease response parse failed: {error}");
+                        if cli.once {
+                            anyhow::bail!("lease response parse failed: {error}");
+                        }
+                        thread::sleep(Duration::from_secs(cli.interval_seconds.max(2)));
+                        continue;
+                    }
+                },
                 Err(error) => {
                     eprintln!("lease request failed: {error}");
                     if cli.once {
@@ -251,6 +276,15 @@ fn main() -> Result<()> {
                 let running = Arc::clone(&running);
                 let journal = journal.clone();
                 thread::spawn(move || {
+                    // RAII:无论正常结束还是 panic,都从 running 集移除,
+                    // 避免任务线程 panic 时 ID 永久泄漏 → 容量衰减到 0(在线却不接活)。
+                    struct RunningGuard(Arc<Mutex<HashSet<String>>>, String);
+                    impl Drop for RunningGuard {
+                        fn drop(&mut self) {
+                            self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.1);
+                        }
+                    }
+                    let _running_guard = RunningGuard(Arc::clone(&running), task_id.clone());
                     if let Some(journal) = journal.as_ref() {
                         journal.record_task_event("started", &task_id, Some(&task), None);
                     }
@@ -296,7 +330,7 @@ fn main() -> Result<()> {
                             eprintln!("task {task_id} report failed: {error:#}");
                         }
                     }
-                    running.lock().expect("running lock").remove(&task_id);
+                    // running 集的移除由上面的 RunningGuard 在 drop 时完成(含 panic 路径)。
                 });
             }
         }
@@ -756,15 +790,17 @@ fn check_and_apply_worker_update(
     let client = reqwest::blocking::Client::new();
     let manifest = client
         .get(format!("{base}/api/worker/update-manifest"))
-        .query(&json!({
-            "os": os,
-            "arch": arch,
-            "current_sha256": current_sha256,
-            "glibc_version": glibc,
-            "worker_target": target,
-            "node_id": node_id,
-            "channel": update_channel
-        }))
+        // reqwest 的 .query() 用 serde_urlencoded,只接受标量键值对;传 json!(对象) 会报
+        // "builder error: unsupported value",auto-update 因此永久失败。改用字符串对数组。
+        .query(&[
+            ("os", os),
+            ("arch", arch),
+            ("current_sha256", current_sha256.as_str()),
+            ("glibc_version", glibc.as_deref().unwrap_or("")),
+            ("worker_target", target.as_str()),
+            ("node_id", node_id),
+            ("channel", update_channel),
+        ])
         .send()?
         .error_for_status()?
         .json::<Value>()?;
@@ -2149,6 +2185,26 @@ fn enforce_http_policy(request: &HttpRequestPayload, policy: &SecurityPolicy) ->
     Ok(())
 }
 
+/// 按 mode 判断某程序是否放行。denylist 始终优先（unrestricted 下也能拦）。
+fn command_allowed(program: &str, program_name: &str, policy: &CommandPolicy) -> bool {
+    if policy
+        .denylist
+        .iter()
+        .any(|denied| denied == program || denied == program_name)
+    {
+        return false;
+    }
+    match policy.mode.as_str() {
+        "locked" => false,
+        "unrestricted" => true,
+        // "allowlist" 及任何未知值都按白名单（向后兼容旧策略）
+        _ => policy
+            .command_allowlist
+            .iter()
+            .any(|allowed| allowed == program || allowed == program_name),
+    }
+}
+
 fn enforce_command_policy(command: &CommandPayload, policy: &SecurityPolicy) -> Result<()> {
     if !policy.command.enabled {
         anyhow::bail!("policy denied: command execution is disabled");
@@ -2158,15 +2214,11 @@ fn enforce_command_policy(command: &CommandPayload, policy: &SecurityPolicy) -> 
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or(command.program.as_str());
-    if !policy
-        .command
-        .command_allowlist
-        .iter()
-        .any(|allowed| allowed == &command.program || allowed == program_name)
-    {
+    if !command_allowed(&command.program, program_name, &policy.command) {
         anyhow::bail!(
-            "policy denied: command {} is not allowlisted",
-            command.program
+            "policy denied: command {} is not allowed (mode={})",
+            command.program,
+            policy.command.mode
         );
     }
     Ok(())
@@ -2176,13 +2228,12 @@ fn enforce_command_name(program: &str, policy: &SecurityPolicy) -> Result<()> {
     if !policy.command.enabled {
         anyhow::bail!("policy denied: command execution is disabled");
     }
-    if !policy
-        .command
-        .command_allowlist
-        .iter()
-        .any(|allowed| allowed == program)
-    {
-        anyhow::bail!("policy denied: command {program} is not allowlisted");
+    let program_name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    if !command_allowed(program, program_name, &policy.command) {
+        anyhow::bail!(
+            "policy denied: command {program} is not allowed (mode={})",
+            policy.command.mode
+        );
     }
     Ok(())
 }
@@ -2753,15 +2804,29 @@ fn node_groups(tags: &[String]) -> Vec<String> {
     groups
 }
 
-fn fetch_policy(client: &reqwest::blocking::Client, base: &str) -> Result<SecurityPolicy> {
+fn fetch_policy(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    node_id: &str,
+    token: Option<&str>,
+) -> Result<(SecurityPolicy, u64)> {
+    // 带上 node 身份用于鉴权（hub 仅在 require_node_auth 开启时强制校验）
+    let mut params = vec![("node_id", node_id.to_string())];
+    if let Some(token) = token {
+        params.push(("token", token.to_string()));
+    }
     let value = client
         .get(format!("{base}/api/policy"))
+        .query(&params)
         .send()?
         .error_for_status()?
         .json::<Value>()?;
-    Ok(policy_from_value(
-        value.get("policy").unwrap_or(&Value::Null),
-    ))
+    let policy_value = value.get("policy").cloned().unwrap_or(Value::Null);
+    let version = policy_value
+        .get("version")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok((policy_from_value(&policy_value), version))
 }
 
 fn policy_from_value(value: &Value) -> SecurityPolicy {
@@ -2783,7 +2848,13 @@ fn policy_from_value(value: &Value) -> SecurityPolicy {
                 .pointer("/command/enabled")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            mode: value
+                .pointer("/command/mode")
+                .and_then(Value::as_str)
+                .unwrap_or("allowlist")
+                .to_string(),
             command_allowlist: string_array(value.pointer("/command/command_allowlist")),
+            denylist: string_array(value.pointer("/command/command_denylist")),
         },
     }
 }
@@ -2802,7 +2873,9 @@ fn locked_down_policy() -> SecurityPolicy {
         },
         command: CommandPolicy {
             enabled: false,
+            mode: "locked".to_string(),
             command_allowlist: Vec::new(),
+            denylist: Vec::new(),
         },
     }
 }

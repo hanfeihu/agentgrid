@@ -51,6 +51,7 @@ mod diagnostics;
 mod jobs;
 mod messages;
 mod nodes;
+mod policy;
 mod routes;
 mod runtime_standard;
 mod security;
@@ -157,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
     };
     start_tool_probe_loop(state.clone());
     start_job_recovery_loop(state.clone());
+    start_retention_loop(state.clone());
     let app = routes::router(state);
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse()?;
@@ -176,6 +178,21 @@ fn new_id(prefix: &str) -> String {
 
 fn store(state: &AppState) -> Result<Store, ApiError> {
     Store::open(state.db_path.as_ref()).map_err(ApiError::from)
+}
+
+fn start_retention_loop(state: AppState) {
+    tokio::spawn(async move {
+        // 每小时清一次超期行(首 tick 立即执行)。
+        let mut timer = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            timer.tick().await;
+            if let Ok(store) = Store::open(state.db_path.as_ref()) {
+                if let Err(error) = store.prune_old_rows() {
+                    eprintln!("retention prune failed: {error:#}");
+                }
+            }
+        }
+    });
 }
 
 fn start_tool_probe_loop(state: AppState) {
@@ -805,10 +822,13 @@ async fn handle_bridge_client(
     };
     let token_valid =
         token.as_deref().map(session_token_hash).as_deref() == Some(session.token_hash.as_str());
-    let expires_at = chrono::DateTime::parse_from_rfc3339(&session.expires_at)
+    // fail-closed:时间戳无法解析时拒绝连接(原 .ok() 会把解析失败当成"永不过期")。
+    let Ok(expires_at) = chrono::DateTime::parse_from_rfc3339(&session.expires_at)
         .map(|value| value.with_timezone(&Utc))
-        .ok();
-    if !token_valid || expires_at.is_some_and(|expires_at| expires_at < Utc::now()) {
+    else {
+        return;
+    };
+    if !token_valid || expires_at < Utc::now() {
         return;
     }
     let (mut sink, mut stream) = socket.split();
@@ -1458,6 +1478,10 @@ fn compare_versions(left: &str, right: &str) -> i32 {
 
 struct Store {
     conn: Connection,
+    /// 请求级缓存:首次读 probe 时一次性载入全部,消除 enrich_tool_with_nodes 的 N+1。
+    tool_probe_cache: std::cell::RefCell<Option<std::collections::HashMap<(String, String), Value>>>,
+    /// 请求级缓存:默认组织 id,避免几十个 list_*/get_* 助手每次重复查 organizations。
+    default_org_cache: std::cell::RefCell<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1534,8 +1558,16 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let conn = Connection::open(path)?;
+        // 性能:WAL 提升读写并发、synchronous=NORMAL 大幅减少 fsync、
+        // 页缓存加到 64MB、写锁等待 5s(避免 SQLITE_BUSY 直接失败)。
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA cache_size=-65536;",
+        )?;
         Ok(Self {
-            conn: Connection::open(path)?,
+            conn,
+            tool_probe_cache: std::cell::RefCell::new(None),
+            default_org_cache: std::cell::RefCell::new(None),
         })
     }
 
@@ -2773,13 +2805,57 @@ impl Store {
     }
 
     fn default_organization_id(&self) -> anyhow::Result<String> {
-        self.conn
-            .query_row(
-                "SELECT id FROM organizations WHERE project_id = ?1 ORDER BY created_at ASC LIMIT 1",
-                params![PROJECT_ID],
-                |row| row.get(0),
-            )
-            .map_err(Into::into)
+        if let Some(cached) = self.default_org_cache.borrow().as_ref() {
+            return Ok(cached.clone());
+        }
+        let org: String = self.conn.query_row(
+            "SELECT id FROM organizations WHERE project_id = ?1 ORDER BY created_at ASC LIMIT 1",
+            params![PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        *self.default_org_cache.borrow_mut() = Some(org.clone());
+        Ok(org)
+    }
+
+    /// 保留期清理:删高频日志/事件的超期行 + 过期 session/验证码,防表无限膨胀(audit 曾涨到 240 万行/5GB)。
+    /// 每张表用 `let _ =` 独立执行,单表出错不影响其它。
+    fn prune_old_rows(&self) -> anyhow::Result<()> {
+        let now = now();
+        let cutoff_7d = (Utc::now() - chrono::Duration::days(7))
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        let cutoff_30d = (Utc::now() - chrono::Duration::days(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        // 高频日志/事件:保留 7 天
+        let _ = self
+            .conn
+            .execute("DELETE FROM task_logs WHERE created_at < ?1", params![cutoff_7d]);
+        let _ = self.conn.execute(
+            "DELETE FROM webhook_deliveries WHERE created_at < ?1",
+            params![cutoff_7d],
+        );
+        let _ = self.conn.execute(
+            "DELETE FROM ingress_events WHERE created_at < ?1",
+            params![cutoff_7d],
+        );
+        // 审计 / job 尝试:保留 30 天
+        let _ = self.conn.execute(
+            "DELETE FROM audit_events WHERE created_at < ?1",
+            params![cutoff_30d],
+        );
+        let _ = self.conn.execute(
+            "DELETE FROM job_attempts WHERE created_at < ?1",
+            params![cutoff_30d],
+        );
+        // 过期 session / 验证码
+        let _ = self.conn.execute(
+            "DELETE FROM user_sessions WHERE expires_at < ?1",
+            params![now],
+        );
+        let _ = self.conn.execute(
+            "DELETE FROM email_verification_codes WHERE expires_at < ?1",
+            params![now],
+        );
+        Ok(())
     }
 
     fn organization_id_from_data(&self, data: &Value) -> anyhow::Result<String> {
@@ -3674,15 +3750,47 @@ impl Store {
     }
 
     fn get_tool_probe(&self, tool_id: &str, node_id: &str) -> anyhow::Result<Option<Value>> {
-        let organization_id = self.organization_id_for_node(node_id)?;
-        self.conn
-            .query_row(
-                "SELECT * FROM tool_probes WHERE project_id = ?1 AND organization_id = ?2 AND tool_id = ?3 AND node_id = ?4",
-                params![PROJECT_ID, organization_id, tool_id, node_id],
-                tool_probe_row,
-            )
-            .optional()
-            .map_err(Into::into)
+        // 请求级缓存:首次调用一次性载入全部 probe,之后内存 O(1) 查找。
+        // 消除 capabilities/manifest 等端点按每个 (tool, node) 单查的 N+1(曾达 5.7s)。
+        if self.tool_probe_cache.borrow().is_none() {
+            let map = self.load_all_tool_probes()?;
+            *self.tool_probe_cache.borrow_mut() = Some(map);
+        }
+        Ok(self
+            .tool_probe_cache
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.get(&(tool_id.to_string(), node_id.to_string())).cloned()))
+    }
+
+    fn load_all_tool_probes(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<(String, String), Value>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM tool_probes WHERE project_id = ?1")?;
+        let rows = stmt.query_map(params![PROJECT_ID], tool_probe_row)?;
+        let mut map = std::collections::HashMap::new();
+        for probe in rows {
+            let probe = probe?;
+            let tid = probe
+                .pointer("/metadata/tool_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let nid = probe
+                .pointer("/metadata/node_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            map.insert((tid, nid), probe);
+        }
+        Ok(map)
+    }
+
+    /// probe 写入后清掉请求级缓存,避免同请求内读到旧值。
+    fn invalidate_tool_probe_cache(&self) {
+        self.tool_probe_cache.borrow_mut().take();
     }
 
     fn create_tool_probe_tasks(
@@ -3842,6 +3950,7 @@ impl Store {
     }
 
     fn expire_stale_tool_probes(&self) -> anyhow::Result<usize> {
+        self.invalidate_tool_probe_cache();
         let current = now();
         let changed = self.conn.execute(
             "
@@ -3874,6 +3983,7 @@ impl Store {
         result: Option<Value>,
         error: Option<Value>,
     ) -> anyhow::Result<()> {
+        self.invalidate_tool_probe_cache();
         let now = now();
         let completed_at = if matches!(status, "verified" | "failed" | "unsupported") {
             Some(now.clone())
@@ -4028,14 +4138,17 @@ impl Store {
         let item = self
             .get_node(&id)?
             .ok_or_else(|| anyhow::anyhow!("node not found"))?;
-        self.requeue_lost_job_attempts()?;
-        self.audit(
-            "node.heartbeat",
-            &id,
-            Some(&id),
-            "节点心跳更新",
-            json!({ "node": item.clone() }),
-        )?;
+        // requeue 不再挂在每次心跳上:全局至多每 15s 跑一次,避免高频重复扫描 agent_tasks。
+        {
+            use std::sync::atomic::{AtomicI64, Ordering};
+            static LAST_REQUEUE: AtomicI64 = AtomicI64::new(0);
+            let now_secs = Utc::now().timestamp();
+            if now_secs - LAST_REQUEUE.load(Ordering::Relaxed) >= 15 {
+                LAST_REQUEUE.store(now_secs, Ordering::Relaxed);
+                self.requeue_lost_job_attempts()?;
+            }
+        }
+        // 心跳不再写审计:每 5~10s 一条纯属噪音,曾使 audit_events 膨胀到数百万行 / DB 5GB。
         Ok(item)
     }
 
@@ -4050,6 +4163,23 @@ impl Store {
         let join_token =
             optional_string(data, "join_token").filter(|value| !value.trim().is_empty());
         let existing = self.get_node_auth_record(node_id)?;
+        // 平台(ai-company device flow)分配的节点：node_id 以 "u-" 开头 = 已在平台侧确权(绑定了 user)。
+        // AgentGrid 信任平台的归属判断，直接放行——重客户端架构里 worker 就是用户自己的机器，
+        // device flow 已授权过，不该再授权一遍。归属账本(谁的电脑/资产归谁)由 ai-company 维护。
+        if node_id.starts_with("u-") {
+            return Ok(NodeAuthorization {
+                status: "legacy".to_string(),
+                previous_status: existing
+                    .as_ref()
+                    .map(|e| e.previous_status.clone())
+                    .unwrap_or_else(|| "legacy".to_string()),
+                machine_fingerprint: machine_fingerprint
+                    .or_else(|| existing.as_ref().and_then(|e| e.machine_fingerprint.clone())),
+                join_token_hash: None,
+                join_token_hint: String::new(),
+                authorized_at: Some(now.to_string()),
+            });
+        }
         if let Some(existing) = existing {
             if existing.previous_status == "pending" {
                 return Ok(NodeAuthorization {
@@ -5320,7 +5450,20 @@ impl Store {
             "input_schema": enriched.get("input_schema").cloned().unwrap_or_else(|| json!({})),
             "output_schema": enriched.get("output_schema").cloned().unwrap_or_else(|| json!({})),
             "examples": enriched.get("examples").cloned().unwrap_or_else(|| json!([])),
-            "nodes": nodes,
+            // 精简:只保留节点 id/名称/验证状态,不再内嵌完整节点对象。
+            // 原来每个工具都塞一份完整节点 → manifest 膨胀到 7MB(99% 是重复 nodes)。
+            // 节点详情前端按需走 /api/nodes。
+            "nodes": nodes
+                .iter()
+                .map(|node| {
+                    json!({
+                        "id": node.get("id").cloned().unwrap_or(Value::Null),
+                        "name": node.get("name").cloned().unwrap_or(Value::Null),
+                        "verification_status": node.get("verification_status").cloned().unwrap_or(Value::Null),
+                        "support_basis": node.get("support_basis").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect::<Vec<_>>(),
             "job_example": capability_job_example(tool_id, recommended_reduce)
         }))
     }
@@ -5414,18 +5557,31 @@ impl Store {
                     map.insert("support_basis".to_string(), json!(support_basis));
                     map.insert(
                         "probe".to_string(),
-                        probe.unwrap_or_else(|| {
-                            json!({
-                                "kind": "ToolProbe",
-                                "metadata": {
-                                    "tool_id": tool_id,
-                                    "node_id": node_id
-                                },
-                                "status": {
-                                    "state": "declared_unverified"
+                        probe
+                            .map(|mut probe| {
+                                // 列表里剥掉 probe 的 result/error 大块(命令探测输出可达 MB,
+                                // 是 manifest/agent-runtime 膨胀到数 MB 的真因);只留状态/时间,
+                                // 详情按需单查。
+                                if let Some(status_obj) =
+                                    probe.pointer_mut("/status").and_then(Value::as_object_mut)
+                                {
+                                    status_obj.remove("result");
+                                    status_obj.remove("error");
                                 }
+                                probe
                             })
-                        }),
+                            .unwrap_or_else(|| {
+                                json!({
+                                    "kind": "ToolProbe",
+                                    "metadata": {
+                                        "tool_id": tool_id,
+                                        "node_id": node_id
+                                    },
+                                    "status": {
+                                        "state": "declared_unverified"
+                                    }
+                                })
+                            }),
                     );
                 }
                 Ok(node)
@@ -9008,6 +9164,16 @@ impl Store {
             .get("node_id")
             .and_then(Value::as_str)
             .map(ToString::to_string);
+        // 校验租约归属:只有持有该任务租约的节点能完成它(防伪造任务完成毒化工作流/job)。
+        // 向后兼容:任务无租约持有者时放行。
+        if let Some(leased_by) = current_task
+            .pointer("/status/leased_by_node_id")
+            .and_then(Value::as_str)
+        {
+            if node_id.as_deref() != Some(leased_by) {
+                anyhow::bail!("task is leased by another node; completion rejected");
+            }
+        }
         self.conn.execute(
             "
             UPDATE agent_tasks
@@ -9085,6 +9251,22 @@ impl Store {
 
     fn fail_worker_task(&self, id: &str, data: Value) -> anyhow::Result<Value> {
         let now = now();
+        // 校验租约归属(同 complete):若请求带了 node_id,必须是该任务租约持有者才能标记失败。
+        if let Some(node_id) = data.get("node_id").and_then(Value::as_str) {
+            if let Some(leased_by) = self
+                .get_task(id)?
+                .as_ref()
+                .and_then(|task| {
+                    task.pointer("/status/leased_by_node_id")
+                        .and_then(Value::as_str)
+                })
+                .map(ToString::to_string)
+            {
+                if node_id != leased_by {
+                    anyhow::bail!("task is leased by another node; failure rejected");
+                }
+            }
+        }
         let error = data.get("error").cloned().unwrap_or_else(|| json!({}));
         let is_stopped = error.get("code").and_then(Value::as_str) == Some("task_stopped");
         let status = if is_stopped { "stopped" } else { "failed" };
@@ -9657,6 +9839,7 @@ impl Store {
         error: Option<&Value>,
         now: &str,
     ) -> anyhow::Result<()> {
+        self.invalidate_tool_probe_cache();
         let Some(task) = self.get_task(task_id)? else {
             return Ok(());
         };
@@ -9911,6 +10094,24 @@ impl Store {
         Ok(())
     }
 
+    /// 校验 worker 上报的 node 身份（node_id + join_token）是否与库内一致。
+    fn verify_node_token(&self, node_id: &str, token: &str) -> bool {
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT join_token_hash FROM nodes WHERE id = ?1",
+                params![node_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        match stored {
+            Some(hash) if !hash.is_empty() => hash == node_join_token_hash(node_id, token),
+            _ => false,
+        }
+    }
+
     fn security_policy(&self) -> anyhow::Result<Value> {
         let mut policy = self
             .conn
@@ -9925,8 +10126,51 @@ impl Store {
             .optional()
             .map(|value| value.unwrap_or_else(default_security_policy))
             .map_err(anyhow::Error::from)?;
-        merge_json_defaults(&mut policy, default_security_policy());
+        // 只补缺失的键（向后兼容新增字段如 mode），绝不 union/覆盖已存数组，
+        // 这样存进来的【完整策略文档】才是权威，既能放宽也能收紧。
+        fill_missing_defaults(&mut policy, &default_security_policy());
         Ok(policy)
+    }
+
+    /// 写入/替换安全策略（管理面）。存的是完整文档：校验 → 版本+1 → 落库 → 审计。
+    fn update_security_policy(&self, mut input: Value, actor: &str) -> anyhow::Result<Value> {
+        validate_security_policy(&input)?;
+        let now = now();
+        let current_version = self
+            .conn
+            .query_row(
+                "SELECT policy_json FROM security_policies WHERE project_id = ?1",
+                params![PROJECT_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|value| value.get("version").and_then(Value::as_u64))
+            .unwrap_or(0);
+        let next_version = current_version + 1;
+        if let Some(map) = input.as_object_mut() {
+            map.insert("version".to_string(), json!(next_version));
+            map.insert("updated_at".to_string(), json!(now));
+            map.insert("updated_by".to_string(), json!(actor));
+        }
+        self.conn.execute(
+            "
+            INSERT INTO security_policies (project_id, policy_json, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(project_id) DO UPDATE SET
+                policy_json = excluded.policy_json,
+                updated_at = excluded.updated_at
+            ",
+            params![PROJECT_ID, serde_json::to_string(&input)?, now],
+        )?;
+        self.audit(
+            "hub.policy.changed",
+            actor,
+            Some(PROJECT_ID),
+            "安全策略已更新",
+            json!({ "version": next_version, "policy": input }),
+        )?;
+        self.security_policy()
     }
 
     fn scheduler_config(&self) -> anyhow::Result<Value> {
@@ -17272,6 +17516,7 @@ fn optional_json_string(value: &Value, key: &str) -> Option<String> {
 
 fn default_security_policy() -> Value {
     json!({
+        "require_node_auth": false,
         "http": {
             "allowed_domains": [],
             "blocked_ips": ["127.0.0.1", "::1", "0.0.0.0"],
@@ -17280,14 +17525,17 @@ fn default_security_policy() -> Value {
         },
         "command": {
             "enabled": true,
+            "mode": "allowlist",
             "command_allowlist": [
                 "pwd", "whoami", "hostname", "uname", "date",
                 "ls", "df", "du", "free", "uptime",
                 "sh", "bash",
                 "echo", "cat", "head", "tail", "wc",
                 "git", "cargo", "node", "npm", "pnpm", "python3", "python",
+                "curl", "wget",
                 "cmd", "powershell", "pwsh"
             ],
+            "command_denylist": [],
             "max_stdout_bytes": 65536,
             "max_stderr_bytes": 65536
         },
@@ -17296,6 +17544,59 @@ fn default_security_policy() -> Value {
             "allowed_secret_refs": []
         }
     })
+}
+
+/// 校验管理面提交的安全策略文档：模式枚举 + 字段类型。非法即拒绝写入。
+fn validate_security_policy(value: &Value) -> anyhow::Result<()> {
+    if !value.is_object() {
+        anyhow::bail!("policy must be a JSON object");
+    }
+    if let Some(command) = value.get("command") {
+        if let Some(mode) = command.get("mode").and_then(Value::as_str) {
+            if !matches!(mode, "locked" | "allowlist" | "unrestricted") {
+                anyhow::bail!("command.mode must be one of: locked, allowlist, unrestricted");
+            }
+        }
+        if let Some(enabled) = command.get("enabled") {
+            if !enabled.is_boolean() {
+                anyhow::bail!("command.enabled must be a boolean");
+            }
+        }
+        for key in ["command_allowlist", "command_denylist"] {
+            if let Some(list) = command.get(key) {
+                if !list.is_array() {
+                    anyhow::bail!("command.{key} must be an array");
+                }
+            }
+        }
+    }
+    if let Some(http) = value.get("http") {
+        if let Some(mode) = http.get("mode").and_then(Value::as_str) {
+            if !matches!(mode, "locked" | "allowlist" | "unrestricted") {
+                anyhow::bail!("http.mode must be one of: locked, allowlist, unrestricted");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 只插入 target 中缺失的键（对象递归），不触碰已存在的标量/数组。
+/// 用于读取策略时补齐新增字段默认值，又不会把用户收紧过的名单并回默认。
+fn fill_missing_defaults(target: &mut Value, defaults: &Value) {
+    let (Some(target), Some(defaults)) = (target.as_object_mut(), defaults.as_object()) else {
+        return;
+    };
+    for (key, value) in defaults {
+        match target.get_mut(key) {
+            Some(existing) if existing.is_object() && value.is_object() => {
+                fill_missing_defaults(existing, value)
+            }
+            Some(_) => {}
+            None => {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
 }
 
 fn default_scheduler_config() -> Value {
@@ -19374,33 +19675,6 @@ fn merge_json_object(target: &mut Value, patch: Value) {
             }
         } else {
             target.insert(key.clone(), value.clone());
-        }
-    }
-}
-
-fn merge_json_defaults(target: &mut Value, defaults: Value) {
-    let (Some(target), Some(defaults)) = (target.as_object_mut(), defaults.as_object()) else {
-        return;
-    };
-    for (key, value) in defaults {
-        match target.get_mut(key) {
-            Some(existing) if existing.is_object() && value.is_object() => {
-                merge_json_defaults(existing, value.clone())
-            }
-            Some(existing) if existing.is_array() && value.is_array() => {
-                let Some(existing_items) = existing.as_array_mut() else {
-                    continue;
-                };
-                for item in value.as_array().unwrap_or(&Vec::new()) {
-                    if !existing_items.iter().any(|existing| existing == item) {
-                        existing_items.push(item.clone());
-                    }
-                }
-            }
-            Some(_) => {}
-            None => {
-                target.insert(key.clone(), value.clone());
-            }
         }
     }
 }

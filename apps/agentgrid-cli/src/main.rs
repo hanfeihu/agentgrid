@@ -25,6 +25,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// 登录 AI 员工平台并把本机绑定为算力节点(浏览器授权，类似 gh auth login)
+    Login {
+        /// AI 员工平台地址
+        #[arg(long, default_value = "http://company.tminos.com:20080")]
+        platform: String,
+        /// 设备名(默认主机名)
+        #[arg(long)]
+        name: Option<String>,
+    },
     Health,
     Agents,
     Messages {
@@ -1091,12 +1100,93 @@ enum PortBridgeCommands {
     },
 }
 
+fn cli_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "未命名设备".to_string())
+}
+
+fn cred_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::Path::new(&home).join(".agentgrid").join("credentials.json")
+}
+
+fn open_browser(url: &str) {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(cmd).arg(url).spawn();
+}
+
+/// device flow 登录：领码 → 浏览器授权 → 轮询换凭证 → 存 ~/.agentgrid/credentials.json
+fn login(client: &reqwest::blocking::Client, platform: &str, name: Option<String>) -> Result<()> {
+    let device_name = name.unwrap_or_else(cli_hostname);
+    let code_resp: Value = client
+        .post(format!("{platform}/api/v1/device/code"))
+        .json(&serde_json::json!({ "device_name": device_name }))
+        .send()
+        .context("连接平台失败")?
+        .json()?;
+    let device_code = code_resp["device_code"].as_str().unwrap_or_default().to_string();
+    let user_code = code_resp["user_code"].as_str().unwrap_or_default().to_string();
+    let verify = code_resp["verification_uri"].as_str().unwrap_or_default().to_string();
+    let interval = code_resp["interval"].as_u64().unwrap_or(3);
+    if device_code.is_empty() {
+        anyhow::bail!("领取设备码失败: {code_resp}");
+    }
+    println!("\n  打开浏览器授权:  {verify}");
+    println!("  验证码:          {user_code}\n");
+    open_browser(&format!("{verify}?code={user_code}"));
+    println!("  等待授权中(在浏览器登录并确认)...");
+    loop {
+        thread::sleep(Duration::from_secs(interval));
+        let resp = client
+            .post(format!("{platform}/api/v1/device/token"))
+            .json(&serde_json::json!({ "device_code": device_code }))
+            .send()?;
+        if resp.status().is_success() {
+            let d: Value = resp.json()?;
+            let hub = d["agentgrid"]["hub_url"].as_str().unwrap_or_default();
+            let node_id = d["agentgrid"]["node_id"].as_str().unwrap_or_default();
+            let user = d["user"]["username"].as_str().unwrap_or_default();
+            let p = cred_path();
+            if let Some(dir) = p.parent() {
+                fs::create_dir_all(dir)?;
+            }
+            let cred = serde_json::json!({
+                "platform": platform,
+                "access_token": d["access_token"],
+                "user": d["user"],
+                "hub_url": hub,
+                "node_id": node_id,
+            });
+            fs::write(&p, serde_json::to_string_pretty(&cred)?)?;
+            println!("\n  ✓ 已绑定到账号: {user}");
+            println!("  节点 id: {node_id}");
+            println!("  凭证已存: {}", p.display());
+            println!("\n  启动 worker 接入算力:");
+            println!("    agentgrid-worker --hub {hub} --id {node_id} --name \"{device_name}\" \\");
+            println!("      --capability command --capability file --capability http\n");
+            return Ok(());
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let client = reqwest::blocking::Client::new();
     let base = cli.hub.trim_end_matches('/');
 
     match cli.command {
+        Commands::Login { platform, name } => login(&client, platform.trim_end_matches('/'), name)?,
         Commands::Health => print_json(client.get(format!("{base}/api/health")).send()?.text()?),
         Commands::Agents => print_json(client.get(format!("{base}/api/agents")).send()?.text()?),
         Commands::Messages { limit } => print_json(

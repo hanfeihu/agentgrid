@@ -124,6 +124,7 @@ const menuRoutes = [
   { path: '/terminal', key: 'terminal', name: '远程终端', icon: <CodeOutlined /> },
   { path: '/scheduler', key: 'scheduler', name: '调度策略', icon: <SettingOutlined /> },
   { path: '/settings', key: 'settings', name: '系统设置', icon: <SafetyCertificateOutlined /> },
+  { path: '/security', key: 'security', name: '安全策略', icon: <SafetyCertificateOutlined /> },
   { path: '/users', key: 'users', name: '用户管理', icon: <TeamOutlined /> },
   { path: '/provisioning', key: 'provisioning', name: '节点纳管', icon: <DeploymentUnitOutlined /> },
   { path: '/workflow-templates', key: 'workflowTemplates', name: '工作流模板', icon: <ForkOutlined /> },
@@ -751,6 +752,7 @@ function App() {
             {active === 'terminal' && <RemoteTerminal nodes={nodes} />}
             {active === 'scheduler' && <SchedulerConfig config={schedulerConfig} nodes={nodes} onDone={refresh} />}
             {active === 'settings' && <SystemSettings settings={settings} auth={auth} onDone={refresh} />}
+            {active === 'security' && <SecurityPolicy />}
             {active === 'users' && <Users users={users} organization={organization} onDone={refresh} />}
             {active === 'provisioning' && <NodeProvisioning plans={provisioningPlans} settings={settings} onDone={refresh} />}
             {active === 'workflowTemplates' && <WorkflowTemplates templates={workflowTemplates} onDone={refresh} />}
@@ -4105,6 +4107,153 @@ function SchedulerConfig({ config, nodes, onDone }) {
             { title: '能力', render: (_, row) => (row.spec.capabilities || []).map((item) => <Tag key={item}>{item}</Tag>) },
           ]}
         />
+      </ProCard>
+    </Space>
+  );
+}
+
+function SecurityPolicy() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [policy, setPolicy] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const data = await fetchJson('/admin/policy');
+      setPolicy(data.policy || {});
+    } catch (error) {
+      message.error(`读取策略失败：${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  if (loading || !policy) {
+    return <ProCard title="真机命令安全策略" bordered loading />;
+  }
+
+  const command = policy.command || {};
+  const mode = command.mode || 'allowlist';
+  const allowlist = command.command_allowlist || [];
+  const denylist = command.command_denylist || [];
+  const setCommand = (patch) => setPolicy({ ...policy, command: { ...command, ...patch } });
+  const shellInAllowlist = allowlist.some((c) =>
+    ['sh', 'bash', 'zsh', 'pwsh', 'powershell', 'cmd'].includes(c));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const data = await fetchJson('/admin/policy', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(policy),
+      });
+      setPolicy(data.policy || policy);
+      message.success(`安全策略已保存（v${data.policy?.version ?? '?'}），各真机约 10 秒内自动生效`);
+    } catch (error) {
+      message.error(`保存失败：${error.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Space direction="vertical" size={16} className="full">
+      <ProCard
+        title="真机命令安全策略"
+        bordered
+        extra={
+          <Space>
+            {policy.version != null && <Tag color="blue">版本 v{policy.version}</Tag>}
+            {policy.updated_by && (
+              <Typography.Text type="secondary">最后修改：{policy.updated_by}</Typography.Text>
+            )}
+            <Button onClick={load}>刷新</Button>
+            <Button type="primary" loading={saving} onClick={save}>保存并下发</Button>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size={16} className="full">
+          <Alert
+            type="info"
+            showIcon
+            message="策略由 Hub 统一下发，各真机 worker 在下一次心跳（约 10 秒）自动拉取生效，无需重启。"
+          />
+          <Form layout="vertical">
+            <Form.Item label="命令执行总开关">
+              <Select
+                value={command.enabled !== false}
+                style={{ width: 280 }}
+                onChange={(v) => setCommand({ enabled: v })}
+                options={[
+                  { value: true, label: '开启（允许真机执行命令）' },
+                  { value: false, label: '关闭（禁止一切命令执行）' },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item label="放行模式">
+              <Select
+                value={mode}
+                style={{ width: 380 }}
+                onChange={(v) => setCommand({ mode: v })}
+                options={[
+                  { value: 'locked', label: 'Locked · 全部拒绝' },
+                  { value: 'allowlist', label: 'Allowlist · 仅放行白名单内（推荐）' },
+                  { value: 'unrestricted', label: 'Unrestricted · 全部放行（最大权限）' },
+                ]}
+              />
+            </Form.Item>
+
+            {mode === 'unrestricted' && (
+              <Alert
+                type="error"
+                showIcon
+                message="已选择「全部放行」（最大权限）"
+                description="真机将允许执行任意命令，包括 rm、curl、关机、磁盘操作等系统级动作。仅在你完全信任所有任务来源时启用。下方黑名单仍会拦截其中列出的命令。"
+                style={{ marginBottom: 8 }}
+              />
+            )}
+            {mode === 'allowlist' && shellInAllowlist && (
+              <Alert
+                type="warning"
+                showIcon
+                message="白名单含 shell（sh / bash 等）"
+                description="放行 shell 后，AI 可通过 bash -c &quot;...&quot; 间接执行任意命令，安全性接近「全部放行」。要严格限制，请把 shell 从白名单移除。"
+                style={{ marginBottom: 8 }}
+              />
+            )}
+
+            {mode === 'allowlist' && (
+              <Form.Item label="命令白名单（允许执行的程序名，回车 / 空格 / 逗号添加）">
+                <Select
+                  mode="tags"
+                  value={allowlist}
+                  onChange={(v) => setCommand({ command_allowlist: v })}
+                  className="full"
+                  tokenSeparators={[',', ' ']}
+                  placeholder="如 git、python3、curl、ffmpeg、node"
+                />
+              </Form.Item>
+            )}
+
+            <Form.Item
+              label={mode === 'unrestricted'
+                ? '命令黑名单（全部放行下仍始终拦截这些）'
+                : '命令黑名单（始终拒绝，优先于白名单）'}
+            >
+              <Select
+                mode="tags"
+                value={denylist}
+                onChange={(v) => setCommand({ command_denylist: v })}
+                className="full"
+                tokenSeparators={[',', ' ']}
+                placeholder="如 rm、shutdown、mkfs（留空表示不额外拦截）"
+              />
+            </Form.Item>
+          </Form>
+        </Space>
       </ProCard>
     </Space>
   );
