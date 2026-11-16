@@ -1,0 +1,5 @@
+# Link the MSVC C runtime statically into Windows binaries. Without this the worker
+# needs the VC++ 2015-2022 redistributable and exits with 0xC0000135 (DLL not found)
+# on a freshly installed Windows.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
