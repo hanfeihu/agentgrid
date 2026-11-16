@@ -19766,20 +19766,22 @@ impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
         let message = error.to_string();
         let lower = message.to_ascii_lowercase();
-        let status = if lower.contains("unauthorized") {
-            StatusCode::UNAUTHORIZED
-        } else if lower.contains("forbidden") {
-            StatusCode::FORBIDDEN
-        } else if message.contains("not found") {
-            StatusCode::NOT_FOUND
-        } else if message.contains("required")
-            || message.contains("unknown task action")
-            || message.contains("task channel mismatch")
-        {
-            StatusCode::BAD_REQUEST
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
+        // 账号或密码不对是用户输错,不是服务器故障:回 401,也不该刷进 [API-500] 日志
+        let status =
+            if lower.contains("unauthorized") || lower.contains("invalid email or password") {
+                StatusCode::UNAUTHORIZED
+            } else if lower.contains("forbidden") {
+                StatusCode::FORBIDDEN
+            } else if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if message.contains("required")
+                || message.contains("unknown task action")
+                || message.contains("task channel mismatch")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
         // 铁律:500 绝不静默吞掉,打出真实错误链(含 anyhow context)让根因可立即定位
         if status == StatusCode::INTERNAL_SERVER_ERROR {
             eprintln!("[API-500 {}] {:#}", now(), error);
@@ -20152,6 +20154,28 @@ mod hub_core_tests {
             .expect("password hash");
         assert!(password_hash.starts_with("$argon2"));
         assert_eq!(test.store.count_super_admins().unwrap(), 1);
+    }
+
+    #[test]
+    fn wrong_login_is_unauthorized_not_server_error() {
+        let test = test_store();
+        test.store
+            .create_super_admin(json!({
+                "email": "root@example.com",
+                "name": "Root",
+                "password": "super-secret-password"
+            }))
+            .expect("create super admin");
+        let error = test
+            .store
+            .login_user(json!({
+                "email": "root@example.com",
+                "password": "wrong-password"
+            }))
+            .expect_err("wrong password must fail");
+        let api_error = ApiError::from(error);
+        assert_eq!(api_error.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(api_error.code, "unauthorized");
     }
 
     #[test]

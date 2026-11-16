@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { unstableSetRender } from 'antd';
 import {
   ApiOutlined,
   AuditOutlined,
@@ -462,12 +463,15 @@ function LoginPanel({ onDone }) {
         {mode === 'register' && (
           <Form.Item shouldUpdate noStyle>
             {({ getFieldValue }) => (
-              <Space.Compact className="full">
-                <Form.Item name="code" label="验证码" rules={[{ required: true }]} className="full">
-                  <Input />
-                </Form.Item>
-                <Button className="code-button" loading={loading} onClick={() => sendCode(getFieldValue('email'))}>发送验证码</Button>
-              </Space.Compact>
+              // 标签放在外层,输入框和按钮放进同一行,按钮才会和输入框对齐(之前和标签对齐,跑到了输入框上面)
+              <Form.Item label="验证码" required>
+                <Space.Compact className="full">
+                  <Form.Item name="code" noStyle rules={[{ required: true, message: '请输入验证码' }]}>
+                    <Input />
+                  </Form.Item>
+                  <Button className="code-button" loading={loading} onClick={() => sendCode(getFieldValue('email'))}>发送验证码</Button>
+                </Space.Compact>
+              </Form.Item>
             )}
           </Form.Item>
         )}
@@ -6115,5 +6119,19 @@ function ArtifactPreview({ artifact, onClose }) {
     </Modal>
   );
 }
+
+// antd 5 的 message / notification / Modal.confirm 这类全局方法默认按 React 18 的方式渲染,
+// 在 React 19 下会静默不显示(登录失败、操作成功等提示全都看不到)。按 antd 官方做法接上 React 19 的渲染。
+unstableSetRender((node, container) => {
+  if (!container._reactRoot) {
+    container._reactRoot = createRoot(container);
+  }
+  const root = container._reactRoot;
+  root.render(node);
+  return async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    root.unmount();
+  };
+});
 
 createRoot(document.getElementById('root')).render(<App />);
