@@ -20,7 +20,32 @@ function Assert-Admin {
   }
 }
 
+function Ensure-VCRuntime {
+  # Worker builds before static CRT linking need the VC++ 2015-2022 x64 runtime. A freshly
+  # installed Windows does not have it, and the worker then exits at once with 0xC0000135.
+  $missing = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') |
+    Where-Object { -not (Test-Path (Join-Path $env:windir "System32\$_")) }
+  if (-not $missing) {
+    return
+  }
+  Write-Host "Installing Microsoft Visual C++ runtime (missing: $($missing -join ', '))"
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  $installer = Join-Path $env:TEMP "vc_redist.x64.exe"
+  Invoke-WebRequest -UseBasicParsing -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $installer
+  $signature = Get-AuthenticodeSignature $installer
+  if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
+    throw "The downloaded VC++ runtime installer is not validly signed by Microsoft ($($signature.Status)); not installing it."
+  }
+  $process = Start-Process -FilePath $installer -ArgumentList "/install", "/quiet", "/norestart" -Wait -PassThru
+  # 0 installed, 1638 a newer version is already installed, 3010 installed but needs a reboot
+  if ($process.ExitCode -notin @(0, 1638, 3010)) {
+    throw "VC++ runtime install failed with exit code $($process.ExitCode)."
+  }
+  Write-Host "Visual C++ runtime installed."
+}
+
 Assert-Admin
+Ensure-VCRuntime
 
 function Add-MachinePath {
   param([string]$PathToAdd)
