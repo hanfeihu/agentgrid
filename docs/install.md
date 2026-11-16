@@ -143,4 +143,6 @@ The standard flow is:
 6. The Hub administrator approves the node.
 7. The node becomes `bound` and can receive tasks.
 
+If the Hub runs with `AGENTGRID_AUTO_APPROVE_NODES=1`, steps 1–3 and 6 are skipped: a Worker without a join token becomes schedulable (`legacy`) as soon as it connects. See [Deployment](deployment.md#node-auto-approval).
+
 See [Node Join Standard](node-join-standard.md).

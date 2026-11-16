@@ -142,4 +142,6 @@ Worker 不登录总控台。
 6. Hub 管理员确认后授权。
 7. 节点变成 `bound`，可以接任务。
 
+如果 Hub 启动时设置了 `AGENTGRID_AUTO_APPROVE_NODES=1`，第 1–3 步和第 6 步都可以省掉：不带 join token 的 Worker 一连上就是 `legacy`（可调度）。见 [部署](deployment.md#节点自动纳管)。
+
 见 [节点入网标准](node-join.md)。
