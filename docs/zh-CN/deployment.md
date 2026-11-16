@@ -108,6 +108,20 @@ AGENTGRID_SMTP_FROM=agentgrid@example.com
 AGENTGRID_SMTP_ENABLED=true
 ```
 
+## 节点自动纳管
+
+默认情况下，新 Worker 连上来后是 `pending`，要 Hub 管理员批准才能接任务。
+
+如果机器归属已经由别的系统决定（比如 Hub 只做运营中心，设备授权由上层平台负责），启动 Hub 时加：
+
+```bash
+AGENTGRID_AUTO_APPROVE_NODES=1
+```
+
+打开后，不带 join token 的新节点、以及已经是 `pending` 的节点，下一次心跳就变成 `legacy`（可调度）。可用的值是 `1`、`true`、`yes`、`on`，其它值都按人工批准处理。开关打开时 Hub 启动日志会打印一行提示。
+
+只在 Hub 的 Worker 入口不会被不信任的机器访问到时打开：能连上的机器都能入网并接到任务。
+
 ## Worker 更新包
 
 Worker 自动更新使用 Hub web 目录下的二进制产物：

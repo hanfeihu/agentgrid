@@ -112,6 +112,20 @@ AGENTGRID_SMTP_FROM=agentgrid@example.com
 AGENTGRID_SMTP_ENABLED=true
 ```
 
+## Node Auto-Approval
+
+By default every new Worker waits as `pending` until a Hub administrator approves it.
+
+If node ownership is already decided elsewhere (for example the Hub only serves as an operations center behind a platform that authorizes devices), start the Hub with:
+
+```bash
+AGENTGRID_AUTO_APPROVE_NODES=1
+```
+
+With the switch on, new nodes that connect without a join token, and nodes that are already `pending`, become `legacy` (schedulable) on their next heartbeat. Accepted values are `1`, `true`, `yes` and `on`; anything else keeps manual approval. The Hub prints a line at startup when the switch is on.
+
+Only turn it on when the Hub's Worker endpoint is not reachable by machines you do not trust: any machine that can reach it can join and receive tasks.
+
 ## Worker Updates
 
 Publish Worker binaries under the Hub web directory:

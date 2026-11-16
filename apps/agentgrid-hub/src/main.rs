@@ -148,6 +148,11 @@ async fn main() -> anyhow::Result<()> {
     let store = Store::open(&cli.db)?;
     store.migrate()?;
     store.seed()?;
+    if store.auto_approve_nodes {
+        println!(
+            "AgentGrid node auto-approval is ON (AGENTGRID_AUTO_APPROVE_NODES): new and pending nodes become schedulable without admin approval"
+        );
+    }
 
     let state = AppState {
         db_path: Arc::new(cli.db),
@@ -1482,6 +1487,29 @@ struct Store {
     tool_probe_cache: std::cell::RefCell<Option<std::collections::HashMap<(String, String), Value>>>,
     /// 请求级缓存:默认组织 id,避免几十个 list_*/get_* 助手每次重复查 organizations。
     default_org_cache: std::cell::RefCell<Option<String>>,
+    /// 节点自动纳管(AGENTGRID_AUTO_APPROVE_NODES),见 auto_approve_nodes_from_env。
+    auto_approve_nodes: bool,
+}
+
+/// 节点自动纳管开关:环境变量 `AGENTGRID_AUTO_APPROVE_NODES`(1/true/yes/on),默认关闭。
+///
+/// 开启后,没带 join token 的新节点、以及已经在待批(pending)的节点,心跳时直接进 `legacy`
+/// (可调度),不用管理员在 Hub 上逐台批准。适合 Hub 只做运营中心、机器归属由上层平台
+/// (例如 ai-company 的设备授权)负责的部署。关闭时保持原来的人工批准流程。
+fn auto_approve_nodes_from_env() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_enabled("AGENTGRID_AUTO_APPROVE_NODES"))
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -1568,6 +1596,7 @@ impl Store {
             conn,
             tool_probe_cache: std::cell::RefCell::new(None),
             default_org_cache: std::cell::RefCell::new(None),
+            auto_approve_nodes: auto_approve_nodes_from_env(),
         })
     }
 
@@ -4180,15 +4209,23 @@ impl Store {
                 authorized_at: Some(now.to_string()),
             });
         }
+        // 自动纳管开启时,本该"等管理员批准"的节点直接进 legacy(可调度);
+        // 复用 legacy 而不是 bound:bound 要求后续心跳一直带 join token,没 token 的机器会被拒。
+        let auto_approve = self.auto_approve_nodes;
+        let awaiting_status = if auto_approve { "legacy" } else { "pending" };
         if let Some(existing) = existing {
             if existing.previous_status == "pending" {
                 return Ok(NodeAuthorization {
-                    status: "pending".to_string(),
+                    status: awaiting_status.to_string(),
                     previous_status: existing.previous_status,
                     machine_fingerprint: machine_fingerprint.or(existing.machine_fingerprint),
                     join_token_hash: existing.join_token_hash,
                     join_token_hint: existing.join_token_hint,
-                    authorized_at: existing.authorized_at,
+                    authorized_at: if auto_approve {
+                        existing.authorized_at.or_else(|| Some(now.to_string()))
+                    } else {
+                        existing.authorized_at
+                    },
                 });
             }
             if existing.previous_status == "legacy" && existing.join_token_hash.is_none() {
@@ -4228,12 +4265,12 @@ impl Store {
 
         let Some(token) = join_token.as_deref() else {
             return Ok(NodeAuthorization {
-                status: "pending".to_string(),
+                status: awaiting_status.to_string(),
                 previous_status: "new".to_string(),
                 machine_fingerprint,
                 join_token_hash: None,
                 join_token_hint: String::new(),
-                authorized_at: None,
+                authorized_at: auto_approve.then(|| now.to_string()),
             });
         };
         let token_hash = node_join_token_hash(node_id, token);
@@ -19790,9 +19827,19 @@ mod hub_core_tests {
     fn test_store() -> TestStore {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("agentgrid-test.db");
-        let store = Store::open(&db_path).expect("open test store");
+        let mut store = Store::open(&db_path).expect("open test store");
+        // 测试不受本机环境变量影响:默认走人工批准,需要自动纳管的测试自己打开。
+        store.auto_approve_nodes = false;
         store.migrate().expect("migrate test store");
         TestStore { _dir: dir, store }
+    }
+
+    fn node_auth_status(store: &Store, node_id: &str) -> Option<String> {
+        store.get_node(node_id).expect("get node").and_then(|node| {
+            node.pointer("/spec/auth_status")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
     }
 
     fn heartbeat_payload(
@@ -19997,6 +20044,77 @@ mod hub_core_tests {
                 fingerprint,
             ))
             .expect("desktop heartbeat after approval");
+    }
+
+    #[test]
+    fn new_node_without_token_waits_for_approval_by_default() {
+        let test = test_store();
+        test.store
+            .upsert_node(heartbeat_payload("node-manual", None, "fp-manual"))
+            .expect("first heartbeat");
+        test.store
+            .upsert_node(heartbeat_payload("node-manual", None, "fp-manual"))
+            .expect("second heartbeat");
+        assert_eq!(
+            node_auth_status(&test.store, "node-manual").as_deref(),
+            Some("pending")
+        );
+    }
+
+    #[test]
+    fn auto_approve_admits_new_and_pending_nodes() {
+        let mut test = test_store();
+        // 开关打开前就在等批准的老节点
+        test.store
+            .upsert_node(heartbeat_payload("node-waiting", None, "fp-waiting"))
+            .expect("heartbeat while manual");
+        assert_eq!(
+            node_auth_status(&test.store, "node-waiting").as_deref(),
+            Some("pending")
+        );
+
+        test.store.auto_approve_nodes = true;
+        test.store
+            .upsert_node(heartbeat_payload("node-waiting", None, "fp-waiting"))
+            .expect("heartbeat after enabling auto approve");
+        assert_eq!(
+            node_auth_status(&test.store, "node-waiting").as_deref(),
+            Some("legacy")
+        );
+
+        // 全新节点第一次心跳就可调度,之后的心跳保持 legacy
+        for _ in 0..2 {
+            test.store
+                .upsert_node(heartbeat_payload("node-fresh", None, "fp-fresh"))
+                .expect("fresh node heartbeat");
+            assert_eq!(
+                node_auth_status(&test.store, "node-fresh").as_deref(),
+                Some("legacy")
+            );
+        }
+    }
+
+    #[test]
+    fn env_flag_accepts_common_truthy_values() {
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            (" TRUE ", true),
+            ("yes", true),
+            ("on", true),
+            ("0", false),
+            ("false", false),
+            ("", false),
+        ] {
+            std::env::set_var("AGENTGRID_TEST_FLAG_PARSE", value);
+            assert_eq!(
+                env_flag_enabled("AGENTGRID_TEST_FLAG_PARSE"),
+                expected,
+                "value {value:?}"
+            );
+        }
+        std::env::remove_var("AGENTGRID_TEST_FLAG_PARSE");
+        assert!(!env_flag_enabled("AGENTGRID_TEST_FLAG_PARSE"));
     }
 
     #[test]
