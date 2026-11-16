@@ -17,7 +17,9 @@ async fn get_admin_policy(
 ) -> Result<Json<Value>, ApiError> {
     let store = store(&state)?;
     store.require_admin_session(bearer_token_from_headers(&headers).as_deref())?;
-    Ok(Json(json!({ "ok": true, "policy": store.security_policy()? })))
+    Ok(Json(
+        json!({ "ok": true, "policy": store.security_policy()? }),
+    ))
 }
 
 /// 管理面替换安全策略（完整文档）：鉴权 → 校验 → 落库 → 审计 → 返回生效策略。

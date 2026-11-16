@@ -1484,7 +1484,8 @@ fn compare_versions(left: &str, right: &str) -> i32 {
 struct Store {
     conn: Connection,
     /// 请求级缓存:首次读 probe 时一次性载入全部,消除 enrich_tool_with_nodes 的 N+1。
-    tool_probe_cache: std::cell::RefCell<Option<std::collections::HashMap<(String, String), Value>>>,
+    tool_probe_cache:
+        std::cell::RefCell<Option<std::collections::HashMap<(String, String), Value>>>,
     /// 请求级缓存:默认组织 id,避免几十个 list_*/get_* 助手每次重复查 organizations。
     default_org_cache: std::cell::RefCell<Option<String>>,
     /// 节点自动纳管(AGENTGRID_AUTO_APPROVE_NODES),见 auto_approve_nodes_from_env。
@@ -2855,9 +2856,10 @@ impl Store {
         let cutoff_30d = (Utc::now() - chrono::Duration::days(30))
             .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
         // 高频日志/事件:保留 7 天
-        let _ = self
-            .conn
-            .execute("DELETE FROM task_logs WHERE created_at < ?1", params![cutoff_7d]);
+        let _ = self.conn.execute(
+            "DELETE FROM task_logs WHERE created_at < ?1",
+            params![cutoff_7d],
+        );
         let _ = self.conn.execute(
             "DELETE FROM webhook_deliveries WHERE created_at < ?1",
             params![cutoff_7d],
@@ -3785,11 +3787,11 @@ impl Store {
             let map = self.load_all_tool_probes()?;
             *self.tool_probe_cache.borrow_mut() = Some(map);
         }
-        Ok(self
-            .tool_probe_cache
-            .borrow()
-            .as_ref()
-            .and_then(|cache| cache.get(&(tool_id.to_string(), node_id.to_string())).cloned()))
+        Ok(self.tool_probe_cache.borrow().as_ref().and_then(|cache| {
+            cache
+                .get(&(tool_id.to_string(), node_id.to_string()))
+                .cloned()
+        }))
     }
 
     fn load_all_tool_probes(
@@ -4202,8 +4204,11 @@ impl Store {
                     .as_ref()
                     .map(|e| e.previous_status.clone())
                     .unwrap_or_else(|| "legacy".to_string()),
-                machine_fingerprint: machine_fingerprint
-                    .or_else(|| existing.as_ref().and_then(|e| e.machine_fingerprint.clone())),
+                machine_fingerprint: machine_fingerprint.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|e| e.machine_fingerprint.clone())
+                }),
                 join_token_hash: None,
                 join_token_hint: String::new(),
                 authorized_at: Some(now.to_string()),

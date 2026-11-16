@@ -281,7 +281,10 @@ fn main() -> Result<()> {
                     struct RunningGuard(Arc<Mutex<HashSet<String>>>, String);
                     impl Drop for RunningGuard {
                         fn drop(&mut self) {
-                            self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.1);
+                            self.0
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .remove(&self.1);
                         }
                     }
                     let _running_guard = RunningGuard(Arc::clone(&running), task_id.clone());
