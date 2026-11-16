@@ -46,6 +46,7 @@ import {
   Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
   theme,
@@ -83,6 +84,7 @@ import {
   previewKind,
   probeStateColor,
   probeStateLabel,
+  relativeTime,
   resultText,
   riskColor,
   riskLabel,
@@ -771,15 +773,11 @@ function App() {
           <div className="content">
             {active === 'overview' && (
               <Overview
-                health={health}
                 nodes={nodes}
                 workbenches={workbenches}
-                onlineNodes={onlineNodes}
-                offlineNodes={offlineNodes}
-                agents={agents}
                 tasks={tasks}
-                workflows={workflows}
                 messages={messages}
+                onOpenTask={setSelectedTaskId}
               />
             )}
             {active === 'nodes' && <Nodes nodes={nodes} workbenches={workbenches} onOpenTask={setSelectedTaskId} onDone={refresh} />}
@@ -825,58 +823,227 @@ function App() {
   );
 }
 
-function Overview({ health, nodes, workbenches, onlineNodes, offlineNodes, agents, tasks, workflows, messages }) {
-  const runningTasks = tasks.filter((task) => ['assigned', 'todo', 'in_progress', 'stopping'].includes(task.status?.state)).length;
-  const doneTasks = tasks.filter((task) => task.status?.state === 'done').length;
-  const latestTask = latestByTime(tasks, (task) => task.metadata?.created_at || task.metadata?.updated_at);
-  const verifiedMessages = messages.filter((item) => ['task.completed', 'test.passed', 'node_tool.probe.passed'].includes(item.spec?.type)).length;
+// 总览:一屏看全所有机器和最近的任务。统计按物理机算(一台机器的后台、桌面两个通道算一台)。
+const EXECUTING_TASK_STATES = ['assigned', 'in_progress', 'stopping'];
+const QUEUED_TASK_STATES = ['todo', 'ready', 'pending'];
+
+function taskTone(state) {
+  if (state === 'done') return 'ok';
+  if (state === 'failed') return 'bad';
+  if (EXECUTING_TASK_STATES.includes(state)) return 'run';
+  if (QUEUED_TASK_STATES.includes(state) || state === 'blocked') return 'wait';
+  return 'idle';
+}
+
+// hub 自己定时发的工具探测(probe)任务,和人/AI 派的活分开算,不然会把真正的任务淹没
+function isProbeTask(task) {
+  return task?.metadata?.created_by === 'tool-probe-engine'
+    || (task?.spec?.labels || []).some((label) => label.startsWith('probe:'));
+}
+
+function taskTime(task) {
+  return task?.status?.updated_at || task?.metadata?.updated_at || task?.metadata?.created_at;
+}
+
+function hostLastSeen(host) {
+  return host.nodes
+    .map((node) => node.status?.last_heartbeat_at)
+    .filter(Boolean)
+    .sort()
+    .pop();
+}
+
+function osLabel(os) {
+  if (!os) return '-';
+  if (/darwin/i.test(os)) return 'macOS';
+  return os;
+}
+
+function Overview({ nodes, workbenches, tasks, messages, onOpenTask }) {
+  const hosts = normalizeWorkbenchRows(workbenches, nodes)
+    .map((host) => ({ ...host, lastSeen: hostLastSeen(host) }))
+    .sort((left, right) => {
+      const leftOnline = left.state === 'online' ? 0 : 1;
+      const rightOnline = right.state === 'online' ? 0 : 1;
+      if (leftOnline !== rightOnline) return leftOnline - rightOnline;
+      return String(right.lastSeen || '').localeCompare(String(left.lastSeen || ''))
+        || String(left.name).localeCompare(String(right.name), 'zh-CN');
+    });
+  const onlineHosts = hosts.filter((host) => host.state === 'online').length;
+  const offlineHosts = hosts.length - onlineHosts;
+  const workTasks = tasks.filter((task) => !isProbeTask(task));
+  const executing = workTasks.filter((task) => EXECUTING_TASK_STATES.includes(task.status?.state)).length;
+  const queued = workTasks.filter((task) => QUEUED_TASK_STATES.includes(task.status?.state)).length;
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
+  const recent = tasks.filter((task) => new Date(taskTime(task) || 0).getTime() >= dayAgo);
+  const recentWork = recent.filter((task) => !isProbeTask(task));
+  const recentProbes = recent.filter(isProbeTask);
+  const count = (items, state) => items.filter((task) => task.status?.state === state).length;
+  const done24 = count(recentWork, 'done');
+  const failed24 = count(recentWork, 'failed');
+  const probePassed = count(recentProbes, 'done');
+  const probeFailed = count(recentProbes, 'failed');
+  const nodeNames = Object.fromEntries(nodes.map((node) => [node.metadata?.id, physicalHostName(node)]));
 
   return (
-    <Space direction="vertical" size={16} className="full overview-shell">
-      <section className="overview-band">
-        <div className="overview-copy">
-          <Text className="eyebrow">AgentGrid Hub</Text>
-          <Title level={2}>AI 操作真实机器和工位的调度层</Title>
-          <Text type="secondary">
-            统一发现节点、工具、桌面、设备和证据，把结构化任务派到最合适的机器，并留下可审计的执行记录。
-          </Text>
-        </div>
-        <div className="overview-pulse">
-          <Badge status={onlineNodes.length ? 'processing' : 'default'} text={onlineNodes.length ? '集群在线' : '等待节点'} />
-          <Text type="secondary">{formatTime(health.time) || '等待 Hub 同步'}</Text>
+    <div className="ov">
+      <div className="ov-stats">
+        <OverviewStat label="机器在线" value={onlineHosts} unit={`/ ${hosts.length}`} note={offlineHosts ? `${offlineHosts} 台离线` : '全部在线'} tone={offlineHosts ? 'wait' : undefined} />
+        <OverviewStat label="执行中任务" value={executing} note={queued ? `排队 ${queued}` : '无排队'} tone={queued ? 'wait' : undefined} />
+        <OverviewStat label="近 24 小时任务" value={done24} unit="完成" note={failed24 ? `失败 ${failed24}` : '无失败'} tone={failed24 ? 'bad' : undefined} />
+        <OverviewStat label="近 24 小时工具探测" value={probePassed} unit="通过" note={probeFailed ? `失败 ${probeFailed}` : '无失败'} tone={probeFailed ? 'bad' : undefined} />
+      </div>
+      <div className="ov-main">
+        <section className="ov-panel">
+          <header className="ov-panel-head">
+            <Text strong>机器</Text>
+            <Text type="secondary">{hosts.length} 台</Text>
+          </header>
+          <HostTable hosts={hosts} />
+        </section>
+        <section className="ov-panel">
+          <header className="ov-panel-head">
+            <Text strong>最近任务</Text>
+          </header>
+          <RecentTasks tasks={workTasks} nodeNames={nodeNames} onOpenTask={onOpenTask} />
+        </section>
+      </div>
+      <section className="ov-panel">
+        <header className="ov-panel-head">
+          <Text strong>最近消息</Text>
+          <Text type="secondary">{messages.length} 条</Text>
+        </header>
+        <div className="ov-panel-body">
+          <MessageList messages={messages.slice(0, 8)} />
         </div>
       </section>
-      <Row gutter={[16, 16]}>
-        <Col xs={24} md={12} xl={6}>
-          <Metric title="电脑/工位" value={workbenches.length || nodes.length} suffix={offlineNodes ? `离线 ${offlineNodes}` : '全部在线'} prefix={<CloudServerOutlined />} tone="blue" />
-        </Col>
-        <Col xs={24} md={12} xl={6}>
-          <Metric title="在线节点" value={onlineNodes.length} suffix="可接任务" prefix={<CheckCircleOutlined />} tone="green" />
-        </Col>
-        <Col xs={24} md={12} xl={6}>
-          <Metric title="任务运行" value={runningTasks} suffix={`完成 ${doneTasks}`} prefix={<DatabaseOutlined />} tone="amber" />
-        </Col>
-        <Col xs={24} md={12} xl={6}>
-          <Metric title="工作流" value={workflows.length} suffix={`证据 ${verifiedMessages}`} prefix={<ForkOutlined />} tone="violet" />
-        </Col>
-      </Row>
-      <Row gutter={[16, 16]}>
-        <Col xs={24} xl={15}>
-          <ProCard title="电脑资源" bordered extra={<Tag color="blue">{workbenches.length || nodes.length} 台电脑/工位</Tag>}>
-            <NodeResourceList nodes={nodes} workbenches={workbenches} />
-          </ProCard>
-        </Col>
-        <Col xs={24} xl={9}>
-          <Space direction="vertical" size={16} className="full">
-            <PlacementSnapshot task={latestTask} />
-            <HubStatus health={health} agents={agents} />
-          </Space>
-        </Col>
-      </Row>
-      <ProCard title="最近消息流" bordered extra={<Tag>{messages.length} 条</Tag>}>
-        <MessageList messages={messages.slice(0, 8)} />
-      </ProCard>
-    </Space>
+    </div>
+  );
+}
+
+function OverviewStat({ label, value, unit, note, tone }) {
+  return (
+    <div className="ov-stat">
+      <span className="ov-stat-label">{label}</span>
+      <span className="ov-stat-value">
+        <span className="ov-stat-number">{value}</span>
+        {unit && <span className="ov-stat-unit">{unit}</span>}
+      </span>
+      <span className={`ov-stat-note${tone ? ` ov-tone-${tone}` : ''}`}>{note}</span>
+    </div>
+  );
+}
+
+function HostTable({ hosts }) {
+  if (!hosts.length) {
+    return <div className="ov-empty">暂无机器</div>;
+  }
+  return (
+    <div className="ov-hosts" role="table">
+      <div className="ov-host ov-host-head" role="row">
+        <span>名称</span>
+        <span>通道</span>
+        <span>CPU</span>
+        <span>内存</span>
+        <span>硬盘</span>
+        <span className="ov-num">任务</span>
+        <span className="ov-num">心跳</span>
+      </div>
+      {hosts.map((host) => {
+        const node = host.primary || {};
+        const spec = node.spec || {};
+        const online = host.state === 'online';
+        const running = host.nodes.reduce((sum, item) => sum + Number(item.status?.running_jobs || 0), 0);
+        const usedDisk = (spec.disk_total_mb || 0) - (spec.disk_free_mb || 0);
+        const cpu = round(spec.cpu_usage_percent);
+        const memory = percent(spec.memory_used_mb, spec.memory_mb);
+        const disk = spec.disk_total_mb ? diskUsedPercent(node) : 0;
+        return (
+          <div key={host.id} className={`ov-host${online ? '' : ' ov-host-offline'}`} role="row">
+            <div className="ov-host-name">
+              <span className={`ov-dot ${online ? 'ov-dot-on' : 'ov-dot-off'}`} />
+              <div className="ov-host-text">
+                <Tooltip title={spec.address || host.id} placement="topLeft">
+                  <span className="ov-host-title">{host.name}</span>
+                </Tooltip>
+                <span className="ov-host-meta">
+                  {osLabel(spec.os)} · {spec.cpu_cores || 0} 核 · {formatMb(spec.memory_mb)}
+                </span>
+              </div>
+            </div>
+            <HostChannels host={host} />
+            <UsageBar value={cpu} title={`CPU ${cpu}% · ${spec.cpu_cores || 0} 核`} />
+            <UsageBar value={memory} title={`内存 ${formatMb(spec.memory_used_mb)} / ${formatMb(spec.memory_mb)}`} />
+            <UsageBar value={disk} title={`硬盘 ${formatMb(usedDisk)} / ${formatMb(spec.disk_total_mb)}`} />
+            <span className="ov-num ov-jobs">{online ? `${running}/${spec.max_concurrent_jobs || 0}` : '-'}</span>
+            <Tooltip title={formatTime(host.lastSeen)} placement="topRight">
+              <span className={`ov-num ov-seen${online ? '' : ' ov-tone-wait'}`}>
+                {relativeTime(host.lastSeen)}
+              </span>
+            </Tooltip>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function HostChannels({ host }) {
+  return (
+    <div className="ov-channels">
+      {['worker', 'desktop'].map((role) => {
+        const node = host.channels?.[role];
+        if (!node) return null;
+        const state = node.status?.state === 'online' ? 'on' : 'off';
+        return (
+          <Tooltip key={role} title={`${channelLabel(role)}：${stateLabel(node.status?.state)}`}>
+            <span className={`ov-chan ov-chan-${state}`}>{role === 'desktop' ? '桌面' : '后台'}</span>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
+function UsageBar({ value, title }) {
+  const level = value >= 90 ? 'bad' : value >= 70 ? 'wait' : 'ok';
+  return (
+    <Tooltip title={title}>
+      <div className={`ov-usage ov-usage-${level}`}>
+        <span className="ov-usage-track">
+          <span className="ov-usage-fill" style={{ width: `${value}%` }} />
+        </span>
+        <span className="ov-usage-value">{value}%</span>
+      </div>
+    </Tooltip>
+  );
+}
+
+function RecentTasks({ tasks, nodeNames, onOpenTask }) {
+  const items = [...tasks]
+    .sort((left, right) => String(taskTime(right) || '').localeCompare(String(taskTime(left) || '')))
+    .slice(0, 12);
+  if (!items.length) {
+    return <div className="ov-empty">暂无任务</div>;
+  }
+  return (
+    <div className="ov-tasks">
+      {items.map((task) => {
+        const state = task.status?.state;
+        const nodeId = task.status?.leased_by_node_id || routeNode(task);
+        return (
+          <button type="button" key={task.metadata.id} className="ov-task" onClick={() => onOpenTask(task.metadata.id)}>
+            <span className="ov-task-main">
+              <span className="ov-task-title">{task.spec?.title || task.metadata.id}</span>
+              <span className="ov-task-meta">
+                {(nodeId && (nodeNames[nodeId] || nodeId)) || '未分配'} · {relativeTime(taskTime(task))}
+              </span>
+            </span>
+            <span className={`ov-task-state ov-tone-${taskTone(state)}`}>{stateLabel(state)}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1548,123 +1715,6 @@ function NodeConfigModal({ node, onClose, onDone }) {
         <Form.Item name="capabilities" label="节点能力"><Input placeholder="http, command, file, git, docker, browser, agentmessage" /></Form.Item>
       </Form>
     </Modal>
-  );
-}
-
-function NodeResourceList({ nodes, workbenches = [] }) {
-  const physicalHosts = normalizeWorkbenchRows(workbenches, nodes);
-  if (!physicalHosts.length) {
-    return <div className="empty-panel">暂无节点。安装 Worker 后，这里会显示 CPU、内存、硬盘和可用能力。</div>;
-  }
-
-  return (
-    <div className="node-resource-list">
-      {physicalHosts.map((host) => {
-        const node = host.primary;
-        return (
-        <div key={host.id} className={`node-resource-row node-state-${host.state || 'unknown'}`}>
-          <div className="node-summary">
-            <div className="node-status-line">
-              <Text strong className="node-title">{host.name}</Text>
-              <Badge status={host.state === 'online' ? 'success' : 'default'} text={stateLabel(host.state)} />
-            </div>
-            <Text type="secondary" className="node-meta">
-              {node.spec.os || '-'} · {node.spec.cpu_cores || 0} 核 · {node.spec.address || '-'}
-            </Text>
-            <div className="node-badges">
-              <ChannelStatus role="worker" node={host.channels.worker} />
-              <ChannelStatus role="desktop" node={host.channels.desktop} />
-              {host.capabilities.slice(0, 3).map((item) => <Tag key={item}>{item}</Tag>)}
-              {host.capabilities.length > 3 && <Tag>+{host.capabilities.length - 3}</Tag>}
-            </div>
-          </div>
-          <ResourceMeter
-            title="CPU"
-            value={`${round(node.spec.cpu_usage_percent)}%`}
-            detail={`${node.spec.cpu_cores || 0} 核心`}
-            percent={round(node.spec.cpu_usage_percent)}
-          />
-          <ResourceMeter
-            title="内存"
-            value={`${percent(node.spec.memory_used_mb, node.spec.memory_mb)}%`}
-            detail={`${formatMb(node.spec.memory_used_mb)} / ${formatMb(node.spec.memory_mb)}`}
-            percent={percent(node.spec.memory_used_mb, node.spec.memory_mb)}
-          />
-          <ResourceMeter
-            title="硬盘"
-            value={`${diskUsedPercent(node)}%`}
-            detail={`${formatMb((node.spec.disk_total_mb || 0) - (node.spec.disk_free_mb || 0))} / ${formatMb(node.spec.disk_total_mb)}`}
-            percent={diskUsedPercent(node)}
-          />
-        </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ResourceMeter({ title, value, detail, percent: valuePercent }) {
-  return (
-    <div className="resource-meter">
-      <div className="resource-meter-head">
-        <Text strong>{title}</Text>
-        <Text strong>{value}</Text>
-      </div>
-      <Progress percent={valuePercent} size="small" showInfo={false} />
-      <Text type="secondary" className="resource-meter-detail">{detail}</Text>
-    </div>
-  );
-}
-
-function PlacementSnapshot({ task }) {
-  const inputPayload = parseTaskInputPayload(task);
-  const selectedNode = task ? (task.status?.leased_by_node_id || routeNode(task) || '-') : '-';
-  const progress = taskStateProgress(task?.status?.state);
-  const scheduler = task?.status?.result?.scheduler || task?.status?.error?.scheduler;
-  const reason = scheduler?.reason || task?.status?.blocked_reason || (task ? '等待 Worker 回写调度原因' : '暂无任务');
-
-  return (
-    <ProCard title="调度快照" bordered className="decision-card">
-      <Space direction="vertical" size={14} className="full">
-        <DescriptionsList
-          rows={[
-            ['任务', task?.spec?.title || '暂无任务'],
-            ['工具', taskOperationLabel(inputPayload)],
-            ['节点', selectedNode],
-            ['原因', reason],
-          ]}
-        />
-        <Progress percent={progress} showInfo={false} strokeColor="#1677ff" />
-        <Text type="secondary">
-          状态 {stateLabel(task?.status?.state)} · 评分 {scheduler?.score ?? '-'}
-        </Text>
-      </Space>
-    </ProCard>
-  );
-}
-
-function HubStatus({ health, agents }) {
-  return (
-    <ProCard title="中心服务器" bordered className="hub-status-card">
-      <div className="hub-status-grid">
-        <div>
-          <Text type="secondary">服务</Text>
-          <Text strong>{health.service || '-'}</Text>
-        </div>
-        <div>
-          <Text type="secondary">运行时</Text>
-          <Text strong>{health.runtime || 'Rust Hub'}</Text>
-        </div>
-        <div>
-          <Text type="secondary">AI 员工</Text>
-          <Text strong>{agents.length}</Text>
-        </div>
-        <div>
-          <Text type="secondary">入口</Text>
-          <Text copyable className="hub-url">{window.location.origin}/agentgrid</Text>
-        </div>
-      </div>
-    </ProCard>
   );
 }
 
