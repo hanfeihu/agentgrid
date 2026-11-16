@@ -23,6 +23,7 @@ function Assert-Admin {
 }
 
 function Ensure-VCRuntime {
+  param([string]$HubUrl)
   # Worker builds before static CRT linking need the VC++ 2015-2022 x64 runtime. A freshly
   # installed Windows does not have it, and the worker then exits at once with 0xC0000135.
   $missing = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') |
@@ -33,7 +34,27 @@ function Ensure-VCRuntime {
   Write-Host "Installing Microsoft Visual C++ runtime (missing: $($missing -join ', '))"
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
   $installer = Join-Path $env:TEMP "vc_redist.x64.exe"
-  Invoke-WebRequest -UseBasicParsing -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $installer
+  # Try the Hub's copy first (publish it at <web-dir>/downloads/windows-x86_64/vc_redist.x64.exe):
+  # aka.ms / download.visualstudio.microsoft.com are not reachable from every network.
+  $sources = @()
+  if (-not [string]::IsNullOrWhiteSpace($HubUrl)) {
+    $sources += "$($HubUrl.TrimEnd('/'))/downloads/windows-x86_64/vc_redist.x64.exe"
+  }
+  $sources += "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+  $downloaded = $false
+  foreach ($source in $sources) {
+    try {
+      Write-Host "Downloading VC++ runtime from $source"
+      Invoke-WebRequest -UseBasicParsing -Uri $source -OutFile $installer
+      $downloaded = $true
+      break
+    } catch {
+      Write-Host "  download failed: $($_.Exception.Message)"
+    }
+  }
+  if (-not $downloaded) {
+    throw "Could not download the VC++ runtime from: $($sources -join ', ')"
+  }
   $signature = Get-AuthenticodeSignature $installer
   if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
     throw "The downloaded VC++ runtime installer is not validly signed by Microsoft ($($signature.Status)); not installing it."
@@ -71,7 +92,7 @@ function Add-MachinePath {
 }
 
 Assert-Admin
-Ensure-VCRuntime
+Ensure-VCRuntime -HubUrl $HubUrl
 
 if ($Version -eq "latest") {
   $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=1"
