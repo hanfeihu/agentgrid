@@ -521,8 +521,14 @@ function App() {
   const refresh = async () => {
     setLoading(true);
     try {
+      // 先单独问要不要初始化超管:没登录时其余接口都要会话,一起拉只会每 15 秒报一次 "session required"。
+      // 读 localStorage 而不是 auth 状态,因为定时器里的闭包拿到的是首次渲染时的旧状态。
+      const bootstrapRes = await fetchJson('/bootstrap');
+      setBootstrap(bootstrapRes);
+      if (!bootstrapRes.needs_bootstrap && !loadStoredAuth()?.token) {
+        return;
+      }
       const [
-        bootstrapRes,
         healthRes,
         nodeRes,
         workbenchRes,
@@ -551,7 +557,6 @@ function App() {
         diagnosticsRes,
         settingsRes,
       ] = await Promise.all([
-        fetchJson('/bootstrap'),
         fetchJson('/health'),
         fetchJson('/nodes'),
         fetchJson('/workbenches'),
@@ -580,7 +585,6 @@ function App() {
         fetchJson('/diagnostics'),
         fetchOptionalJson('/settings'),
       ]);
-      setBootstrap(bootstrapRes);
       setHealth(healthRes);
       setNodes(nodeRes.items || []);
       setWorkbenches(workbenchRes.items || []);
@@ -666,7 +670,7 @@ function App() {
         <BootstrapAdmin onDone={(session) => { acceptAuth(session); refresh(); }} />
       )}
       {!bootstrap.needs_bootstrap && !auth && (
-        <LoginPanel onDone={(session) => { acceptAuth(session); message.success('登录成功'); }} />
+        <LoginPanel onDone={(session) => { acceptAuth(session); message.success('登录成功'); refresh(); }} />
       )}
       <ProLayout
         title={false}
