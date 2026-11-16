@@ -103,6 +103,9 @@ install_linux_worker_service() {
   if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     as_root useradd --system --home "$AGENTGRID_HOME" --shell /usr/sbin/nologin "$SERVICE_USER"
   fi
+  # The service user's home ($AGENTGRID_HOME) is owned by root. The worker writes its
+  # journal under ~/.agentgrid and exits at startup if it cannot, so give it that directory.
+  as_root install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$AGENTGRID_HOME/.agentgrid"
   JOIN_ARG=""
   if [ -n "$JOIN_TOKEN" ]; then
     JOIN_ARG=" --join-token ${JOIN_TOKEN}"
