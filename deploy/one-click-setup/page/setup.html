@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentGrid Setup</title>
+<link rel="icon" href="/agentgrid/favicon.svg">
+<style>
+  :root {
+    --bg: #f5f7fb;
+    --card: #ffffff;
+    --text: #111827;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --soft: #f3f6fb;
+    --blue: #1677ff;
+    --blue-hover: #0958d9;
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1020;
+      --card: #121a2c;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --line: #23304a;
+      --soft: #17223a;
+      --code-bg: #060a14;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 48px 16px 40px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .mark {
+    display: grid; place-items: center; width: 42px; height: 42px; border-radius: 8px;
+    background: var(--blue); color: #fff; font-weight: 700; font-size: 15px;
+    box-shadow: 0 8px 20px rgba(22, 119, 255, 0.22);
+  }
+  .brand { font-size: 18px; font-weight: 700; line-height: 1.2; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .lang { margin-left: auto; color: var(--muted); font-size: 13px; background: none; border: 0; cursor: pointer; padding: 6px 8px; border-radius: 6px; }
+  .lang:hover { background: var(--soft); color: var(--text); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tab {
+    flex: 1; padding: 12px 8px; border: 0; background: none; color: var(--muted);
+    font: inherit; font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab[aria-selected="true"] { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+  .panel { padding: 28px 24px 24px; }
+  .panel[hidden] { display: none; }
+  h1 { margin: 0 0 4px; font-size: 22px; line-height: 1.3; }
+  .req { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; min-height: 48px; padding: 0 20px; border-radius: 8px; border: 0;
+    background: var(--blue); color: #fff; font: inherit; font-size: 16px; font-weight: 600;
+    text-decoration: none; cursor: pointer;
+  }
+  .btn:hover { background: var(--blue-hover); }
+  .btn svg { width: 18px; height: 18px; }
+  ol { margin: 24px 0 0; padding: 0; list-style: none; counter-reset: s; }
+  ol li { position: relative; padding: 0 0 14px 36px; counter-increment: s; }
+  ol li::before {
+    content: counter(s); position: absolute; left: 0; top: 0;
+    display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+    background: var(--soft); color: var(--blue); font-size: 13px; font-weight: 700;
+  }
+  ol li:last-child { padding-bottom: 0; }
+  .hint { color: var(--muted); font-size: 13px; }
+  .cmd { display: flex; align-items: stretch; border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+  .cmd code {
+    flex: 1; padding: 14px 16px; color: var(--code-text); font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-x: auto; white-space: nowrap;
+  }
+  .copy { border: 0; padding: 0 16px; background: var(--blue); color: #fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .copy:hover { background: var(--blue-hover); }
+  .mobile { padding: 28px 24px; text-align: center; }
+  .mobile .url { margin-top: 12px; font: 15px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--blue); word-break: break-all; }
+  @media (max-width: 480px) {
+    .wrap { padding-top: 28px; }
+    .panel { padding: 24px 16px 20px; }
+    .tab { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark">AG</div>
+    <div>
+      <div class="brand">AgentGrid</div>
+      <div class="sub" data-i18n="sub"></div>
+    </div>
+    <button class="lang" id="lang" type="button"></button>
+  </header>
+
+  <div class="card" id="mobile" hidden>
+    <div class="mobile">
+      <h1 data-i18n="mobileTitle"></h1>
+      <div class="hint" data-i18n="mobileText"></div>
+      <div class="url">agentgrid.tminos.com/setup</div>
+    </div>
+  </div>
+
+  <div class="card" id="desktop">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-os="windows">Windows</button>
+      <button class="tab" role="tab" data-os="mac">macOS</button>
+      <button class="tab" role="tab" data-os="linux">Linux</button>
+    </div>
+
+    <section class="panel" data-panel="windows">
+      <h1 data-i18n="winTitle"></h1>
+      <p class="req" data-i18n="winReq"></p>
+      <a class="btn" href="/downloads/AgentGrid-Setup.cmd" download>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+        <span data-i18n="winButton"></span>
+      </a>
+      <ol>
+        <li data-i18n="winStep1"></li>
+        <li data-i18n="winStep2"></li>
+        <li data-i18n="winStep3"></li>
+      </ol>
+    </section>
+
+    <section class="panel" data-panel="mac" hidden>
+      <h1 data-i18n="macTitle"></h1>
+      <p class="req" data-i18n="macReq"></p>
+      <a class="btn" href="/downloads/AgentGrid-Setup-mac.zip" download>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+        <span data-i18n="macButton"></span>
+      </a>
+      <ol>
+        <li data-i18n="macStep1"></li>
+        <li data-i18n="macStep2"></li>
+        <li data-i18n="macStep3"></li>
+      </ol>
+    </section>
+
+    <section class="panel" data-panel="linux" hidden>
+      <h1 data-i18n="linuxTitle"></h1>
+      <p class="req" data-i18n="linuxReq"></p>
+      <div class="cmd">
+        <code id="cmd">curl -fsSL https://agentgrid.tminos.com/setup.sh | sudo sh</code>
+        <button class="copy" id="copy" type="button" data-i18n="copy"></button>
+      </div>
+      <ol>
+        <li data-i18n="linuxStep1"></li>
+        <li data-i18n="linuxStep2"></li>
+      </ol>
+    </section>
+  </div>
+</div>
+
+<script>
+  const text = {
+    zh: {
+      sub: '接入这台电脑',
+      lang: 'English',
+      winTitle: '在 Windows 上安装',
+      winReq: 'Windows 10 / 11（64 位）',
+      winButton: '下载安装程序',
+      winStep1: '打开下载好的文件。浏览器提示「可能有害」时，选择保留；Windows 提示无法验证发布者时，点「运行」。',
+      winStep2: 'Windows 问「是否允许此应用对你的设备进行更改」时，点「是」。',
+      winStep3: '给这台电脑起个名字，按回车。看到 Done 就装好了。',
+      macTitle: '在 Mac 上安装',
+      macReq: 'Apple 芯片的 Mac（M1 及以后），macOS 11 以上',
+      macButton: '下载 Mac 安装程序',
+      macStep1: '打开下载好的文件，双击「AgentGrid Setup」。',
+      macStep2: '系统问是否要打开时，点「打开」。',
+      macStep3: '给这台电脑起个名字，点「安装」，看到「装好了」就完成了。',
+      linuxTitle: '在 Linux 服务器上安装',
+      linuxReq: 'x86_64，Ubuntu 22.04 / Debian 12 / RHEL 9 及以后，需要 systemd',
+      copy: '复制',
+      copied: '已复制',
+      linuxStep1: '在服务器上粘贴这行命令运行（需要 sudo 权限）。',
+      linuxStep2: '看到 Done 就装好了。想自定义名字，用：curl -fsSL https://agentgrid.tminos.com/setup.sh | sudo AGENTGRID_NODE_NAME="名字" sh',
+      mobileTitle: '请在电脑上打开',
+      mobileText: '这是给电脑安装用的，在要接入的电脑上打开这个网址：'
+    },
+    en: {
+      sub: 'Connect this computer',
+      lang: '中文',
+      winTitle: 'Install on Windows',
+      winReq: 'Windows 10 / 11 (64-bit)',
+      winButton: 'Download installer',
+      winStep1: 'Open the downloaded file. If the browser warns the file may be harmful, choose Keep; if Windows says the publisher could not be verified, click Run.',
+      winStep2: 'When Windows asks "Do you want to allow this app to make changes?", click Yes.',
+      winStep3: 'Type a name for this computer and press Enter. When you see "Done", you are finished.',
+      macTitle: 'Install on Mac',
+      macReq: 'Mac with Apple silicon (M1 or later), macOS 11 or later',
+      macButton: 'Download Mac installer',
+      macStep1: 'Open the downloaded file and double-click "AgentGrid Setup".',
+      macStep2: 'When macOS asks whether to open it, click Open.',
+      macStep3: 'Type a name for this computer, click Install, and wait for "Done".',
+      linuxTitle: 'Install on a Linux server',
+      linuxReq: 'x86_64, Ubuntu 22.04 / Debian 12 / RHEL 9 or later, with systemd',
+      copy: 'Copy',
+      copied: 'Copied',
+      linuxStep1: 'Paste this command on the server and run it (needs sudo).',
+      linuxStep2: 'When you see "Done", you are finished. To set a name: curl -fsSL https://agentgrid.tminos.com/setup.sh | sudo AGENTGRID_NODE_NAME="name" sh',
+      mobileTitle: 'Open this on a computer',
+      mobileText: 'This page installs AgentGrid on a computer. Open this address on the computer you want to connect:'
+    }
+  };
+
+  let lang = (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  try { lang = localStorage.getItem('agentgrid.setup.lang') || lang; } catch (e) {}
+
+  function render() {
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+    document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = text[lang][el.dataset.i18n]; });
+    document.getElementById('lang').textContent = text[lang].lang;
+  }
+
+  function detectOs() {
+    const ua = navigator.userAgent || '';
+    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    if (/Android|iPhone|iPod/i.test(ua)) return 'mobile';
+    if (/iPad/i.test(ua) || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return 'mobile';
+    if (/Win/i.test(platform) || /Windows/i.test(ua)) return 'windows';
+    if (/Mac/i.test(platform) || /Macintosh/i.test(ua)) return 'mac';
+    if (/Linux|X11/i.test(platform + ua)) return 'linux';
+    return 'windows';
+  }
+
+  function select(os) {
+    document.querySelectorAll('.tab').forEach((tab) => tab.setAttribute('aria-selected', String(tab.dataset.os === os)));
+    document.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== os; });
+  }
+
+  document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => select(tab.dataset.os)));
+  document.getElementById('lang').addEventListener('click', () => {
+    lang = lang === 'zh' ? 'en' : 'zh';
+    try { localStorage.setItem('agentgrid.setup.lang', lang); } catch (e) {}
+    render();
+  });
+  document.getElementById('copy').addEventListener('click', async () => {
+    const button = document.getElementById('copy');
+    try {
+      await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
+      button.textContent = text[lang].copied;
+      setTimeout(() => { button.textContent = text[lang].copy; }, 1500);
+    } catch (e) {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById('cmd'));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  });
+
+  const os = detectOs();
+  if (os === 'mobile') {
+    document.getElementById('mobile').hidden = false;
+    document.getElementById('desktop').hidden = true;
+  } else {
+    select(os);
+  }
+  render();
+</script>
+</body>
+</html>
