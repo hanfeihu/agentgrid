@@ -8441,10 +8441,14 @@ impl Store {
             LIMIT 100
             ",
         )?;
-        let rows = stmt.query_map(params![PROJECT_ID, organization_id, now], task_row)?;
+        // 根治"database is locked":先把候选任务读进内存并关闭 SELECT 游标,再做后续 UPDATE/audit 写操作;
+        // 否则边迭代游标边在同一个库上写 = 读锁升写锁死锁,busy_timeout 也救不了 → 间歇性 500。
+        let candidates = stmt
+            .query_map(params![PROJECT_ID, organization_id, now], task_row)?
+            .collect::<rusqlite::Result<Vec<Value>>>()?;
+        drop(stmt);
         let mut leased = Vec::new();
-        for task in rows {
-            let task = task?;
+        for task in candidates {
             if leased.len() >= max_tasks as usize {
                 break;
             }
@@ -19734,6 +19738,10 @@ impl From<anyhow::Error> for ApiError {
         } else {
             StatusCode::INTERNAL_SERVER_ERROR
         };
+        // 铁律:500 绝不静默吞掉,打出真实错误链(含 anyhow context)让根因可立即定位
+        if status == StatusCode::INTERNAL_SERVER_ERROR {
+            eprintln!("[API-500 {}] {:#}", now(), error);
+        }
         Self {
             status,
             code: if status == StatusCode::INTERNAL_SERVER_ERROR {
