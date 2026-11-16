@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { unstableSetRender } from 'antd';
 import {
@@ -482,6 +482,9 @@ function LoginPanel({ onDone }) {
   );
 }
 
+// 只在这几页用、又很大的数据:产物列表(带文件内容)、工具探测/修复中心、运行标准
+const HEAVY_DATA_PAGES = new Set(['artifacts', 'tools', 'standard']);
+
 function App() {
   const [active, setActive] = useState('overview');
   const [loading, setLoading] = useState(false);
@@ -518,7 +521,24 @@ function App() {
   const [settings, setSettings] = useState({});
   const [selectedTaskId, setSelectedTaskId] = useState(null);
 
-  const refresh = async () => {
+  // 只有某一页用得到的大数据,只在打开那一页(或点刷新)时拉,不跟着 15 秒定时器每次重拉。
+  // 以前每 15 秒把所有页面的数据全拉一遍,其中产物列表每条都带文件内容(实测 300 条 85MB),
+  // 经公网 0.8MB/s 要拉 100 多秒,上一轮没完下一轮又来,页面一直转圈。
+  const activeRef = useRef(active);
+  const refreshingRef = useRef(false);
+  const refreshAgainRef = useRef(false);
+  const heavyLoadedPageRef = useRef(null);
+
+  const refresh = async (options = {}) => {
+    // 上一轮还没回来就不再叠一轮,等它回来后补一次
+    if (refreshingRef.current) {
+      refreshAgainRef.current = true;
+      return;
+    }
+    refreshingRef.current = true;
+    const page = activeRef.current;
+    const loadHeavy = options.heavy === true || heavyLoadedPageRef.current !== page;
+    const heavy = (forPage, request) => (page === forPage && loadHeavy ? request() : Promise.resolve(null));
     setLoading(true);
     try {
       // 先单独问要不要初始化超管:没登录时其余接口都要会话,一起拉只会每 15 秒报一次 "session required"。
@@ -565,12 +585,12 @@ function App() {
         fetchJson('/jobs?limit=100'),
         fetchJson('/workflows?limit=100'),
         fetchJson('/tools'),
-        fetchOptionalJson('/tools/probe-center'),
-        fetchOptionalJson('/tools/remediation-center'),
+        heavy('tools', () => fetchOptionalJson('/tools/probe-center')),
+        heavy('tools', () => fetchOptionalJson('/tools/remediation-center')),
         fetchJson('/node-tools'),
         fetchJson('/capabilities/manifest'),
         fetchJson('/agent-runtime/manifest'),
-        fetchJson('/runtime-standard'),
+        heavy('standard', () => fetchJson('/runtime-standard')),
         fetchJson('/workflow-templates'),
         fetchJson('/task-templates'),
         fetchJson('/webhooks'),
@@ -578,7 +598,7 @@ function App() {
         fetchOptionalJson('/node-provisioning/plans'),
         fetchOptionalJson('/users'),
         fetchJson('/events?limit=200'),
-        fetchJson('/artifacts'),
+        heavy('artifacts', () => fetchJson('/artifacts')),
         fetchJson('/messages?limit=80'),
         fetchJson('/audit-events'),
         fetchJson('/scheduler-config'),
@@ -593,12 +613,12 @@ function App() {
       setJobs(jobRes.items || []);
       setWorkflows(workflowRes.items || []);
       setTools(toolRes.items || []);
-      setProbeCenter(probeCenterRes.item || null);
-      setRemediationCenter(remediationCenterRes.item || null);
+      if (probeCenterRes) setProbeCenter(probeCenterRes.item || null);
+      if (remediationCenterRes) setRemediationCenter(remediationCenterRes.item || null);
       setNodeTools(nodeToolRes.items || []);
       setCapabilities(capabilityRes || {});
       setRuntimeManifest(runtimeRes || {});
-      setRuntimeStandard(standardRes.item || {});
+      if (standardRes) setRuntimeStandard(standardRes.item || {});
       setWorkflowTemplates(workflowTemplateRes.items || []);
       setTaskTemplatesStore(taskTemplateRes.items || []);
       setWebhooks(webhookRes.items || []);
@@ -607,16 +627,24 @@ function App() {
       setUsers(userRes.items || []);
       setOrganization(userRes.organization || null);
       setEvents(eventRes.items || []);
-      setArtifacts(artifactRes.items || []);
+      if (artifactRes) setArtifacts(artifactRes.items || []);
       setMessages(messageRes.items || []);
       setAuditEvents(auditRes.items || []);
       setSchedulerConfig(schedulerRes.config || {});
       setDiagnostics(diagnosticsRes.diagnostics || {});
       setSettings(settingsRes.item || {});
+      if (HEAVY_DATA_PAGES.has(page)) {
+        heavyLoadedPageRef.current = page;
+      }
     } catch (error) {
       message.error(`刷新失败：${error.message}`);
     } finally {
+      refreshingRef.current = false;
       setLoading(false);
+      if (refreshAgainRef.current) {
+        refreshAgainRef.current = false;
+        refresh();
+      }
     }
   };
 
@@ -625,6 +653,16 @@ function App() {
     const timer = window.setInterval(refresh, 15000);
     return () => window.clearInterval(timer);
   }, []);
+
+  // 切到要大数据的页面时马上拉一次;离开后再回来会重新拉
+  useEffect(() => {
+    activeRef.current = active;
+    if (HEAVY_DATA_PAGES.has(active)) {
+      refresh();
+    } else {
+      heavyLoadedPageRef.current = null;
+    }
+  }, [active]);
 
   useEffect(() => {
     if (!auth?.token) return;
@@ -725,7 +763,7 @@ function App() {
             auth?.user && <Tag color="green" key="user">{auth.user.spec?.name || auth.user.spec?.email}</Tag>,
             <Tag color="blue" key="runtime">Rust Hub</Tag>,
             <Text type="secondary" key="time" className="header-time">{formatTime(health.time) || '等待同步'}</Text>,
-            <Button key="refresh" icon={<ReloadOutlined />} loading={loading} onClick={refresh}>
+            <Button key="refresh" icon={<ReloadOutlined />} loading={loading} onClick={() => refresh({ heavy: true })}>
               刷新
             </Button>,
           ]}
@@ -746,7 +784,7 @@ function App() {
             )}
             {active === 'nodes' && <Nodes nodes={nodes} workbenches={workbenches} onOpenTask={setSelectedTaskId} onDone={refresh} />}
             {active === 'capabilities' && <Capabilities manifest={capabilities} />}
-            {active === 'tools' && <Tools tools={tools} probeCenter={probeCenter} remediationCenter={remediationCenter} onDone={refresh} />}
+            {active === 'tools' && <Tools tools={tools} probeCenter={probeCenter} remediationCenter={remediationCenter} onDone={() => refresh({ heavy: true })} />}
             {active === 'nodeTools' && <NodeTools nodeTools={nodeTools} nodes={nodes} onDone={refresh} />}
             {active === 'runtime' && <AgentRuntime manifest={runtimeManifest} />}
             {active === 'standard' && <RuntimeStandard standard={runtimeStandard} />}
