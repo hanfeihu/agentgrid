@@ -124,7 +124,9 @@ async fn get_policy(
             _ => false,
         };
         if !authenticated {
-            return Err(anyhow::anyhow!("policy access denied: node authentication required").into());
+            return Err(
+                anyhow::anyhow!("policy access denied: node authentication required").into(),
+            );
         }
     }
     Ok(Json(json!({ "ok": true, "policy": policy })))

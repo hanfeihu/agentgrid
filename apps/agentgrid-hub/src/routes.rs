@@ -12,8 +12,8 @@ use crate::{
     agents, artifacts, auth, bearer_token_from_headers, bridge_client_ws, bridge_worker_ws,
     close_port_bridge, create_bridge_session, create_port_bridge, diagnostics, get_port_bridge,
     health, home, jobs, list_local_services, list_port_bridges, messages, nodes, policy,
-    runtime_standard, settings, static_asset, store, tasks, terminal_client_ws,
-    terminal_worker_ws, tools, webhooks, windows_install_script, workbenches, workflows, AppState,
+    runtime_standard, settings, static_asset, store, tasks, terminal_client_ws, terminal_worker_ws,
+    tools, webhooks, windows_install_script, workbenches, workflows, AppState,
 };
 
 /// 公网鉴权护栏:经 nginx(带 x-agentgrid-public 标记)进来的【变更类】请求必须带有效会话。
@@ -35,7 +35,7 @@ async fn public_auth_guard(
     let exempt = path.starts_with("/api/worker")   // worker 用 node join_token 自证
         || path.starts_with("/api/auth")           // 登录/注册本身
         || path == "/api/nodes"                     // worker 心跳(POST)
-        || path == "/api/events/ingress";           // 事件入口(集成)
+        || path == "/api/events/ingress"; // 事件入口(集成)
     if public && (mutating || sensitive_read) && !exempt {
         let authorized = store(&state)
             .map(|s| {

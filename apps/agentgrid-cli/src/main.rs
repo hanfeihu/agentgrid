@@ -1112,7 +1112,9 @@ fn cli_hostname() -> String {
 
 fn cred_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::Path::new(&home).join(".agentgrid").join("credentials.json")
+    std::path::Path::new(&home)
+        .join(".agentgrid")
+        .join("credentials.json")
 }
 
 fn open_browser(url: &str) {
@@ -1135,9 +1137,18 @@ fn login(client: &reqwest::blocking::Client, platform: &str, name: Option<String
         .send()
         .context("连接平台失败")?
         .json()?;
-    let device_code = code_resp["device_code"].as_str().unwrap_or_default().to_string();
-    let user_code = code_resp["user_code"].as_str().unwrap_or_default().to_string();
-    let verify = code_resp["verification_uri"].as_str().unwrap_or_default().to_string();
+    let device_code = code_resp["device_code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let user_code = code_resp["user_code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let verify = code_resp["verification_uri"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let interval = code_resp["interval"].as_u64().unwrap_or(3);
     if device_code.is_empty() {
         anyhow::bail!("领取设备码失败: {code_resp}");
